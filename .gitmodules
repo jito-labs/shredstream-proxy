@@ -1,0 +1,12 @@
+[submodule "mev-protos"]
+	path = mev-protos
+	url = https://github.com/jito-labs/mev-protos.git
+[submodule "jito_protos/mev-protos"]
+	path = jito_protos/mev-protos
+	url = https://github.com/jito-labs/mev-protos.git
+[submodule "jito_protos/--force"]
+	path = jito_protos/--force
+	url = https://github.com/jito-labs/mev-protos.git
+[submodule "jito_protos/protos"]
+	path = jito_protos/protos
+	url = https://github.com/jito-labs/mev-protos.git
