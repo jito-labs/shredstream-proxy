@@ -23,11 +23,14 @@ use tonic::{codegen::InterceptedService, transport::Channel, Status};
 
 use jito_protos::auth::auth_service_client::AuthServiceClient;
 use jito_protos::auth::Role;
+
 use jito_protos::shredstream::shredstream_client::ShredstreamClient;
 use jito_protos::shredstream::Heartbeat;
 
+use crate::token_authenticator::{
+    create_grpc_channel, BlockEngineConnectionError, ClientInterceptor,
+};
 use crate::SearcherProxyError::Shutdown;
-use crate::token_authenticator::{BlockEngineConnectionError, ClientInterceptor, create_grpc_channel};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -57,13 +60,9 @@ struct Args {
     #[clap(long, env, default_value_t = 10_000)]
     src_bind_port: u16,
 
-    /// Address where Shredstream proxy forwards shreds to.
-    #[clap(long, env)]
-    dst_bind_addr: IpAddr,
-
-    /// Port where Shredstream proxy forwards shreds to.
-    #[clap(long, env)]
-    dst_bind_port: u16,
+    /// IP:Port where Shredstream proxy forwards shreds to. Requires at least one IP:Port, comma separated. Eg. `10.0.0.1:9000,10.0.0.2:9000`
+    #[arg(long, env, value_delimiter = ',', required(true))]
+    dst_sockets: Vec<SocketAddr>,
 }
 
 pub async fn get_client(
@@ -77,7 +76,7 @@ pub async fn get_client(
         auth_keypair,
         Role::ShredstreamSubscriber,
     )
-        .await?;
+    .await?;
 
     let searcher_channel = create_grpc_channel(searcher_addr).await?;
     let searcher_client = ShredstreamClient::with_interceptor(searcher_channel, client_interceptor);
@@ -119,10 +118,8 @@ fn main() -> Result<(), SearcherProxyError> {
         let recv_socketaddr = SocketAddr::new(args.src_bind_addr, args.src_bind_port);
         let recv_socket = UdpSocket::bind(recv_socketaddr).await.expect("Must bind");
 
-        let send_socketaddr = SocketAddr::new(args.dst_bind_addr, args.dst_bind_port);
-
         let sock = Arc::new(UdpSocket::bind("0.0.0.0:0").await.expect("Must bind)"));
-        sock.connect(send_socketaddr).await.expect("must bind");
+        // sock.connect(send_socketaddr).await.expect("must bind");
         let heartbeat_hdl = tokio::spawn(heartbeat_loop(
             shredstream_client,
             args.desired_regions,
@@ -146,13 +143,13 @@ pub async fn main_loop(
     let successful_shred_count = Arc::new(AtomicU64::new(0));
     let failed_shred_count = Arc::new(AtomicU64::new(0));
     let histogram = Arc::new(Mutex::new(Histogram::new()));
+    let mut buf = [0; PACKET_DATA_SIZE];
 
     while !exit.load(Ordering::Relaxed) {
-        let mut buf = [0; PACKET_DATA_SIZE];
         let len = recv_socket.recv(&mut buf).await?;
         let start = Instant::now();
         let send_socket = send_socket.clone();
-        println!("{:?} bytes received from {:?}", len, send_socket);
+        info!("{:?} bytes received from {:?}", len, send_socket);
         let successful_shred_count = successful_shred_count.clone();
         let failed_shred_count = failed_shred_count.clone();
         let histogram = histogram.clone();
@@ -161,7 +158,7 @@ pub async fn main_loop(
                 Ok(_) => {
                     let time = start.elapsed();
                     successful_shred_count.fetch_add(1, Ordering::SeqCst);
-                    println!("{:?} bytes sent", len);
+                    info!("{:?} bytes sent", len);
                     let mut lock = histogram.lock().await;
                     let _ = lock.increment(time.as_micros() as u64);
                 }

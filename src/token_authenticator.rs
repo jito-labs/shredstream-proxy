@@ -11,8 +11,8 @@ use solana_metrics::datapoint_info;
 use solana_sdk::signature::{Keypair, Signer};
 use thiserror::Error;
 use tokio::{task::JoinHandle, time::sleep};
-use tonic::{service::Interceptor, transport::Channel, Request, Status, transport};
 use tonic::transport::Endpoint;
+use tonic::{service::Interceptor, transport, transport::Channel, Request, Status};
 
 const AUTHORIZATION_HEADER: &str = "authorization";
 const BEARER: &str = "Bearer ";

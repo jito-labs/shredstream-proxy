@@ -1,14 +1,11 @@
-use std::{
-    cmp::min,
-    net::{IpAddr, Ipv4Addr},
-};
-
 use bincode::serialize;
 use solana_perf::packet::{Packet, PacketBatch, PACKET_DATA_SIZE};
 use solana_sdk::{
     packet::{Meta, PacketFlags},
     transaction::VersionedTransaction,
 };
+use std::cmp::min;
+use std::net::{IpAddr, Ipv4Addr};
 
 use crate::packet::{
     Meta as ProtoMeta, Packet as ProtoPacket, PacketBatch as ProtoPacketBatch,
@@ -91,6 +88,7 @@ pub fn proto_packet_to_packet(p: &ProtoPacket) -> Packet {
 }
 
 const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+
 pub fn proto_packet_batch_to_packets(
     packet_batch: ProtoPacketBatch,
 ) -> impl Iterator<Item = Packet> {
