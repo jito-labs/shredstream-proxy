@@ -5,7 +5,6 @@ fn main() {
         .compile(
             &[
                 "protos/auth.proto",
-                "protos/packet.proto",
                 "protos/shared.proto",
                 "protos/shredstream.proto",
             ],
