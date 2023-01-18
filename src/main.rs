@@ -30,13 +30,9 @@ mod token_authenticator;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// Address for auth service
+    /// Address for Jito Block Engine. See https://jito-labs.gitbook.io/mev/systems/connecting
     #[arg(long, env)]
-    auth_addr: String,
-
-    /// Address for searcher service
-    #[arg(long, env)]
-    shredstream_addr: String,
+    blockengine_addr: String,
 
     /// Path to keypair file used to authenticate with the backend
     #[arg(long, env)]
@@ -61,12 +57,11 @@ struct Args {
 }
 
 pub async fn get_client(
-    auth_addr: &str,
-    searcher_addr: &str,
+    blockengine_addr: &str,
     auth_keypair: &Arc<Keypair>,
 ) -> Result<ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>, ShredstreamProxyError>
 {
-    let auth_channel = create_grpc_channel(auth_addr).await?;
+    let auth_channel = create_grpc_channel(blockengine_addr).await?;
     let client_interceptor = ClientInterceptor::new(
         AuthServiceClient::new(auth_channel),
         auth_keypair,
@@ -74,7 +69,7 @@ pub async fn get_client(
     )
     .await?;
 
-    let searcher_channel = create_grpc_channel(searcher_addr).await?;
+    let searcher_channel = create_grpc_channel(blockengine_addr).await?;
     let searcher_client = ShredstreamClient::with_interceptor(searcher_channel, client_interceptor);
     Ok(searcher_client)
 }
@@ -117,6 +112,7 @@ fn send_multiple_destination_from_receiver(
         .for_each(|(outgoing_socket, outgoing_socketaddr)| {
             let packets = packet_batch
                 .iter()
+                .filter(|pkt| !pkt.meta.discard())
                 .filter_map(|pkt| {
                     let data = pkt.data(..)?;
                     let addr = outgoing_socketaddr;
@@ -153,11 +149,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let runtime = Runtime::new().unwrap();
     let shredstream_client = runtime
-        .block_on(get_client(
-            &args.auth_addr,
-            &args.shredstream_addr,
-            &auth_keypair,
-        ))
+        .block_on(get_client(&args.blockengine_addr, &auth_keypair))
         .expect("Shredstream client needed");
 
     let exit = Arc::new(AtomicBool::new(false));

@@ -42,7 +42,7 @@ pub fn heartbeat_loop_thread(
 
                 match result {
                     Ok(x) => {
-                        heartbeat_interval = Duration::from_millis(x.get_ref().ttl_ms as u64);
+                        heartbeat_interval = Duration::from_millis(x.get_ref().ttl_ms as u64 / 2);
                         successful_heartbeat_count += 1;
                     }
                     Err(err) => {
