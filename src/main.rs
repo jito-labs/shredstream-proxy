@@ -1,21 +1,30 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread::{Builder, JoinHandle};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    thread::{Builder, JoinHandle},
+    time::Duration,
+};
 
 use clap::Parser;
 use crossbeam_channel::RecvTimeoutError;
 use env_logger::TimestampPrecision;
-use jito_protos::auth::auth_service_client::AuthServiceClient;
-use jito_protos::auth::Role;
-use jito_protos::shredstream::shredstream_client::ShredstreamClient;
+use jito_protos::{
+    auth::{auth_service_client::AuthServiceClient, Role},
+    shredstream::shredstream_client::ShredstreamClient,
+};
 use log::*;
 use solana_client::client_error::ClientError;
 use solana_metrics::set_host_id;
 use solana_perf::{packet::PacketBatchRecycler, recycler::Recycler};
 use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
-use solana_streamer::sendmmsg::batch_send;
-use solana_streamer::streamer::{self, PacketBatchReceiver, StreamerError, StreamerReceiveStats};
+use solana_streamer::{
+    sendmmsg::batch_send,
+    streamer::{self, PacketBatchReceiver, StreamerError, StreamerReceiveStats},
+};
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tonic::{codegen::InterceptedService, transport::Channel, Status};
@@ -204,7 +213,9 @@ fn start_forwarder_threads(
         (src_port, src_port + 1),
         num_threads,
     )
-    .unwrap_or_else(|_| panic!("to bind shred sockets. Check that port {src_port} is not in use."))
+    .unwrap_or_else(|_| {
+        panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
+    })
     .1
     .into_iter()
     .flat_map(|incoming_shred_socket| {
@@ -252,11 +263,14 @@ fn start_forwarder_threads(
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-    use std::str::FromStr;
-    use std::sync::Mutex;
-    use std::thread::sleep;
-    use std::{sync::Arc, thread, time::Duration};
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+        str::FromStr,
+        sync::{Arc, Mutex},
+        thread,
+        thread::sleep,
+        time::Duration,
+    };
 
     use solana_perf::packet::{Meta, Packet, PacketBatch};
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};

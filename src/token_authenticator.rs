@@ -1,6 +1,7 @@
-use std::sync::RwLock;
-use std::time::SystemTime;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, RwLock},
+    time::{Duration, SystemTime},
+};
 
 use jito_protos::auth::{
     auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
@@ -11,8 +12,12 @@ use solana_metrics::datapoint_info;
 use solana_sdk::signature::{Keypair, Signer};
 use thiserror::Error;
 use tokio::{task::JoinHandle, time::sleep};
-use tonic::transport::Endpoint;
-use tonic::{service::Interceptor, transport, transport::Channel, Request, Status};
+use tonic::{
+    service::Interceptor,
+    transport,
+    transport::{Channel, Endpoint},
+    Request, Status,
+};
 
 const AUTHORIZATION_HEADER: &str = "authorization";
 const BEARER: &str = "Bearer ";

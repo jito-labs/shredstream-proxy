@@ -1,17 +1,21 @@
-use crate::token_authenticator::ClientInterceptor;
-use jito_protos::shredstream::shredstream_client::ShredstreamClient;
-use jito_protos::shredstream::Heartbeat;
+use std::{
+    net::SocketAddr,
+    ops::Sub,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::{sleep, Builder, JoinHandle},
+    time::{Duration, Instant},
+};
+
+use jito_protos::shredstream::{shredstream_client::ShredstreamClient, Heartbeat};
 use log::{info, warn};
 use solana_metrics::datapoint_error;
-use std::net::SocketAddr;
-use std::ops::Sub;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::{sleep, Builder, JoinHandle};
-use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
-use tonic::codegen::InterceptedService;
-use tonic::transport::Channel;
+use tonic::{codegen::InterceptedService, transport::Channel};
+
+use crate::token_authenticator::ClientInterceptor;
 
 pub fn heartbeat_loop_thread(
     mut shredstream_client: ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>,
@@ -20,7 +24,7 @@ pub fn heartbeat_loop_thread(
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     Builder::new()
-        .name("heartbeat_loop".to_string())
+        .name("shredstream-proxy-heartbeat-loop-thread".to_string())
         .spawn(move || {
             let mut successful_heartbeat_count: u64 = 0;
             let mut failed_heartbeat_count: u64 = 0;
@@ -42,7 +46,11 @@ pub fn heartbeat_loop_thread(
 
                 match result {
                     Ok(x) => {
-                        heartbeat_interval = Duration::from_millis(x.get_ref().ttl_ms as u64 / 2);
+                        let new_interval = x.get_ref().ttl_ms as u64 / 2;
+                        if heartbeat_interval.as_millis() != x.get_ref().ttl_ms as u128 {
+                            info!("Setting heartbeat interval to {new_interval} ms");
+                        }
+                        heartbeat_interval = Duration::from_millis(new_interval);
                         successful_heartbeat_count += 1;
                     }
                     Err(err) => {
@@ -56,7 +64,7 @@ pub fn heartbeat_loop_thread(
                     sleep(heartbeat_interval.sub(elapsed));
                 }
             }
-            info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed");
+        info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed shreds.");
         })
         .unwrap()
 }
