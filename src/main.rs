@@ -44,16 +44,20 @@ struct Args {
     desired_regions: Vec<String>,
 
     /// Address where Shredstream proxy listens on.
-    #[clap(long, env, default_value_t = IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)))]
+    #[arg(long, env, default_value_t = IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)))]
     src_bind_addr: IpAddr,
 
     /// Port where Shredstream proxy on. `0` for random ephemeral port.
-    #[clap(long, env, default_value_t = 10_000)]
+    #[arg(long, env, default_value_t = 10_000)]
     src_bind_port: u16,
 
     /// IP:Port where Shredstream proxy forwards shreds to. Requires at least one IP:Port, comma separated. Eg. `10.0.0.1:9000,10.0.0.2:9000`
     #[arg(long, env, value_delimiter = ',', required(true))]
     dst_sockets: Vec<SocketAddr>,
+
+    /// Number of threads to use. Defaults to use all cores.
+    #[arg(long, env)]
+    num_threads: Option<usize>,
 }
 
 pub async fn get_client(
@@ -160,7 +164,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
         SocketAddr::new(args.src_bind_addr, args.src_bind_port),
         exit.clone(),
     );
-    let forward_hdls = start_forwarder_threads(args.dst_sockets, args.src_bind_port, exit);
+    let forward_hdls =
+        start_forwarder_threads(args.dst_sockets, args.src_bind_port, args.num_threads, exit);
 
     for thread in [heartbeat_hdl].into_iter().chain(forward_hdls.into_iter()) {
         thread.join().expect("thread panicked");
@@ -168,13 +173,15 @@ fn main() -> Result<(), ShredstreamProxyError> {
     Ok(())
 }
 
+/// Bind to ports and start forwarding shreds
 fn start_forwarder_threads(
     dst_sockets: Vec<SocketAddr>,
     src_port: u16,
+    num_threads: Option<usize>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
-    // Bind to ports and initialize ShredFetchStage
-    let num_threads = usize::from(std::thread::available_parallelism().unwrap());
+    let num_threads =
+        num_threads.unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()));
 
     // all forwarder threads share these sockets
     let outgoing_sockets = dst_sockets

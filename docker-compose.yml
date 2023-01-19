@@ -1,0 +1,324 @@
+# See ./b for running instructions
+version: "3.8"
+services:
+  cluster_service:
+    image: $ORG/mev_proxy-cluster_service:$TAG
+    container_name: cluster_service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: cluster_service
+    environment:
+      - SPY_IP=$SPY_IP
+      - SPY_PORT=$SPY_PORT
+      - AOI_BUCKET_CONFIG_PATH=$ACCOUNTS_OF_INTEREST_BUCKET_CONFIG_PATH
+      - CONNECTED_VALIDATORS_BUCKET_CONFIG_PATH=$CONNECTED_VALIDATORS_BUCKET_CONFIG_PATH
+      - CLUSTER_META_BUCKET_CONFIG_PATH=$CLUSTER_META_BUCKET_CONFIG_PATH
+      - CONTACT_INFO_BUCKET_CONFIG_PATH=$CONTACT_INFO_BUCKET_CONFIG_PATH
+      - LEADER_SCHEDULE_BUCKET_CONFIG_PATH=$LEADER_SCHEDULE_BUCKET_CONFIG_PATH
+      - SHREDSTREAM_SUBSCRIBERS_BUCKET_CONFIG_PATH=$SHREDSTREAM_SUBSCRIBERS_BUCKET_CONFIG_PATH
+      - ENABLED_REGIONS_BUCKET_CONFIG_PATH=$ENABLED_REGIONS_BUCKET_CONFIG_PATH
+      - NATS_URL=$NATS_URL
+      - CLUSTER_RPC_URL=$CLUSTER_RPC_URL
+      - CLUSTER_WS_URL=$CLUSTER_WS_URL
+      - CLUSTER_ENTRYPOINT=$CLUSTER_ENTRYPOINT
+      - GOSSIP_PORT=$GOSSIP_PORT
+      - REGION=$REGION
+      - SOLANA_CLUSTER=$SOLANA_CLUSTER
+      - UNSTRUCTURED_LOGGING=true
+      - RUST_LOG=info
+    depends_on:
+      - nats
+    ports:
+      - "$SPY_PORT:$SPY_PORT/udp"
+    restart: on-failure
+  mempool_service:
+    image: $ORG/mev_proxy-mempool_service:$TAG
+    container_name: mempool_service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: mempool_service
+    environment:
+      - TRACE_SAMPLING_PROB=1.0
+      - OTLP_ENDPOINT=$OTLP_ENDPOINT
+      - GEYSER_GRPC_ADDR=$GEYSER_GRPC_ADDR
+      - REGION=$REGION
+      - SOLANA_CLUSTER=$SOLANA_CLUSTER
+      - NATS_URL=$NATS_URL
+      - RUST_LOG=info
+      - UNSTRUCTURED_LOGGING=true
+      - TIP_PAYMENT_PROGRAM=$TIP_PAYMENT_PROGRAM
+      - RPC_URL=$CLUSTER_RPC_URL
+    depends_on:
+      - nats
+    restart: on-failure
+  searcher_service:
+    image: $ORG/mev_proxy-searcher_service:$TAG
+    container_name: searcher_service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: searcher_service
+    environment:
+      - RUST_LOG=info
+      - REGION=$REGION
+      - SOLANA_CLUSTER=$SOLANA_CLUSTER
+      - VERIFYING_KEY_PEM_PATH=$VERIFYING_KEY_PEM_PATH
+      - SEARCHER_GRPC_IP=$SEARCHER_GRPC_IP
+      - SEARCHER_GRPC_PORT=$SEARCHER_GRPC_PORT
+      - NATS_URL=$NATS_URL
+      - TIP_PAYMENT_PROGRAM=$TIP_PAYMENT_PROGRAM
+      - UNSTRUCTURED_LOGGING=true
+      - OTLP_ENDPOINT=$OTLP_ENDPOINT
+      - TRACE_SAMPLING_PROB=1.0
+    expose:
+      - "$SEARCHER_GRPC_PORT"
+    ports:
+      - "$SEARCHER_GRPC_PORT:$SEARCHER_GRPC_PORT"
+    restart: on-failure
+    depends_on:
+      - nats
+    volumes:
+      - ./config/keys:/etc/keys
+  validator_interface_service:
+    image: $ORG/mev_proxy-validator_interface_service:$TAG
+    container_name: validator_interface_service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: validator_interface_service
+    environment:
+      - RUST_LOG=info
+      - VERIFYING_KEY_PEM_PATH=$VERIFYING_KEY_PEM_PATH
+      - NATS_URL=$NATS_URL
+      - VALIDATOR_GRPC_IP=$VALIDATOR_GRPC_IP
+      - VALIDATOR_GRPC_PORT=$VALIDATOR_GRPC_PORT
+      - REGION=$REGION
+      - SOLANA_CLUSTER=$SOLANA_CLUSTER
+      - UNSTRUCTURED_LOGGING=true
+      - OTLP_ENDPOINT=$OTLP_ENDPOINT
+      - TRACE_SAMPLING_PROB=1.0
+      - BLOCK_BUILDER_PUBKEY=11111111111111111111111111111111
+      - BLOCK_BUILDER_COMMISSION_PCT=10
+    expose:
+      - "$VALIDATOR_GRPC_PORT"
+    ports:
+      - "$VALIDATOR_GRPC_PORT:$VALIDATOR_GRPC_PORT"
+    restart: on-failure
+    depends_on:
+      - nats
+      - cluster_service
+    volumes:
+      - ./config/keys:/etc/keys
+  # Shred receiver service
+  shred_receiver_service:
+    image: $ORG/mev_proxy-shred_receiver_service:$TAG
+    container_name: shred_receiver_service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: shred_receiver_service
+    environment:
+      - RUST_LOG=info
+      - REGION=$REGION
+      - SOLANA_CLUSTER=$SOLANA_CLUSTER
+      - SHRED_IP=$SHRED_IP
+      - SHRED_PORT=$SHRED_PORT
+      - INFLUXDB_URL=$INFLUXDB_URL
+      - INFLUXDB_USER=$INFLUXDB_USER
+      - INFLUXDB_PW=$INFLUXDB_PW
+      - NATS_URL=$NATS_URL
+      - UNSTRUCTURED_LOGGING=true
+      - OTLP_ENDPOINT=$OTLP_ENDPOINT
+      - TRACE_SAMPLING_PROB=0.001
+    expose:
+      - "$SHRED_PORT/udp"
+    ports:
+      - "$SHRED_PORT:$SHRED_PORT/udp"
+    restart: on-failure
+    depends_on:
+      - nats
+  # Shredstream service
+  shredstream_service:
+    image: $ORG/mev_proxy-shredstream_service:$TAG
+    container_name: shredstream_service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: shredstream_service
+    environment:
+      - RUST_LOG=info
+      - SHREDSTREAM_GRPC_PORT=2004
+      - NATS_URL=$NATS_URL
+      - SOLANA_CLUSTER=$SOLANA_CLUSTER
+      - REGION=$REGION
+      - VERIFYING_KEY_PEM_PATH=$VERIFYING_KEY_PEM_PATH
+      - UNSTRUCTURED_LOGGING=true
+      - OTLP_ENDPOINT=$OTLP_ENDPOINT
+      - TRACE_SAMPLING_PROB=0.001
+    restart: on-failure
+    depends_on:
+      - nats
+      - auth_service
+  # Shred forwarder service
+  shred_forwarder_service:
+    image: $ORG/mev_proxy-shred_forwarder_service:$TAG
+    container_name: shred_forwarder_service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: shred_forwarder_service
+    environment:
+      - RUST_LOG=info
+      - REGION=$REGION
+      - SOLANA_CLUSTER=$SOLANA_CLUSTER
+      - NATS_URL=$NATS_URL
+      - SHRED_FORWARD_PUBKEYS=$SHRED_FORWARD_PUBKEYS
+      - SHRED_FORWARD_ADDRESSES=$SHRED_FORWARD_ADDRESSES
+      - UNSTRUCTURED_LOGGING=true
+      - OTLP_ENDPOINT=$OTLP_ENDPOINT
+      - TRACE_SAMPLING_PROB=0.001
+    restart: on-failure
+    depends_on:
+      - nats
+  relayer_adapter_service:
+    image: $ORG/mev_proxy-relayer_adapter_service:$TAG
+    container_name: relayer_adapter_service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: relayer_adapter_service
+    environment:
+      - RUST_LOG=info
+      - VERIFYING_KEY_PEM_PATH=$VERIFYING_KEY_PEM_PATH
+      - REGION=$REGION
+      - SOLANA_CLUSTER=$SOLANA_CLUSTER
+      - INFLUXDB_URL=$INFLUXDB_URL
+      - INFLUXDB_USER=$INFLUXDB_USER
+      - INFLUXDB_PW=$INFLUXDB_PW
+      - NATS_URL=$NATS_URL
+      - RELAYER_ADAPTER_GRPC_BIND_ADDR=$RELAYER_ADAPTER_GRPC_BIND_ADDR
+      - RELAYER_ADAPTER_GRPC_BIND_PORT=$RELAYER_ADAPTER_GRPC_BIND_PORT
+      - UNSTRUCTURED_LOGGING=true
+      - OTLP_ENDPOINT=$OTLP_ENDPOINT
+      - TRACE_SAMPLING_PROB=1.0
+    expose:
+      - "$RELAYER_ADAPTER_GRPC_BIND_PORT"
+    ports:
+      - "$RELAYER_ADAPTER_GRPC_BIND_PORT:$RELAYER_ADAPTER_GRPC_BIND_PORT"
+    restart: on-failure
+    depends_on:
+      - nats
+    volumes:
+      - ./config/keys:/etc/keys
+  auth_service:
+    image: $ORG/mev_proxy-auth_service:$TAG
+    container_name: auth_service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: auth_service
+    environment:
+      - MONGO_CONNECTION_URI=$MONGO_CONNECTION_URI
+      - MONGO_DB_NAME=auth-db
+      - RUST_LOG=info
+      - REGION=$REGION
+      - SOLANA_CLUSTER=$SOLANA_CLUSTER
+      - NATS_URL=$NATS_URL
+      - GRPC_BIND_ADDR=$AUTH_SERVICE_GRPC_BIND_ADDR
+      - GRPC_BIND_PORT=$AUTH_SERVICE_GRPC_BIND_PORT
+      - SIGNING_KEY_PEM_PATH=$SIGNING_KEY_PEM_PATH
+      - VERIFYING_KEY_PEM_PATH=$VERIFYING_KEY_PEM_PATH
+      - UNSTRUCTURED_LOGGING=true
+      - OTLP_ENDPOINT=$OTLP_ENDPOINT
+      - TRACE_SAMPLING_PROB=1.0
+    expose:
+      - "$AUTH_SERVICE_GRPC_BIND_PORT"
+    ports:
+      - "$AUTH_SERVICE_GRPC_BIND_PORT:$AUTH_SERVICE_GRPC_BIND_PORT"
+    restart: on-failure
+    depends_on:
+      - nats
+    volumes:
+      - ./config/keys:/etc/keys
+  # NATS messaging server
+  nats:
+    image: nats:latest
+    container_name: nats
+    command: "-c /etc/nats/config.yaml"
+    expose:
+      - "$NATS_PORT"
+      - "$NATS_HTTP_PORT"
+    ports:
+      - "$NATS_PORT:$NATS_PORT"
+    volumes:
+      - ./config/nats:/etc/nats
+  mongo:
+    image: mongo:latest
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=$MONGO_INITDB_ROOT_USERNAME
+      - MONGO_INITDB_ROOT_PASSWORD=$MONGO_INITDB_ROOT_PASSWORD
+    expose:
+      - "$MONGO_PORT"
+    ports:
+      - "$MONGO_PORT:$MONGO_PORT"
+  authed_relayers_migration:
+    image: $ORG/mev_proxy-auth_cli:$TAG
+    container_name: authorized_relayers_migration
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: auth_migrations
+    environment:
+      - ENTITY=relayer
+      - RUST_LOG=info
+      - MONGO_CONNECTION_URI=$MONGO_CONNECTION_URI
+      - MONGO_DB_NAME=auth-db
+  authed_searchers_migration:
+    image: $ORG/mev_proxy-auth_cli:$TAG
+    container_name: authorized_searchers_migration
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: auth_migrations
+    environment:
+      - ENTITY=searcher
+      - RUST_LOG=info
+      - MONGO_CONNECTION_URI=$MONGO_CONNECTION_URI
+      - MONGO_DB_NAME=auth-db
+  otel-collector:
+    image: otel/opentelemetry-collector
+    container_name: otel_collector
+    command: [ "--config=/etc/otel-collector-config.yaml" ]
+    volumes:
+      - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "1888:1888"   # pprof extension
+      - "8888:8888"   # Prometheus metrics exposed by the collector
+      - "8889:8889"   # Prometheus exporter metrics
+      - "13133:13133" # health_check extension
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP http receiver
+      - "55679:55679" # zpages extension
+
+  # Searcher Canary
+  searcher_canary:
+    image: $ORG/jito-searcher-canary:$TAG
+    container_name: jito-searcher-canary
+    command: [ "canary" ]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: jito-searcher-canary
+    environment:
+      - RUST_LOG=info
+      - AUTH_ADDR=http://${CLUSTER_LOCALHOST}:${AUTH_SERVICE_GRPC_BIND_PORT}
+      - SEARCHER_ADDR=http://${CLUSTER_LOCALHOST}:${SEARCHER_GRPC_PORT}
+      - PAYER_KEYPAIR=$SEARCHER_KEYPAIR_PATH
+      - AUTH_KEYPAIR=$SEARCHER_KEYPAIR_PATH
+      - PUBSUB_URL=$CLUSTER_WS_URL
+      - RPC_URL=$CLUSTER_RPC_URL
+      - TIP_PROGRAM_ID=$TIP_PAYMENT_PROGRAM
+      - CLUSTER=localnet
+      - REGION=local
