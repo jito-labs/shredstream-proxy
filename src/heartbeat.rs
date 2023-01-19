@@ -38,17 +38,17 @@ pub fn heartbeat_loop_thread(
             let rt = Runtime::new().unwrap();
             while !exit.load(Ordering::Relaxed) {
                 let start = Instant::now();
-                let result = rt.block_on(shredstream_client
+                let heartbeat_result = rt.block_on(shredstream_client
                     .send_heartbeat(Heartbeat {
                         socket: Some(heartbeat_socket.clone()),
                         regions: regions.clone(),
                     }));
 
-                match result {
+                match heartbeat_result {
                     Ok(x) => {
                         let new_interval = x.get_ref().ttl_ms as u64 / 2;
                         if heartbeat_interval.as_millis() != x.get_ref().ttl_ms as u128 {
-                            info!("Setting heartbeat interval to {new_interval} ms");
+                            info!("Setting heartbeat interval to {new_interval} ms.");
                         }
                         heartbeat_interval = Duration::from_millis(new_interval);
                         successful_heartbeat_count += 1;

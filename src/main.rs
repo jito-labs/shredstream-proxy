@@ -21,6 +21,7 @@ use solana_client::client_error::ClientError;
 use solana_metrics::set_host_id;
 use solana_perf::{packet::PacketBatchRecycler, recycler::Recycler};
 use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
+use solana_streamer::sendmmsg::SendPktsError;
 use solana_streamer::{
     sendmmsg::batch_send,
     streamer::{self, PacketBatchReceiver, StreamerError, StreamerReceiveStats},
@@ -69,7 +70,7 @@ struct Args {
     num_threads: Option<usize>,
 }
 
-pub async fn get_client(
+pub async fn get_grpc_client(
     block_engine_url: &str,
     auth_keypair: &Arc<Keypair>,
 ) -> Result<ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>, ShredstreamProxyError>
@@ -105,7 +106,7 @@ pub enum ShredstreamProxyError {
     Shutdown,
 }
 
-/// broadcasts same message to multiple recipients
+/// broadcasts same packet to multiple recipients
 /// for best performance, connect sockets to their destinations
 /// Returns Err when unable to receive packets.
 fn send_multiple_destination_from_receiver(
@@ -137,10 +138,10 @@ fn send_multiple_destination_from_receiver(
                 Ok(_) => {
                     successful_shred_count.fetch_add(packets.len() as u64, Ordering::SeqCst);
                 }
-                Err(e) => {
-                    failed_shred_count.fetch_add(packets.len() as u64, Ordering::SeqCst);
+                Err(SendPktsError::IoError(err, num_failed)) => {
+                    failed_shred_count.fetch_add(num_failed as u64, Ordering::SeqCst);
                     error!(
-                        "Failed to send batch of size {} to {outgoing_socket:?}. Error: {e}",
+                        "Failed to send batch of size {} to {outgoing_socket:?}. {num_failed} packets failed. Error: {err}",
                         packets.len()
                     );
                 }
@@ -162,7 +163,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let runtime = Runtime::new().unwrap();
     let shredstream_client = runtime
-        .block_on(get_client(&args.block_engine_url, &auth_keypair))
+        .block_on(get_grpc_client(&args.block_engine_url, &auth_keypair))
         .expect("Shredstream client needed");
 
     let exit = Arc::new(AtomicBool::new(false));
