@@ -41,7 +41,7 @@ mod token_authenticator;
 struct Args {
     /// Address for Jito Block Engine. See https://jito-labs.gitbook.io/mev/systems/connecting
     #[arg(long, env)]
-    blockengine_addr: String,
+    block_engine_url: String,
 
     /// Path to keypair file used to authenticate with the backend
     #[arg(long, env)]
@@ -70,11 +70,11 @@ struct Args {
 }
 
 pub async fn get_client(
-    blockengine_addr: &str,
+    block_engine_url: &str,
     auth_keypair: &Arc<Keypair>,
 ) -> Result<ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>, ShredstreamProxyError>
 {
-    let auth_channel = create_grpc_channel(blockengine_addr).await?;
+    let auth_channel = create_grpc_channel(block_engine_url).await?;
     let client_interceptor = ClientInterceptor::new(
         AuthServiceClient::new(auth_channel),
         auth_keypair,
@@ -82,7 +82,7 @@ pub async fn get_client(
     )
     .await?;
 
-    let searcher_channel = create_grpc_channel(blockengine_addr).await?;
+    let searcher_channel = create_grpc_channel(block_engine_url).await?;
     let searcher_client = ShredstreamClient::with_interceptor(searcher_channel, client_interceptor);
     Ok(searcher_client)
 }
@@ -162,7 +162,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let runtime = Runtime::new().unwrap();
     let shredstream_client = runtime
-        .block_on(get_client(&args.blockengine_addr, &auth_keypair))
+        .block_on(get_client(&args.block_engine_url, &auth_keypair))
         .expect("Shredstream client needed");
 
     let exit = Arc::new(AtomicBool::new(false));

@@ -6,11 +6,11 @@ Connects to Jito infrastructure, providing a fast path to shreds
 ```bash
 git submodule update --init --recursive
 
-# example usage, receiving shreds from ny
+# example: receiving shreds from dallas and amsterdam, only directly connecting to dallas
 cargo run --bin jito-shredstream-proxy -- \
-    --block-engine-addr https://ny.mainnet.block-engine.jito.wtf \
+    --block-engine-url https://dallas.mainnet.block-engine.jito.wtf \
     --auth-keypair my_keypair.json \
-    --desired-regions ny,la \
+    --desired-regions dallas,amsterdam \
     --dst-sockets 127.0.0.1:9900,127.0.0.1:9901
 ```
 
