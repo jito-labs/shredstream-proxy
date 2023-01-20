@@ -10,7 +10,7 @@ use std::{
 };
 
 use jito_protos::shredstream::{shredstream_client::ShredstreamClient, Heartbeat};
-use log::{info, warn};
+use log::{error, info, warn};
 use solana_metrics::datapoint_warn;
 use tokio::runtime::Runtime;
 use tonic::{codegen::InterceptedService, transport::Channel, Code};
@@ -56,6 +56,7 @@ pub fn heartbeat_loop_thread(
                     Err(err) => {
                         if err.code() == Code::InvalidArgument {
                             exit.store(true, Ordering::SeqCst);
+                            error!("Invalid arguments: {err}");
                             return;
                         };
                         warn!("Error sending heartbeat: {err}");
