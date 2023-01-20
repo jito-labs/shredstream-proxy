@@ -1,5 +1,6 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    panic,
     path::Path,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -63,7 +64,7 @@ struct Args {
 
     /// IP:Port where Shredstream proxy forwards shreds to. Requires at least one IP:Port, comma separated. Eg. `10.0.0.1:9000,10.0.0.2:9000`
     #[arg(long, env, value_delimiter = ',', required(true))]
-    dst_sockets: Vec<SocketAddr>,
+    dest_sockets: Vec<SocketAddr>,
 
     /// Number of threads to use. Defaults to use all cores.
     #[arg(long, env)]
@@ -167,7 +168,14 @@ fn main() -> Result<(), ShredstreamProxyError> {
         .expect("Shredstream client needed");
 
     let exit = Arc::new(AtomicBool::new(false));
-
+    let panic_hook = panic::take_hook();
+    let exit_signal = exit.clone();
+    panic::set_hook(Box::new(move |panic_info| {
+        // invoke the default handler and exit the process
+        exit_signal.store(true, Ordering::SeqCst);
+        panic_hook(panic_info);
+        error!("exiting process");
+    }));
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
         shredstream_client,
         args.desired_regions,
@@ -175,8 +183,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
         runtime,
         exit.clone(),
     );
-    let forward_hdls =
-        start_forwarder_threads(args.dst_sockets, args.src_bind_port, args.num_threads, exit);
+    let forward_hdls = start_forwarder_threads(
+        args.dest_sockets,
+        args.src_bind_port,
+        args.num_threads,
+        exit,
+    );
 
     for thread in [heartbeat_hdl].into_iter().chain(forward_hdls.into_iter()) {
         thread.join().expect("thread panicked");

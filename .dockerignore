@@ -1,3 +1,4 @@
+*.json
 .dockerignore
 .git/
 .github/
@@ -6,4 +7,5 @@
 README.md
 b
 docker-compose.yml
+p
 target/
