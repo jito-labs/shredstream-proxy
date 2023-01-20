@@ -21,6 +21,7 @@ pub fn heartbeat_loop_thread(
     mut shredstream_client: ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>,
     regions: Vec<String>,
     recv_socket: SocketAddr,
+    runtime: Runtime,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     Builder::new()
@@ -35,10 +36,9 @@ pub fn heartbeat_loop_thread(
             };
 
             let mut heartbeat_interval = Duration::from_millis(100); //start with 100ms, change based on server suggestion
-            let rt = Runtime::new().unwrap();
             while !exit.load(Ordering::Relaxed) {
                 let start = Instant::now();
-                let heartbeat_result = rt.block_on(shredstream_client
+                let heartbeat_result = runtime.block_on(shredstream_client
                     .send_heartbeat(Heartbeat {
                         socket: Some(heartbeat_socket.clone()),
                         regions: regions.clone(),

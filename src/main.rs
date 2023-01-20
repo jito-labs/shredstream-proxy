@@ -172,6 +172,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         shredstream_client,
         args.desired_regions,
         SocketAddr::new(args.src_bind_addr, args.src_bind_port),
+        runtime,
         exit.clone(),
     );
     let forward_hdls =
