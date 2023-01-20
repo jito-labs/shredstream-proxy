@@ -11,9 +11,9 @@ use std::{
 
 use jito_protos::shredstream::{shredstream_client::ShredstreamClient, Heartbeat};
 use log::{info, warn};
-use solana_metrics::datapoint_error;
+use solana_metrics::datapoint_warn;
 use tokio::runtime::Runtime;
-use tonic::{codegen::InterceptedService, transport::Channel};
+use tonic::{codegen::InterceptedService, transport::Channel, Code};
 
 use crate::token_authenticator::ClientInterceptor;
 
@@ -54,8 +54,12 @@ pub fn heartbeat_loop_thread(
                         successful_heartbeat_count += 1;
                     }
                     Err(err) => {
+                        if err.code() == Code::InvalidArgument {
+                            exit.store(true, Ordering::SeqCst);
+                            return;
+                        };
                         warn!("Error sending heartbeat: {err}");
-                        datapoint_error!("heartbeat_send_error", ("errors", 1, i64));
+                        datapoint_warn!("heartbeat_send_error", ("errors", 1, i64));
                         failed_heartbeat_count += 1;
                     }
                 }
@@ -64,7 +68,7 @@ pub fn heartbeat_loop_thread(
                     sleep(heartbeat_interval.sub(elapsed));
                 }
             }
-        info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed shreds.");
+            info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed shreds.");
         })
         .unwrap()
 }

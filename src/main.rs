@@ -2,6 +2,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     panic,
     path::Path,
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -18,13 +19,12 @@ use jito_protos::{
     shredstream::shredstream_client::ShredstreamClient,
 };
 use log::*;
-use solana_client::client_error::ClientError;
+use solana_client::client_error::{reqwest, ClientError};
 use solana_metrics::set_host_id;
 use solana_perf::{packet::PacketBatchRecycler, recycler::Recycler};
 use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
-use solana_streamer::sendmmsg::SendPktsError;
 use solana_streamer::{
-    sendmmsg::batch_send,
+    sendmmsg::{batch_send, SendPktsError},
     streamer::{self, PacketBatchReceiver, StreamerError, StreamerReceiveStats},
 };
 use thiserror::Error;
@@ -151,6 +151,18 @@ fn send_multiple_destination_from_receiver(
     Ok(())
 }
 
+fn get_public_ip() -> IpAddr {
+    info!("reading public ip from ifconfig.me...");
+    let response = reqwest::blocking::get("https://ifconfig.me")
+        .expect("response from ifconfig.me")
+        .text()
+        .expect("public ip response");
+    let public_ip = IpAddr::from_str(&response).unwrap();
+    info!("public ip: {:?}", public_ip);
+
+    public_ip
+}
+
 fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder()
         .format_timestamp(Some(TimestampPrecision::Micros))
@@ -179,7 +191,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
         shredstream_client,
         args.desired_regions,
-        SocketAddr::new(args.src_bind_addr, args.src_bind_port),
+        SocketAddr::new(get_public_ip(), args.src_bind_port),
         runtime,
         exit.clone(),
     );
