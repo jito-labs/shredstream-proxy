@@ -15,12 +15,12 @@ histogram = "0.7.0"
 jito-protos = { path = "./jito_protos" }
 log = "0.4.14"
 prost-types = "0.11.6"
-solana-client = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "fdf71bcbb0d962305854884c16335e6c4271b1f2" }
-solana-metrics = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "fdf71bcbb0d962305854884c16335e6c4271b1f2" }
-solana-perf = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "fdf71bcbb0d962305854884c16335e6c4271b1f2" }
-solana-sdk = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "fdf71bcbb0d962305854884c16335e6c4271b1f2" }
-solana-net-utils = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "fdf71bcbb0d962305854884c16335e6c4271b1f2" }
-solana-streamer = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "fdf71bcbb0d962305854884c16335e6c4271b1f2" }
+solana-client = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
+solana-metrics = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
+solana-perf = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
+solana-sdk = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
+solana-net-utils = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
+solana-streamer = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
 thiserror = "1.0.34"
 tokio = "1.24.2"
 tonic = { version = "0.8.3", features = ["tls", "tls-roots", "tls-webpki-roots"] }

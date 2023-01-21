@@ -35,7 +35,7 @@ pub fn heartbeat_loop_thread(
                 port: recv_socket.port() as i64,
             };
 
-            let mut heartbeat_interval = Duration::from_millis(100); //start with 100ms, change based on server suggestion
+            let (mut heartbeat_interval, mut failed_heartbeat_interval) = (Duration::from_millis(100), Duration::from_millis(100)); //start with 100ms, change based on server suggestion
             while !exit.load(Ordering::Relaxed) {
                 let start = Instant::now();
                 let heartbeat_result = runtime.block_on(shredstream_client
@@ -46,12 +46,19 @@ pub fn heartbeat_loop_thread(
 
                 match heartbeat_result {
                     Ok(x) => {
-                        let new_interval = x.get_ref().ttl_ms as u64 / 2;
-                        if heartbeat_interval.as_millis() != x.get_ref().ttl_ms as u128 {
-                            info!("Setting heartbeat interval to {new_interval} ms.");
+                        let new_ttl = x.get_ref().ttl_ms as u64;
+                        let new_interval = Duration::from_millis(new_ttl.checked_div(2).unwrap());
+                        if heartbeat_interval != new_interval {
+                            info!("Setting heartbeat interval to {new_interval:?}.");
+                            heartbeat_interval = new_interval;
+                            failed_heartbeat_interval = Duration::from_millis(new_ttl / 4);
                         }
-                        heartbeat_interval = Duration::from_millis(new_interval);
                         successful_heartbeat_count += 1;
+
+                        let elapsed = start.elapsed();
+                        if elapsed.lt(&heartbeat_interval) {
+                            sleep(heartbeat_interval.sub(elapsed));
+                        }
                     }
                     Err(err) => {
                         if err.code() == Code::InvalidArgument {
@@ -62,6 +69,12 @@ pub fn heartbeat_loop_thread(
                         warn!("Error sending heartbeat: {err}");
                         datapoint_warn!("heartbeat_send_error", ("errors", 1, i64));
                         failed_heartbeat_count += 1;
+
+                        // sleep faster to avoid getting deleted via TTL expiration in NATS
+                        let elapsed = start.elapsed();
+                        if elapsed.lt(&failed_heartbeat_interval) {
+                            sleep(failed_heartbeat_interval.sub(elapsed));
+                        }
                     }
                 }
                 let elapsed = start.elapsed();
