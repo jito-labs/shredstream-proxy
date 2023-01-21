@@ -5,6 +5,6 @@ set -ex
 TAG=${USER}-dev
 ORG="jitolabs"
 
-DOCKER_BUILDKIT=1 docker build -t "$ORG/shredstream-proxy:${TAG}" .
+DOCKER_BUILDKIT=1 docker build -t "$ORG/jito-shredstream-proxy:${TAG}" .
 
-docker push "${ORG}/shredstream-proxy:${TAG}"
+docker push "${ORG}/jito-shredstream-proxy:${TAG}"

@@ -7,7 +7,7 @@ Connects to Jito infrastructure, providing a fast path to shreds
 ### Docker
 ```shell
 docker run -d \
---name shredstream-proxy \
+--name jito-shredstream-proxy \
 --rm \
 -e RUST_LOG=info \
 -e BLOCK_ENGINE_URL=https://nyc.testnet.block-engine.jito.wtf \
@@ -15,10 +15,10 @@ docker run -d \
 -e DESIRED_REGIONS=dallas,nyc \
 -e DEST_SOCKETS=127.0.0.1:9900,127.0.0.1:9901 \
 -v $(pwd)/my_keypair.json:/app/my_keypair.json \
-jitolabs/shredstream-proxy
+jitolabs/jito-shredstream-proxy
 ```
 
-View logs with `docker logs -f shredstream-proxy`
+View logs with `docker logs -f jito-shredstream-proxy`
 
 ### Local
 ```bash
