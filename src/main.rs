@@ -65,24 +65,6 @@ struct Args {
     num_threads: Option<usize>,
 }
 
-pub async fn get_grpc_client(
-    block_engine_url: &str,
-    auth_keypair: &Arc<Keypair>,
-) -> Result<ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>, ShredstreamProxyError>
-{
-    let auth_channel = create_grpc_channel(block_engine_url).await?;
-    let client_interceptor = ClientInterceptor::new(
-        AuthServiceClient::new(auth_channel),
-        auth_keypair,
-        Role::ShredstreamSubscriber,
-    )
-    .await?;
-
-    let searcher_channel = create_grpc_channel(block_engine_url).await?;
-    let searcher_client = ShredstreamClient::with_interceptor(searcher_channel, client_interceptor);
-    Ok(searcher_client)
-}
-
 #[derive(Debug, Error)]
 pub enum ShredstreamProxyError {
     #[error("TonicError {0}")]
@@ -99,6 +81,24 @@ pub enum ShredstreamProxyError {
     IoError(#[from] std::io::Error),
     #[error("Shutdown")]
     Shutdown,
+}
+
+pub async fn get_grpc_client(
+    block_engine_url: &str,
+    auth_keypair: &Arc<Keypair>,
+) -> Result<ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>, ShredstreamProxyError>
+{
+    let auth_channel = create_grpc_channel(block_engine_url).await?;
+    let client_interceptor = ClientInterceptor::new(
+        AuthServiceClient::new(auth_channel),
+        auth_keypair,
+        Role::ShredstreamSubscriber,
+    )
+    .await?;
+
+    let searcher_channel = create_grpc_channel(block_engine_url).await?;
+    let searcher_client = ShredstreamClient::with_interceptor(searcher_channel, client_interceptor);
+    Ok(searcher_client)
 }
 
 fn get_public_ip() -> IpAddr {
@@ -127,7 +127,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let runtime = Runtime::new().unwrap();
     let shredstream_client = runtime
         .block_on(get_grpc_client(&args.block_engine_url, &auth_keypair))
-        .expect("Shredstream client needed");
+        .expect("failed to connect to block engine");
 
     let exit = Arc::new(AtomicBool::new(false));
     let panic_hook = panic::take_hook();
