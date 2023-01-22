@@ -14,6 +14,7 @@ docker run -d \
 -e AUTH_KEYPAIR=my_keypair.json \
 -e DESIRED_REGIONS=dallas,nyc \
 -e DEST_SOCKETS=127.0.0.1:9900,127.0.0.1:9901 \
+-p 9900:9900 -p 9901:9901 \
 -v $(pwd)/my_keypair.json:/app/my_keypair.json \
 jitolabs/jito-shredstream-proxy
 ```
