@@ -100,7 +100,8 @@ pub fn start_forwarder_threads(
     })
     .1
     .into_iter()
-    .flat_map(|incoming_shred_socket| {
+    .enumerate()
+    .flat_map(|(thread_id, incoming_shred_socket)| {
         let exit = exit.clone();
         let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
         let listen_thread = streamer::receiver(
@@ -118,7 +119,7 @@ pub fn start_forwarder_threads(
         let successful_shred_count = successful_shred_count.clone();
         let failed_shred_count = failed_shred_count.clone();
         let send_thread = Builder::new()
-            .name("shredstream-proxy-send-thread".to_string())
+            .name(format!("shredstream-proxy-send-thread-{thread_id}"))
             .spawn(move || {
                 while !exit.load(Ordering::Relaxed) {
                     send_multiple_destination_from_receiver(
@@ -131,7 +132,7 @@ pub fn start_forwarder_threads(
                 }
 
                 info!(
-                    "Exiting main forward thread, sent {} successful, {} failed shreds",
+                    "Exiting forward thread {thread_id}, sent {} successful, {} failed shreds",
                     successful_shred_count.load(Ordering::SeqCst),
                     failed_shred_count.load(Ordering::SeqCst)
                 );
