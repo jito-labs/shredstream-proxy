@@ -29,7 +29,7 @@ fn send_multiple_destination_from_receiver(
     successful_shred_count: &Arc<AtomicU64>,
     failed_shred_count: &Arc<AtomicU64>,
 ) -> Result<(), ShredstreamProxyError> {
-    let packet_batch = match receiver.recv_timeout(Duration::from_micros(500)) {
+    let packet_batch = match receiver.recv_timeout(Duration::from_millis(400)) {
         Ok(x) => Ok(x),
         Err(RecvTimeoutError::Timeout) => return Ok(()),
         Err(e) => Err(ShredstreamProxyError::StreamerError(StreamerError::from(e))),

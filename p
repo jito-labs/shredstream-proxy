@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -ex
+set -eux
 
 # Some container vars
 TAG=${USER}-dev

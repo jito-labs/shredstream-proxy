@@ -10,6 +10,7 @@ COPY . .
 
 RUN --mount=type=cache,mode=0777,target=/home/root/app/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
+    --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
     RUSTFLAGS="-C target-cpu=native" cargo build --release && cp target/release/jito-* ./
 
 ################################################################################
