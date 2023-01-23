@@ -96,7 +96,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let args = Args::parse();
 
     let auth_keypair = Arc::new(
-        read_keypair_file(Path::new(&args.auth_keypair)).expect("unable parse keypair file"),
+        read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
+            panic!(
+                "Unable parse keypair file. Ensure that {:?} is readable. Error: {e}",
+                args.auth_keypair
+            )
+        }),
     );
     set_host_id(auth_keypair.pubkey().to_string());
 
