@@ -6,7 +6,11 @@ Connects to Jito infrastructure, providing a fast path to shreds
 Default listen port for shreds is 10000/udp (ensure your firewall is open).
 
 ### Docker
-Host
+
+View logs with `docker logs -f jito-shredstream-proxy`
+
+#### Host Networking
+This exposes all ports, bypassing Docker NAT
 ```shell
 
 docker run -d \
@@ -22,7 +26,10 @@ docker run -d \
 jitolabs/jito-shredstream-proxy
 ```
 
-Bridge
+#### Bridge Networking
+Requires manually exposing each destination.
+Use `172.17.0.1` for any shred listeners on localhost, and normal ip for all other endpoints.
+This IP may differ for your system. Confirm with `ip -brief a show dev docker0`,
 ```shell
 docker run -d \
 --name jito-shredstream-proxy \
@@ -38,9 +45,6 @@ docker run -d \
 -v $(pwd)/my_keypair.json:/app/my_keypair.json \
 jitolabs/jito-shredstream-proxy
 ```
-Use `172.17.0.1` as IP for any local listeners, regular ip for all other endpoints.
-This may differ for your system. Confirm docker local IP with `ip -brief a show dev docker0`, 
-View logs with `docker logs -f jito-shredstream-proxy`
 
 ### Local
 ```bash
