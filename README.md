@@ -1,9 +1,11 @@
 # Shredstream Proxy
 
-Connects to Jito infrastructure, providing a fast path to shreds
+Connects to Jito infrastructure, providing a fast path to shreds.
 
 ## Usage
-Default listen port for shreds is 10000/udp (ensure your firewall is open).
+1. Submit your auth pubkey to be allowed
+2. Ensure your firewall is open. Default listen port for shreds is 10000/udp. NAT connections currently not supported.
+3. Run via docker or natively:
 
 ### Docker
 

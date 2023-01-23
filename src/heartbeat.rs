@@ -9,33 +9,44 @@ use std::{
     time::{Duration, Instant},
 };
 
-use jito_protos::shredstream::{shredstream_client::ShredstreamClient, Heartbeat};
+use jito_protos::{
+    auth::{auth_service_client::AuthServiceClient, Role},
+    shredstream::{shredstream_client::ShredstreamClient, Heartbeat},
+};
 use log::{error, info, warn};
 use solana_metrics::datapoint_warn;
+use solana_sdk::signature::Keypair;
 use tokio::runtime::Runtime;
 use tonic::{codegen::InterceptedService, transport::Channel, Code};
 
-use crate::token_authenticator::ClientInterceptor;
+use crate::{
+    token_authenticator::{create_grpc_channel, ClientInterceptor},
+    ShredstreamProxyError,
+};
 
 pub fn heartbeat_loop_thread(
-    mut shredstream_client: ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>,
+    block_engine_url: String,
+    auth_keypair: &Arc<Keypair>,
     regions: Vec<String>,
     recv_socket: SocketAddr,
     runtime: Runtime,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
+    let auth_keypair = auth_keypair.clone();
     Builder::new()
         .name("shredstream-proxy-heartbeat-loop-thread".to_string())
         .spawn(move || {
             let mut successful_heartbeat_count: u64 = 0;
             let mut failed_heartbeat_count: u64 = 0;
-
+            let mut shredstream_client = runtime
+                .block_on(get_grpc_client(&block_engine_url, &auth_keypair))
+                .expect("failed to connect to block engine");
+            let (mut heartbeat_interval, mut failed_heartbeat_interval) = (Duration::from_millis(100), Duration::from_millis(100)); //start with 100ms, change based on server suggestion
             let heartbeat_socket = jito_protos::shared::Socket {
                 ip: recv_socket.ip().to_string(),
                 port: recv_socket.port() as i64,
             };
 
-            let (mut heartbeat_interval, mut failed_heartbeat_interval) = (Duration::from_millis(100), Duration::from_millis(100)); //start with 100ms, change based on server suggestion
             while !exit.load(Ordering::Relaxed) {
                 let start = Instant::now();
                 let heartbeat_result = runtime.block_on(shredstream_client
@@ -85,4 +96,22 @@ pub fn heartbeat_loop_thread(
             info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed shreds.");
         })
         .unwrap()
+}
+
+pub async fn get_grpc_client(
+    block_engine_url: &str,
+    auth_keypair: &Arc<Keypair>,
+) -> Result<ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>, ShredstreamProxyError>
+{
+    let auth_channel = create_grpc_channel(block_engine_url).await?;
+    let client_interceptor = ClientInterceptor::new(
+        AuthServiceClient::new(auth_channel),
+        auth_keypair,
+        Role::ShredstreamSubscriber,
+    )
+    .await?;
+
+    let searcher_channel = create_grpc_channel(block_engine_url).await?;
+    let searcher_client = ShredstreamClient::with_interceptor(searcher_channel, client_interceptor);
+    Ok(searcher_client)
 }

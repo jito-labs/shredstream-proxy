@@ -1,7 +1,7 @@
 use std::{
     net::{IpAddr, SocketAddr},
     panic,
-    path::Path,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -11,22 +11,16 @@ use std::{
 
 use clap::Parser;
 use env_logger::TimestampPrecision;
-use jito_protos::{
-    auth::{auth_service_client::AuthServiceClient, Role},
-    shredstream::shredstream_client::ShredstreamClient,
-};
 use log::*;
 use solana_client::client_error::{reqwest, ClientError};
 use solana_metrics::set_host_id;
-use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
+use solana_sdk::signature::{read_keypair_file, Signer};
 use solana_streamer::streamer::StreamerError;
 use thiserror::Error;
 use tokio::runtime::Runtime;
-use tonic::{codegen::InterceptedService, transport::Channel, Status};
+use tonic::Status;
 
-use crate::token_authenticator::{
-    create_grpc_channel, BlockEngineConnectionError, ClientInterceptor,
-};
+use crate::token_authenticator::BlockEngineConnectionError;
 
 mod forwarder;
 mod heartbeat;
@@ -41,7 +35,7 @@ struct Args {
 
     /// Path to keypair file used to authenticate with the backend
     #[arg(long, env)]
-    auth_keypair: String,
+    auth_keypair: PathBuf,
 
     /// Desired regions to receive heartbeats from.
     /// Receives `n` different streams. Requires at least 1 region, comma separated.
@@ -83,24 +77,6 @@ pub enum ShredstreamProxyError {
     Shutdown,
 }
 
-pub async fn get_grpc_client(
-    block_engine_url: &str,
-    auth_keypair: &Arc<Keypair>,
-) -> Result<ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>, ShredstreamProxyError>
-{
-    let auth_channel = create_grpc_channel(block_engine_url).await?;
-    let client_interceptor = ClientInterceptor::new(
-        AuthServiceClient::new(auth_channel),
-        auth_keypair,
-        Role::ShredstreamSubscriber,
-    )
-    .await?;
-
-    let searcher_channel = create_grpc_channel(block_engine_url).await?;
-    let searcher_client = ShredstreamClient::with_interceptor(searcher_channel, client_interceptor);
-    Ok(searcher_client)
-}
-
 fn get_public_ip() -> IpAddr {
     info!("reading public ip from ifconfig.me...");
     let response = reqwest::blocking::get("https://ifconfig.me")
@@ -124,11 +100,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
     );
     set_host_id(auth_keypair.pubkey().to_string());
 
-    let runtime = Runtime::new().unwrap();
-    let shredstream_client = runtime
-        .block_on(get_grpc_client(&args.block_engine_url, &auth_keypair))
-        .expect("failed to connect to block engine");
-
     let exit = Arc::new(AtomicBool::new(false));
     let panic_hook = panic::take_hook();
     let exit_signal = exit.clone();
@@ -138,8 +109,10 @@ fn main() -> Result<(), ShredstreamProxyError> {
         panic_hook(panic_info);
         error!("exiting process");
     }));
+    let runtime = Runtime::new().unwrap();
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
-        shredstream_client,
+        args.block_engine_url,
+        &auth_keypair,
         args.desired_regions,
         SocketAddr::new(get_public_ip(), args.src_bind_port),
         runtime,
