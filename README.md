@@ -48,7 +48,7 @@ docker run -d \
 jitolabs/jito-shredstream-proxy
 ```
 
-### Local
+### Native 
 ```bash
 git submodule update --init --recursive
 
