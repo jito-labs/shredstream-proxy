@@ -34,7 +34,7 @@ pub fn heartbeat_loop_thread(
 ) -> JoinHandle<()> {
     let auth_keypair = auth_keypair.clone();
     Builder::new()
-        .name("shredstream-proxy-heartbeat-loop-thread".to_string())
+        .name("shredstream_proxy-heartbeat_loop_thread".to_string())
         .spawn(move || {
             let mut successful_heartbeat_count: u64 = 0;
             let mut failed_heartbeat_count: u64 = 0;
@@ -51,7 +51,7 @@ pub fn heartbeat_loop_thread(
                 let mut shredstream_client = match shredstream_client {
                     Ok(c) => c,
                     Err(e) => {
-                        warn!("Failed to connect to block engine, {e}");
+                        warn!("Failed to connect to block engine, retrying. Error: {e}");
                         continue;
                     }
                 };
@@ -82,14 +82,18 @@ pub fn heartbeat_loop_thread(
                         Err(err) => {
                             if err.code() == Code::InvalidArgument {
                                 exit.store(true, Ordering::SeqCst);
-                                error!("Invalid arguments: {err}");
+                                error!("Invalid arguments: {err}.");
                                 return;
                             };
                             warn!("Error sending heartbeat: {err}");
-                            datapoint_warn!("heartbeat_send_error", ("errors", 1, i64));
+                            datapoint_warn!("heartbeat_send_error",
+                                                ("block_engine_url", block_engine_url, String),
+                                                ("errors", 1, i64),
+                                                ("error_str", err.to_string(), String),
+                            );
                             failed_heartbeat_count += 1;
 
-                            // sleep faster to avoid getting deleted via TTL expiration in NATS
+                            // sleep for shorter time period to avoid TTL expiration in NATS
                             let elapsed = start.elapsed();
                             if elapsed.lt(&failed_heartbeat_interval) {
                                 sleep(failed_heartbeat_interval.sub(elapsed));
@@ -101,7 +105,7 @@ pub fn heartbeat_loop_thread(
                         sleep(heartbeat_interval.sub(elapsed));
                     }
                 }
-                sleep(Duration::from_millis(200)); // back off for a bit
+                sleep(Duration::from_millis(200)); // back off for a bit as client failed
             }
             info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed shreds.");
         })

@@ -109,7 +109,7 @@ pub fn start_forwarder_threads(
             exit.clone(),
             packet_sender,
             recycler.clone(),
-            Arc::new(StreamerReceiveStats::new("shredstream-proxy-listen-thread")),
+            Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
             1,
             true,
             None,
@@ -119,7 +119,7 @@ pub fn start_forwarder_threads(
         let successful_shred_count = successful_shred_count.clone();
         let failed_shred_count = failed_shred_count.clone();
         let send_thread = Builder::new()
-            .name(format!("shredstream-proxy-send-thread-{thread_id}"))
+            .name(format!("shredstream_proxy-send_thread_{thread_id}"))
             .spawn(move || {
                 while !exit.load(Ordering::Relaxed) {
                     send_multiple_destination_from_receiver(
