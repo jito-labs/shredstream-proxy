@@ -54,6 +54,10 @@ struct Args {
     #[arg(long, env, value_delimiter = ',', required(true))]
     dest_sockets: Vec<SocketAddr>,
 
+    /// Heartbeat stats sampling probability. Defaults to 1%.
+    #[arg(long, env, default_value_t = 0.01)]
+    heartbeat_stats_sampling_prob: f64,
+
     /// Number of threads to use. Defaults to use all cores.
     #[arg(long, env)]
     num_threads: Option<usize>,
@@ -120,6 +124,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         &auth_keypair,
         args.desired_regions,
         SocketAddr::new(get_public_ip(), args.src_bind_port),
+        args.heartbeat_stats_sampling_prob,
         runtime,
         exit.clone(),
     );

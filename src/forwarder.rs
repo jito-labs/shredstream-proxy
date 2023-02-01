@@ -132,7 +132,7 @@ pub fn start_forwarder_threads(
                 }
 
                 info!(
-                    "Exiting forward thread {thread_id}, sent {} successful, {} failed shreds",
+                    "Exiting send thread {thread_id}, sent {} successful, {} failed shreds",
                     successful_shred_count.load(Ordering::SeqCst),
                     failed_shred_count.load(Ordering::SeqCst)
                 );

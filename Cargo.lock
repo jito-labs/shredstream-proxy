@@ -1837,6 +1837,7 @@ dependencies = [
  "jito-protos",
  "log",
  "prost-types",
+ "rand 0.8.5",
  "solana-client",
  "solana-metrics",
  "solana-net-utils",

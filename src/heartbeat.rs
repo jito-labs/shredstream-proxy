@@ -14,7 +14,8 @@ use jito_protos::{
     shredstream::{shredstream_client::ShredstreamClient, Heartbeat},
 };
 use log::{error, info, warn};
-use solana_metrics::datapoint_warn;
+use rand::{thread_rng, Rng};
+use solana_metrics::{datapoint_info, datapoint_warn};
 use solana_sdk::signature::Keypair;
 use tokio::runtime::Runtime;
 use tonic::{codegen::InterceptedService, transport::Channel, Code};
@@ -29,6 +30,7 @@ pub fn heartbeat_loop_thread(
     auth_keypair: &Arc<Keypair>,
     regions: Vec<String>,
     recv_socket: SocketAddr,
+    heartbeat_stats_sampling_prob: f64,
     runtime: Runtime,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
@@ -36,14 +38,15 @@ pub fn heartbeat_loop_thread(
     Builder::new()
         .name("shredstream_proxy-heartbeat_loop_thread".to_string())
         .spawn(move || {
-            let mut successful_heartbeat_count: u64 = 0;
-            let mut failed_heartbeat_count: u64 = 0;
+            let mut client_restart_count = 0u64;
+            let mut successful_heartbeat_count = 0u64;
+            let mut failed_heartbeat_count = 0u64;
             let (mut heartbeat_interval, mut failed_heartbeat_interval) = (Duration::from_millis(100), Duration::from_millis(100)); //start with 100ms, change based on server suggestion
             let heartbeat_socket = jito_protos::shared::Socket {
                 ip: recv_socket.ip().to_string(),
                 port: recv_socket.port() as i64,
             };
-
+            let mut rng = thread_rng();
             while !exit.load(Ordering::Relaxed) {
                 let shredstream_client = runtime
                     .block_on(get_grpc_client(&block_engine_url, &auth_keypair));
@@ -52,6 +55,12 @@ pub fn heartbeat_loop_thread(
                     Ok(c) => c,
                     Err(e) => {
                         warn!("Failed to connect to block engine, retrying. Error: {e}");
+                        client_restart_count += 1;
+                        datapoint_warn!("shredstream_proxy-heartbeat_client_error",
+                                        "block_engine_url" => block_engine_url,
+                                        ("errors", 1, i64),
+                                        ("error_str", e.to_string(), String),
+                        );
                         continue;
                     }
                 };
@@ -86,10 +95,10 @@ pub fn heartbeat_loop_thread(
                                 return;
                             };
                             warn!("Error sending heartbeat: {err}");
-                            datapoint_warn!("heartbeat_send_error",
-                                                ("block_engine_url", block_engine_url, String),
-                                                ("errors", 1, i64),
-                                                ("error_str", err.to_string(), String),
+                            datapoint_warn!("shredstream_proxy-heartbeat_send_error",
+                                            "block_engine_url" => block_engine_url,
+                                            ("errors", 1, i64),
+                                            ("error_str", err.to_string(), String),
                             );
                             failed_heartbeat_count += 1;
 
@@ -100,6 +109,16 @@ pub fn heartbeat_loop_thread(
                             }
                         }
                     }
+
+                    if rng.gen_bool(heartbeat_stats_sampling_prob) {
+                        datapoint_info!("shredstream_proxy-heartbeat_stats",
+                                        "block_engine_url" => block_engine_url,
+                                        ("successful_heartbeat_count", successful_heartbeat_count, i64),
+                                        ("failed_heartbeat_count", failed_heartbeat_count, i64),
+                                        ("client_restart_count", client_restart_count, i64),
+                        );
+                    }
+
                     let elapsed = start.elapsed();
                     if elapsed.lt(&heartbeat_interval) {
                         sleep(heartbeat_interval.sub(elapsed));
