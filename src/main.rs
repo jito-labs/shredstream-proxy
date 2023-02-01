@@ -54,12 +54,6 @@ struct Args {
     #[arg(long, env, value_delimiter = ',', required(true))]
     dest_sockets: Vec<SocketAddr>,
 
-    /// Number of milliseconds to wait and collect shreds before sending to dest_sockets.
-    /// Larger values are more cpu efficient, but can incur higher latency.
-    /// Defaults to 10ms.
-    #[arg(long, env, default_value_t = 10)]
-    shred_batch_listen_ms: u64,
-
     /// Heartbeat stats sampling probability. Defaults to 1%.
     #[arg(long, env, default_value_t = 0.01)]
     heartbeat_stats_sampling_prob: f64,
@@ -137,7 +131,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let forward_hdls = forwarder::start_forwarder_threads(
         args.dest_sockets,
         args.src_bind_port,
-        args.shred_batch_listen_ms,
         args.num_threads,
         exit,
     );

@@ -68,7 +68,6 @@ fn send_multiple_destination_from_receiver(
 pub fn start_forwarder_threads(
     dst_sockets: Vec<SocketAddr>,
     src_port: u16,
-    shred_batch_listen_ms: u64,
     num_threads: Option<usize>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
@@ -111,7 +110,7 @@ pub fn start_forwarder_threads(
             packet_sender,
             recycler.clone(),
             Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
-            shred_batch_listen_ms,
+            0, // do not coalesce since batching consumes more cpu cycles and adds latency.
             true,
             None,
         );
