@@ -3,6 +3,8 @@ set -eu
 
 # get busybox here: https://busybox.net/downloads/binaries/
 
+echo "Rerun this script everytime shredstream-proxy is killed, as busybox nc will ignore subsequent connections"
+
 # kill any previous instances
 pkill busybox || true
 
