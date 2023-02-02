@@ -18,11 +18,11 @@ This exposes all ports, bypassing Docker NAT. Recommended setup.
 docker run -d \
 --name jito-shredstream-proxy \
 --rm \
--e RUST_LOG=info \
--e BLOCK_ENGINE_URL=https://nyc.testnet.block-engine.jito.wtf \
--e AUTH_KEYPAIR=my_keypair.json \
--e DESIRED_REGIONS=dallas,nyc \
--e DEST_SOCKETS=127.0.0.1:9900,127.0.0.1:9901 \
+--env RUST_LOG=info \
+--env BLOCK_ENGINE_URL=https://nyc.testnet.block-engine.jito.wtf \
+--env AUTH_KEYPAIR=my_keypair.json \
+--env DESIRED_REGIONS=dallas,nyc \
+--env DEST_SOCKETS=127.0.0.1:9900,127.0.0.1:9901 \
 --network host \
 -v $(pwd)/my_keypair.json:/app/my_keypair.json \
 jitolabs/jito-shredstream-proxy
@@ -36,12 +36,12 @@ This IP may differ for your system, confirm with `ip -brief a show dev docker0`.
 docker run -d \
 --name jito-shredstream-proxy \
 --rm \
--e RUST_LOG=info \
--e BLOCK_ENGINE_URL=https://nyc.testnet.block-engine.jito.wtf \
--e AUTH_KEYPAIR=my_keypair.json \
--e DESIRED_REGIONS=dallas,nyc \
--e SRC_BIND_PORT=10000 \
--e DEST_SOCKETS=172.17.0.1:9900,172.17.0.1:9901 \
+--env RUST_LOG=info \
+--env BLOCK_ENGINE_URL=https://nyc.testnet.block-engine.jito.wtf \
+--env AUTH_KEYPAIR=my_keypair.json \
+--env DESIRED_REGIONS=dallas,nyc \
+--env SRC_BIND_PORT=10000 \
+--env DEST_SOCKETS=172.17.0.1:9900,172.17.0.1:9901 \
 --network bridge \
 -p 10000:10000/udp \
 -v $(pwd)/my_keypair.json:/app/my_keypair.json \
