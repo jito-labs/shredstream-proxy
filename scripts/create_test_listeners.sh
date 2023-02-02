@@ -1,9 +1,10 @@
 #!/bin/bash
-
 set -eu
 
+# get busybox here: https://busybox.net/downloads/binaries/
+
 # kill any previous instances
-pkill busybox
+pkill busybox || true
 
 # start new listeners
 nohup ./busybox nc -v -u -l -p 9900 > 9900.out &

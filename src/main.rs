@@ -14,7 +14,7 @@ use env_logger::TimestampPrecision;
 use log::*;
 use solana_client::client_error::{reqwest, ClientError};
 use solana_metrics::set_host_id;
-use solana_sdk::signature::{read_keypair_file, Signer};
+use solana_sdk::signature::read_keypair_file;
 use solana_streamer::streamer::StreamerError;
 use thiserror::Error;
 use tokio::runtime::Runtime;
