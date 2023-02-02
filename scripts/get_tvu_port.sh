@@ -1,6 +1,31 @@
 #!/bin/bash
 set -eu
 
+# fetch and print port using solana tooling
+get_tvu_solana() {
+  LEDGER_DIR=${LEDGER_DIR:-"/solana/ledger"}
+  echo "Getting shred listen port using solana cli with \$LEDGER_DIR=$LEDGER_DIR"
+  solana-validator --ledger "$LEDGER_DIR" contact-info | grep "TVU Forwards" | cut -d ':' -f 3
+}
+
+# fetch port using curl
+get_tvu_curl() {
+  HOST=${HOST:-"http://localhost:8899"}
+  echo "Getting shred listen port from \$HOST=$HOST using curl"
+  IDENTITY_PUBKEY=$(curl --show-error --silent "$HOST" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1, "method":"getIdentity"}' | jq -r .result.identity)
+  GOSSIP_SOCKETADDR=$(curl --show-error --silent "$HOST" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0", "id":1, "method":"getClusterNodes"}' | jq -r ".result | map(select(.pubkey == \"$IDENTITY_PUBKEY\")) | .[0].gossip")
+  GOSSIP_PORT=$(echo "$GOSSIP_SOCKETADDR" | cut -d ':' -f 2)
+
+  # offset by 2: https://github.com/jito-foundation/jito-solana/blob/efc5f1af5442fbd6645b2debcacd555c7c4b955b/gossip/src/cluster_info.rs#L2942
+  echo $(("$GOSSIP_PORT" + 2))
+}
+
+# check solana cli exists
+if [[ -x "$(command -v solana)" ]]; then
+  get_tvu_solana
+  exit 0
+fi
+
 # check jq exists
 if [[ ! -x "$(command -v jq)" ]]; then
   echo "'jq' not found"
@@ -13,9 +38,4 @@ if [[ ! -x "$(command -v curl)" ]]; then
   exit 1
 fi
 
-HOST=${1:-"http://localhost:8899"}
-IDENTITY_PUBKEY=$(curl --show-error --silent "$HOST" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1, "method":"getIdentity"}' | jq -r .result.identity)
-TPU_PORT=$(curl --show-error --silent "$HOST" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0", "id":1, "method":"getClusterNodes"}' | jq -r ".result | map(select(.pubkey == \"$IDENTITY_PUBKEY\")) | .[0].tpu")
-
-echo Port to use with Shredstream:
-echo "$TPU_PORT"
+get_tvu_curl
