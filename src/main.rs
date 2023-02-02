@@ -54,6 +54,14 @@ struct Args {
     #[arg(long, env, value_delimiter = ',', required(true))]
     dest_sockets: Vec<SocketAddr>,
 
+    /// Solana cluster e.g. testnet, mainnet, devnet. Used for logging purposes.
+    #[arg(long, env)]
+    solana_cluster: Option<String>,
+
+    /// Cluster region. Used for logging purposes.
+    #[arg(long, env)]
+    region: Option<String>,
+
     /// Heartbeat stats sampling probability. Defaults to 1%.
     #[arg(long, env, default_value_t = 0.01)]
     heartbeat_stats_sampling_prob: f64,
@@ -107,7 +115,16 @@ fn main() -> Result<(), ShredstreamProxyError> {
             )
         }),
     );
-    set_host_id(auth_keypair.pubkey().to_string());
+
+    if args.region.is_some() && args.solana_cluster.is_some() {
+        // run as infra
+        set_host_id(format!(
+            "{}-{}-{}",
+            hostname::get().unwrap().into_string().unwrap(),
+            args.solana_cluster.unwrap(),
+            args.region.unwrap()
+        ));
+    }
 
     let exit = Arc::new(AtomicBool::new(false));
     let panic_hook = panic::take_hook();
