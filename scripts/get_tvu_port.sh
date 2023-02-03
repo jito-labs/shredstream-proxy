@@ -1,9 +1,10 @@
 #!/bin/bash
 set -eu
 
+LEDGER_DIR=${LEDGER_DIR:-"/solana/ledger"}
+
 # fetch and print port using solana tooling
 get_tvu_solana() {
-  LEDGER_DIR=${LEDGER_DIR:-"/solana/ledger"}
   echo "Getting shred listen port using solana cli with \$LEDGER_DIR=$LEDGER_DIR"
   solana-validator --ledger "$LEDGER_DIR" contact-info | grep "TVU Forwards" | cut -d ':' -f 3
 }
@@ -20,8 +21,8 @@ get_tvu_curl() {
   echo $(("$GOSSIP_PORT" + 2))
 }
 
-# check solana cli exists
-if [[ -x "$(command -v solana)" ]]; then
+# check solana cli and ledger directory exists
+if [[ -x "$(command -v solana)" && -d $LEDGER_DIR ]]; then
   get_tvu_solana
   exit 0
 fi
