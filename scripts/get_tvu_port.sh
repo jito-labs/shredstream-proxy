@@ -8,7 +8,7 @@ get_tvu_solana() {
   solana-validator --ledger "$LEDGER_DIR" contact-info | grep "TVU Forwards" | cut -d ':' -f 3
 }
 
-# fetch port using curl
+# fetch port using curl. not guaranteed to be accurate as we assume it uses the default port allocation order
 get_tvu_curl() {
   HOST=${HOST:-"http://localhost:8899"}
   echo "Getting shred listen port from \$HOST=$HOST using curl"
