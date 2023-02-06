@@ -50,9 +50,13 @@ struct Args {
     #[arg(long, env, default_value_t = 10_000)]
     src_bind_port: u16,
 
-    /// IP:Port where Shredstream proxy forwards shreds to. Requires at least one IP:Port, comma separated. Eg. `10.0.0.1:9000,10.0.0.2:9000`
-    #[arg(long, env, value_delimiter = ',', required(true))]
+    /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated. Eg. `10.0.0.1:9000,10.0.0.2:9000`.
+    #[arg(long, env, value_delimiter = ',')]
     dest_sockets: Vec<SocketAddr>,
+
+    /// Endpoint to dynamically get IP:Port combinations for Shredstream proxy to forward shreds. Endpoints are the set-union with `dest-sockets`.
+    #[arg(long, env)]
+    dest_sockets_query_url: Option<String>,
 
     /// Solana cluster e.g. testnet, mainnet, devnet. Used for logging purposes.
     #[arg(long, env)]
@@ -61,6 +65,10 @@ struct Args {
     /// Cluster region. Used for logging purposes.
     #[arg(long, env)]
     region: Option<String>,
+
+    /// Public IP address. Skips checking with `ifconfig.me`.
+    #[arg(long, env)]
+    public_ip: Option<IpAddr>,
 
     /// Heartbeat stats sampling probability. Defaults to 1%.
     #[arg(long, env, default_value_t = 0.01)]
@@ -116,16 +124,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         }),
     );
 
-    if args.region.is_some() && args.solana_cluster.is_some() {
-        // run as infra
-        set_host_id(format!(
-            "{}-{}-{}",
-            hostname::get().unwrap().into_string().unwrap(),
-            args.solana_cluster.unwrap(),
-            args.region.unwrap()
-        ));
-    }
-
+    set_host_id(hostname::get().unwrap().into_string().unwrap());
     let exit = Arc::new(AtomicBool::new(false));
     let panic_hook = panic::take_hook();
     let exit_signal = exit.clone();
@@ -140,7 +139,10 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.block_engine_url,
         &auth_keypair,
         args.desired_regions,
-        SocketAddr::new(get_public_ip(), args.src_bind_port),
+        SocketAddr::new(
+            args.public_ip.unwrap_or(get_public_ip()),
+            args.src_bind_port,
+        ),
         args.heartbeat_stats_sampling_prob,
         runtime,
         exit.clone(),
