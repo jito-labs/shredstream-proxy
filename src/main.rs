@@ -20,7 +20,7 @@ use thiserror::Error;
 use tokio::runtime::Runtime;
 use tonic::Status;
 
-use crate::token_authenticator::BlockEngineConnectionError;
+use crate::{heartbeat::LogContext, token_authenticator::BlockEngineConnectionError};
 
 mod forwarder;
 mod heartbeat;
@@ -54,9 +54,13 @@ struct Args {
     #[arg(long, env, value_delimiter = ',')]
     dest_sockets: Vec<SocketAddr>,
 
-    /// Endpoint to dynamically get IP:Port combinations for Shredstream proxy to forward shreds. Endpoints are the set-union with `dest-sockets`.
+    /// Endpoint to dynamically get IPs for Shredstream proxy to forward shreds. Endpoints are the set-union with `dest-sockets`.
     #[arg(long, env)]
-    dest_sockets_query_url: Option<String>,
+    dest_query_url: Option<String>,
+
+    /// Port to send shreds to for hosts fetched via `dest-query-url`. Port can be found using `scripts/get_tvu_port.sh`.
+    #[arg(long, env)]
+    queried_hosts_send_port: u16,
 
     /// Solana cluster e.g. testnet, mainnet, devnet. Used for logging purposes.
     #[arg(long, env)]
@@ -135,6 +139,15 @@ fn main() -> Result<(), ShredstreamProxyError> {
         error!("exiting process");
     }));
     let runtime = Runtime::new().unwrap();
+
+    let log_context = match args.solana_cluster.is_some() && args.region.is_some() {
+        true => Some(LogContext {
+            solana_cluster: args.solana_cluster.unwrap(),
+            region: args.region.unwrap(),
+        }),
+        false => None,
+    };
+
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
         args.block_engine_url,
         &auth_keypair,
@@ -143,6 +156,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
             args.public_ip.unwrap_or(get_public_ip()),
             args.src_bind_port,
         ),
+        log_context,
         args.heartbeat_stats_sampling_prob,
         runtime,
         exit.clone(),

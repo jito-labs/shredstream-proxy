@@ -25,11 +25,18 @@ use crate::{
     ShredstreamProxyError,
 };
 
+pub struct LogContext {
+    pub solana_cluster: String,
+    pub region: String,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn heartbeat_loop_thread(
     block_engine_url: String,
     auth_keypair: &Arc<Keypair>,
-    regions: Vec<String>,
+    desired_regions: Vec<String>,
     recv_socket: SocketAddr,
+    log_context: Option<LogContext>,
     heartbeat_stats_sampling_prob: f64,
     runtime: Runtime,
     exit: Arc<AtomicBool>,
@@ -56,11 +63,15 @@ pub fn heartbeat_loop_thread(
                     Err(e) => {
                         warn!("Failed to connect to block engine, retrying. Error: {e}");
                         client_restart_count += 1;
-                        datapoint_warn!("shredstream_proxy-heartbeat_client_error",
-                                        "block_engine_url" => block_engine_url,
-                                        ("errors", 1, i64),
-                                        ("error_str", e.to_string(), String),
-                        );
+                        if let Some(log_ctx) = &log_context {
+                            datapoint_warn!("shredstream_proxy-heartbeat_client_error",
+                                            "solana_cluster" => log_ctx.solana_cluster,
+                                            "region" => log_ctx.region,
+                                            "block_engine_url" => block_engine_url,
+                                            ("errors", 1, i64),
+                                            ("error_str", e.to_string(), String),
+                            )
+                        }
                         continue;
                     }
                 };
@@ -69,7 +80,7 @@ pub fn heartbeat_loop_thread(
                     let heartbeat_result = runtime.block_on(shredstream_client
                         .send_heartbeat(Heartbeat {
                             socket: Some(heartbeat_socket.clone()),
-                            regions: regions.clone(),
+                            regions: desired_regions.clone(),
                         }));
 
                     match heartbeat_result {
@@ -95,11 +106,15 @@ pub fn heartbeat_loop_thread(
                                 return;
                             };
                             warn!("Error sending heartbeat: {err}");
-                            datapoint_warn!("shredstream_proxy-heartbeat_send_error",
-                                            "block_engine_url" => block_engine_url,
-                                            ("errors", 1, i64),
-                                            ("error_str", err.to_string(), String),
-                            );
+                            if let Some(log_ctx) = &log_context {
+                                datapoint_warn!("shredstream_proxy-heartbeat_send_error",
+                                                "solana_cluster" => log_ctx.solana_cluster,
+                                                "region" => log_ctx.region,
+                                                "block_engine_url" => block_engine_url,
+                                                ("errors", 1, i64),
+                                                ("error_str", err.to_string(), String),
+                               );
+                            }
                             failed_heartbeat_count += 1;
 
                             // sleep for shorter time period to avoid TTL expiration in NATS
@@ -110,13 +125,17 @@ pub fn heartbeat_loop_thread(
                         }
                     }
 
-                    if rng.gen_bool(heartbeat_stats_sampling_prob) {
-                        datapoint_info!("shredstream_proxy-heartbeat_stats",
-                                        "block_engine_url" => block_engine_url,
-                                        ("successful_heartbeat_count", successful_heartbeat_count, i64),
-                                        ("failed_heartbeat_count", failed_heartbeat_count, i64),
-                                        ("client_restart_count", client_restart_count, i64),
-                        );
+                    if let Some(log_ctx) = &log_context {
+                        if rng.gen_bool(heartbeat_stats_sampling_prob) {
+                            datapoint_info!("shredstream_proxy-heartbeat_stats",
+                                            "solana_cluster" => log_ctx.solana_cluster,
+                                            "region" => log_ctx.region,
+                                            "block_engine_url" => block_engine_url,
+                                            ("successful_heartbeat_count", successful_heartbeat_count, i64),
+                                            ("failed_heartbeat_count", failed_heartbeat_count, i64),
+                                            ("client_restart_count", client_restart_count, i64),
+                            );
+                        }
                     }
 
                     let elapsed = start.elapsed();

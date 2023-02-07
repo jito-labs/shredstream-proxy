@@ -80,7 +80,7 @@ pub fn start_forwarder_threads(
         .map(|dst| {
             let sock =
                 UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).unwrap();
-            sock.connect(dst).unwrap();
+            // sock.connect(dst).unwrap();
             (sock, *dst)
         })
         .collect::<Vec<_>>();
