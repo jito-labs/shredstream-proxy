@@ -151,18 +151,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
     // share var between refresh and forwarder thread
     let shared_sockets = Arc::new(Mutex::new(args.dest_sockets.clone()));
 
-    //spawn bg thread
-    if let Some(endpoint_discovery_url) = args.endpoint_discovery_url {
-        forwarder::start_destination_refresh_thread(
-            endpoint_discovery_url,
-            args.discovered_endpoints_port,
-            args.dest_sockets,
-            shared_sockets.clone(),
-            log_context.clone(),
-            exit.clone(),
-        );
-    }
-
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
         args.block_engine_url,
         &auth_keypair,
@@ -171,19 +159,32 @@ fn main() -> Result<(), ShredstreamProxyError> {
             args.public_ip.unwrap_or_else(get_public_ip),
             args.src_bind_port,
         ),
-        log_context,
+        log_context.clone(),
         args.heartbeat_stats_sampling_prob,
         runtime,
         exit.clone(),
     );
-    let forward_hdls = forwarder::start_forwarder_threads(
-        shared_sockets,
+    let mut thread_handles = forwarder::start_forwarder_threads(
+        shared_sockets.clone(),
         args.src_bind_port,
         args.num_threads,
-        exit,
+        exit.clone(),
     );
 
-    for thread in [heartbeat_hdl].into_iter().chain(forward_hdls.into_iter()) {
+    thread_handles.push(heartbeat_hdl);
+    if let Some(endpoint_discovery_url) = args.endpoint_discovery_url {
+        let refresh_handle = forwarder::start_destination_refresh_thread(
+            endpoint_discovery_url,
+            args.discovered_endpoints_port,
+            args.dest_sockets,
+            shared_sockets,
+            log_context,
+            exit,
+        );
+        thread_handles.push(refresh_handle);
+    }
+
+    for thread in thread_handles {
         thread.join().expect("thread panicked");
     }
     Ok(())

@@ -75,7 +75,7 @@ pub fn start_destination_refresh_thread(
     shared_sockets: Arc<Mutex<Vec<SocketAddr>>>,
     log_context: Option<LogContext>,
     exit: Arc<AtomicBool>,
-) {
+) -> JoinHandle<()> {
     let sockets = shared_sockets.clone();
     let heartbeat_interval = Duration::from_secs(30);
     Builder::new()
@@ -100,6 +100,7 @@ pub fn start_destination_refresh_thread(
                                             ("error_str", e.to_string(), String),
                             );
                         }
+                        sleep(heartbeat_interval);
                         continue;
                     }
                 };
@@ -114,7 +115,7 @@ pub fn start_destination_refresh_thread(
                 }
             }
         })
-        .unwrap();
+        .unwrap()
 }
 
 fn fetch_discovered_socketaddrs(
