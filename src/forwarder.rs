@@ -83,13 +83,16 @@ pub fn start_destination_refresh_thread(
         .spawn(move || {
             while !exit.load(Ordering::Relaxed) {
                 let start = Instant::now();
-                let socketaddrs = fetch_discovered_socketaddrs(
+                let fetched_sockets = fetch_discovered_socketaddrs(
                     &endpoint_discovery_url,
                     discovered_endpoints_port,
                     dest_sockets.clone(),
                 );
-                let new_sockets = match socketaddrs {
-                    Ok(s) => s,
+                let new_sockets = match fetched_sockets {
+                    Ok(s) => {
+                        info!("Received {} destinations: {s:?}", s.len());
+                        s
+                    }
                     Err(e) => {
                         warn!("Failed to connect to discovery service, retrying. Error: {e}");
                         if let Some(log_ctx) = &log_context {
