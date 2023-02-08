@@ -25,6 +25,7 @@ use crate::{
     ShredstreamProxyError,
 };
 
+#[derive(Debug, Clone)]
 pub struct LogContext {
     pub solana_cluster: String,
     pub region: String,

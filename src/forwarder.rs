@@ -1,24 +1,27 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    ops::Sub,
     panic,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    thread::{Builder, JoinHandle},
+    thread::{sleep, Builder, JoinHandle},
     time::Duration,
 };
 
 use crossbeam_channel::RecvTimeoutError;
-use log::{error, info};
+use log::{error, info, warn};
+use solana_metrics::datapoint_warn;
 use solana_perf::{packet::PacketBatchRecycler, recycler::Recycler};
 use solana_streamer::{
     sendmmsg::{batch_send, SendPktsError},
     streamer,
     streamer::{PacketBatchReceiver, StreamerError, StreamerReceiveStats},
 };
+use tokio::time::Instant;
 
-use crate::ShredstreamProxyError;
+use crate::{heartbeat::LogContext, ShredstreamProxyError};
 
 /// broadcasts same packet to multiple recipients
 /// for best performance, connect sockets to their destinations
@@ -64,9 +67,73 @@ fn send_multiple_destination_from_receiver(
     Ok(())
 }
 
+// starts a thread that updates our destinations used by the forwarder threads
+pub fn start_destination_refresh_thread(
+    endpoint_discovery_url: String,
+    discovered_endpoints_port: u16,
+    dest_sockets: Vec<SocketAddr>,
+    shared_sockets: Arc<Mutex<Vec<SocketAddr>>>,
+    log_context: Option<LogContext>,
+    exit: Arc<AtomicBool>,
+) {
+    let sockets = shared_sockets.clone();
+    let heartbeat_interval = Duration::from_secs(30);
+    Builder::new()
+        .name("shredstream_proxy-destination_refresh_thread".to_string())
+        .spawn(move || {
+            while !exit.load(Ordering::Relaxed) {
+                let start = Instant::now();
+                let socketaddrs = fetch_discovered_socketaddrs(
+                    &endpoint_discovery_url,
+                    discovered_endpoints_port,
+                    dest_sockets.clone(),
+                );
+                let new_sockets = match socketaddrs {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("Failed to connect to discovery service, retrying. Error: {e}");
+                        if let Some(log_ctx) = &log_context {
+                            datapoint_warn!("shredstream_proxy-destination_refresh_error",
+                                            "solana_cluster" => log_ctx.solana_cluster,
+                                            "region" => log_ctx.region,
+                                            ("errors", 1, i64),
+                                            ("error_str", e.to_string(), String),
+                            );
+                        }
+                        continue;
+                    }
+                };
+                let mut sockets = sockets.lock().unwrap();
+                sockets.clear();
+                sockets.extend(new_sockets);
+                drop(sockets);
+
+                let elapsed = start.elapsed();
+                if elapsed.lt(&heartbeat_interval) {
+                    sleep(heartbeat_interval.sub(elapsed));
+                }
+            }
+        })
+        .unwrap();
+}
+
+fn fetch_discovered_socketaddrs(
+    endpoint_discovery_url: &str,
+    discovered_endpoints_port: u16,
+    dest_sockets: Vec<SocketAddr>,
+) -> reqwest::Result<Vec<SocketAddr>> {
+    let sockets = reqwest::blocking::get(endpoint_discovery_url)?
+        .json::<Vec<IpAddr>>()?
+        .iter()
+        .map(|ip| SocketAddr::new(*ip, discovered_endpoints_port))
+        .chain(dest_sockets.into_iter())
+        .collect::<Vec<SocketAddr>>();
+    Ok(sockets)
+}
+
 /// Bind to ports and start forwarding shreds
 pub fn start_forwarder_threads(
-    dst_sockets: Vec<SocketAddr>,
+    dst_sockets: Arc<Mutex<Vec<SocketAddr>>>,
     src_port: u16,
     num_threads: Option<usize>,
     exit: Arc<AtomicBool>,
@@ -76,6 +143,8 @@ pub fn start_forwarder_threads(
 
     // all forwarder threads share these sockets
     let outgoing_sockets = dst_sockets
+        .lock()
+        .unwrap()
         .iter()
         .map(|dst| {
             let sock =

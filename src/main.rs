@@ -5,7 +5,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -54,13 +54,13 @@ struct Args {
     #[arg(long, env, value_delimiter = ',')]
     dest_sockets: Vec<SocketAddr>,
 
-    /// Endpoint to dynamically get IPs for Shredstream proxy to forward shreds. Endpoints are the set-union with `dest-sockets`.
+    /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds. Endpoints are then set-union with `dest-sockets`.
     #[arg(long, env)]
-    dest_query_url: Option<String>,
+    endpoint_discovery_url: Option<String>,
 
-    /// Port to send shreds to for hosts fetched via `dest-query-url`. Port can be found using `scripts/get_tvu_port.sh`.
+    /// Port to send shreds to for hosts fetched via `endpoint-discovery-url`. Port can be found using `scripts/get_tvu_port.sh`.
     #[arg(long, env)]
-    queried_hosts_send_port: u16,
+    discovered_endpoints_port: u16,
 
     /// Solana cluster e.g. testnet, mainnet, devnet. Used for logging purposes.
     #[arg(long, env)]
@@ -148,12 +148,27 @@ fn main() -> Result<(), ShredstreamProxyError> {
         false => None,
     };
 
+    // share var between refresh and forwarder thread
+    let shared_sockets = Arc::new(Mutex::new(args.dest_sockets.clone()));
+
+    //spawn bg thread
+    if let Some(endpoint_discovery_url) = args.endpoint_discovery_url {
+        forwarder::start_destination_refresh_thread(
+            endpoint_discovery_url,
+            args.discovered_endpoints_port,
+            args.dest_sockets,
+            shared_sockets.clone(),
+            log_context.clone(),
+            exit.clone(),
+        );
+    }
+
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
         args.block_engine_url,
         &auth_keypair,
         args.desired_regions,
         SocketAddr::new(
-            args.public_ip.unwrap_or(get_public_ip()),
+            args.public_ip.unwrap_or_else(get_public_ip),
             args.src_bind_port,
         ),
         log_context,
@@ -162,7 +177,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         exit.clone(),
     );
     let forward_hdls = forwarder::start_forwarder_threads(
-        args.dest_sockets,
+        shared_sockets,
         args.src_bind_port,
         args.num_threads,
         exit,
