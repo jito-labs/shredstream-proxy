@@ -76,7 +76,6 @@ pub fn start_destination_refresh_thread(
     log_context: Option<LogContext>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    let sockets = shared_sockets.clone();
     let heartbeat_interval = Duration::from_secs(30);
     Builder::new()
         .name("shredstream_proxy-destination_refresh_thread".to_string())
@@ -107,7 +106,7 @@ pub fn start_destination_refresh_thread(
                         continue;
                     }
                 };
-                let mut sockets = sockets.lock().unwrap();
+                let mut sockets = shared_sockets.lock().unwrap();
                 sockets.clear();
                 sockets.extend(new_sockets);
                 drop(sockets);
