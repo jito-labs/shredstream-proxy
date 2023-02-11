@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use clap::Parser;
+use clap::{arg, Parser};
 use env_logger::TimestampPrecision;
 use log::*;
 use solana_client::client_error::{reqwest, ClientError};
@@ -60,7 +60,7 @@ struct Args {
 
     /// Port to send shreds to for hosts fetched via `endpoint-discovery-url`. Port can be found using `scripts/get_tvu_port.sh`.
     #[arg(long, env)]
-    discovered_endpoints_port: u16,
+    discovered_endpoints_port: Option<u16>,
 
     /// Solana cluster e.g. testnet, mainnet, devnet. Used for logging purposes.
     #[arg(long, env)]
@@ -172,16 +172,23 @@ fn main() -> Result<(), ShredstreamProxyError> {
     );
 
     thread_handles.push(heartbeat_hdl);
-    if let Some(endpoint_discovery_url) = args.endpoint_discovery_url {
+    if args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some() {
         let refresh_handle = forwarder::start_destination_refresh_thread(
-            endpoint_discovery_url,
-            args.discovered_endpoints_port,
+            args.endpoint_discovery_url.unwrap(),
+            args.discovered_endpoints_port.unwrap(),
             args.dest_sockets,
             shared_sockets,
             log_context,
             exit,
         );
         thread_handles.push(refresh_handle);
+    } else if args.endpoint_discovery_url.is_none()
+        && args.discovered_endpoints_port.is_none()
+        && args.dest_sockets.is_empty()
+    {
+        panic!("No destinations found. Add `dest-sockets` or `endpoint-discovery-url`")
+    } else {
+        panic!("Invalid params, shredstream proxy requires both `endpoint-discovery-url` and `discovered-endpoints-port`.")
     }
 
     for thread in thread_handles {
