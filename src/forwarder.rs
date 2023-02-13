@@ -80,37 +80,34 @@ pub fn start_destination_refresh_thread(
         .spawn(move || {
             let socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
             while !exit.load(Ordering::Relaxed) {
-                crossbeam_channel::select! {
-                    recv(socket_tick) -> _ => {
-                        let fetched_sockets = fetch_discovered_socketaddrs(
-                            &endpoint_discovery_url,
-                            discovered_endpoints_port,
-                            dest_sockets.clone(),
-                        );
-                        let new_sockets = match fetched_sockets {
-                            Ok(s) => {
-                                info!("Received {} destinations: {s:?}", s.len());
-                                s
-                            }
-                            Err(e) => {
-                                warn!("Failed to connect to discovery service, retrying. Error: {e}");
-                                if let Some(log_ctx) = &log_context {
-                                    datapoint_warn!("shredstream_proxy-destination_refresh_error",
-                                                    "solana_cluster" => log_ctx.solana_cluster,
-                                                    "region" => log_ctx.region,
-                                                    ("errors", 1, i64),
-                                                    ("error_str", e.to_string(), String),
-                                    );
-                                }
-                                continue;
-                            }
-                        };
-                        let mut sockets = shared_sockets.lock().unwrap();
-                        sockets.clear();
-                        sockets.extend(new_sockets);
-                        drop(sockets);
+                socket_tick.recv().unwrap();
+                let fetched_sockets = fetch_discovered_socketaddrs(
+                    &endpoint_discovery_url,
+                    discovered_endpoints_port,
+                    dest_sockets.clone(),
+                );
+                let new_sockets = match fetched_sockets {
+                    Ok(s) => {
+                        info!("Received {} destinations: {s:?}", s.len());
+                        s
                     }
-                }
+                    Err(e) => {
+                        warn!("Failed to connect to discovery service, retrying. Error: {e}");
+                        if let Some(log_ctx) = &log_context {
+                            datapoint_warn!("shredstream_proxy-destination_refresh_error",
+                                            "solana_cluster" => log_ctx.solana_cluster,
+                                            "region" => log_ctx.region,
+                                            ("errors", 1, i64),
+                                            ("error_str", e.to_string(), String),
+                            );
+                        }
+                        continue;
+                    }
+                };
+                let mut sockets = shared_sockets.lock().unwrap();
+                sockets.clear();
+                sockets.extend(new_sockets);
+                drop(sockets);
             }
         })
         .unwrap()
