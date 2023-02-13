@@ -22,14 +22,14 @@ docker run -d \
 --env BLOCK_ENGINE_URL=https://nyc.testnet.block-engine.jito.wtf \
 --env AUTH_KEYPAIR=my_keypair.json \
 --env DESIRED_REGIONS=dallas,nyc \
---env DEST_SOCKETS=127.0.0.1:9900,127.0.0.1:9901 \
+--env DEST_IP_PORTS=127.0.0.1:9900,127.0.0.1:9901 \
 --network host \
 -v $(pwd)/my_keypair.json:/app/my_keypair.json \
 jitolabs/jito-shredstream-proxy
 ```
 
 #### Bridge Networking
-Requires manually exposing each destination.
+For use in places where `host` networking is not available. Requires manually exposing each destination.
 Use `172.17.0.1` for any shred listeners on localhost, and normal ip for all other endpoints.
 This IP may differ for your system, confirm with `ip -brief a show dev docker0`.
 ```shell
@@ -41,7 +41,7 @@ docker run -d \
 --env AUTH_KEYPAIR=my_keypair.json \
 --env DESIRED_REGIONS=dallas,nyc \
 --env SRC_BIND_PORT=10000 \
---env DEST_SOCKETS=172.17.0.1:9900,172.17.0.1:9901 \
+--env DEST_IP_PORTS=172.17.0.1:9900,172.17.0.1:9901 \
 --network bridge \
 -p 10000:10000/udp \
 -v $(pwd)/my_keypair.json:/app/my_keypair.json \
@@ -57,7 +57,7 @@ RUST_LOG=info cargo run --bin jito-shredstream-proxy -- \
     --block-engine-url https://nyc.testnet.block-engine.jito.wtf \
     --auth-keypair my_keypair.json \
     --desired-regions dallas,nyc \
-    --dest-sockets 127.0.0.1:9900,127.0.0.1:9901
+    --dest-ip-ports 127.0.0.1:9900,127.0.0.1:9901
 ```
 
 ## Connecting

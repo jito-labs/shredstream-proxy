@@ -52,7 +52,7 @@ struct Args {
 
     /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated. Eg. `10.0.0.1:9000,10.0.0.2:9000`.
     #[arg(long, env, value_delimiter = ',')]
-    dest_sockets: Vec<SocketAddr>,
+    dest_ip_ports: Vec<SocketAddr>,
 
     /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds. Endpoints are then set-union with `dest-sockets`.
     #[arg(long, env)]
@@ -122,7 +122,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let auth_keypair = Arc::new(
         read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
             panic!(
-                "Unable parse keypair file. Ensure that {:?} is readable. Error: {e}",
+                "Unable parse keypair file. Ensure that file {:?} is readable. Error: {e}",
                 args.auth_keypair
             )
         }),
@@ -149,7 +149,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
     };
 
     // share var between refresh and forwarder thread
-    let shared_sockets = Arc::new(Mutex::new(args.dest_sockets.clone()));
+    let shared_sockets = Arc::new(Mutex::new(args.dest_ip_ports.clone()));
 
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
         args.block_engine_url,
@@ -172,23 +172,28 @@ fn main() -> Result<(), ShredstreamProxyError> {
     );
 
     thread_handles.push(heartbeat_hdl);
+
+    if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
+        || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
+    {
+        panic!("Invalid arguments provided, shredstream proxy requires both --endpoint-discovery-url and --discovered-endpoints-port.")
+    }
+    if args.endpoint_discovery_url.is_none()
+        && args.discovered_endpoints_port.is_none()
+        && args.dest_ip_ports.is_empty()
+    {
+        panic!("No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")
+    }
     if args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some() {
         let refresh_handle = forwarder::start_destination_refresh_thread(
             args.endpoint_discovery_url.unwrap(),
             args.discovered_endpoints_port.unwrap(),
-            args.dest_sockets,
+            args.dest_ip_ports,
             shared_sockets,
             log_context,
             exit,
         );
         thread_handles.push(refresh_handle);
-    } else if args.endpoint_discovery_url.is_none()
-        && args.discovered_endpoints_port.is_none()
-        && args.dest_sockets.is_empty()
-    {
-        panic!("No destinations found. Add `dest-sockets` or `endpoint-discovery-url`")
-    } else {
-        panic!("Invalid params, shredstream proxy requires both `endpoint-discovery-url` and `discovered-endpoints-port`.")
     }
 
     for thread in thread_handles {
