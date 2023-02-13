@@ -1880,6 +1880,7 @@ dependencies = [
  "env_logger 0.10.0",
  "histogram 0.7.0",
  "hostname",
+ "itertools",
  "jito-protos",
  "log",
  "prost-types",

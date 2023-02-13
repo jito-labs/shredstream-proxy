@@ -11,6 +11,7 @@ use std::{
 };
 
 use crossbeam_channel::RecvTimeoutError;
+use itertools::Itertools;
 use log::{error, info, warn};
 use solana_metrics::datapoint_warn;
 use solana_perf::{packet::PacketBatchRecycler, recycler::Recycler};
@@ -120,6 +121,7 @@ pub fn start_destination_refresh_thread(
         .unwrap()
 }
 
+// combines dynamically discovered endpoints with CLI arg defined endpoints
 fn fetch_discovered_socketaddrs(
     endpoint_discovery_url: &str,
     discovered_endpoints_port: u16,
@@ -127,9 +129,10 @@ fn fetch_discovered_socketaddrs(
 ) -> reqwest::Result<Vec<SocketAddr>> {
     let sockets = reqwest::blocking::get(endpoint_discovery_url)?
         .json::<Vec<IpAddr>>()?
-        .iter()
-        .map(|ip| SocketAddr::new(*ip, discovered_endpoints_port))
+        .into_iter()
+        .map(|ip| SocketAddr::new(ip, discovered_endpoints_port))
         .chain(dest_sockets.into_iter())
+        .unique()
         .collect::<Vec<SocketAddr>>();
     Ok(sockets)
 }
