@@ -3,14 +3,16 @@ use std::{
     panic,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread::{Builder, JoinHandle},
     time::Duration,
 };
 
 use crossbeam_channel::RecvTimeoutError;
-use log::{error, info};
+use itertools::Itertools;
+use log::{error, info, warn};
+use solana_metrics::datapoint_warn;
 use solana_perf::{packet::PacketBatchRecycler, recycler::Recycler};
 use solana_streamer::{
     sendmmsg::{batch_send, SendPktsError},
@@ -18,7 +20,7 @@ use solana_streamer::{
     streamer::{PacketBatchReceiver, StreamerError, StreamerReceiveStats},
 };
 
-use crate::ShredstreamProxyError;
+use crate::{heartbeat::LogContext, ShredstreamProxyError};
 
 /// broadcasts same packet to multiple recipients
 /// for best performance, connect sockets to their destinations
@@ -29,7 +31,7 @@ fn send_multiple_destination_from_receiver(
     successful_shred_count: &Arc<AtomicU64>,
     failed_shred_count: &Arc<AtomicU64>,
 ) -> Result<(), ShredstreamProxyError> {
-    let packet_batch = match receiver.recv_timeout(Duration::from_millis(400)) {
+    let packet_batch = match receiver.recv_timeout(Duration::from_secs(1)) {
         Ok(x) => Ok(x),
         Err(RecvTimeoutError::Timeout) => return Ok(()),
         Err(e) => Err(ShredstreamProxyError::StreamerError(StreamerError::from(e))),
@@ -64,9 +66,72 @@ fn send_multiple_destination_from_receiver(
     Ok(())
 }
 
+// starts a thread that updates our destinations used by the forwarder threads
+pub fn start_destination_refresh_thread(
+    endpoint_discovery_url: String,
+    discovered_endpoints_port: u16,
+    dest_sockets: Vec<SocketAddr>,
+    shared_sockets: Arc<Mutex<Vec<SocketAddr>>>,
+    log_context: Option<LogContext>,
+    exit: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    Builder::new()
+        .name("shredstream_proxy-destination_refresh_thread".to_string())
+        .spawn(move || {
+            let socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
+            while !exit.load(Ordering::Relaxed) {
+                socket_tick.recv().unwrap();
+                let fetched_sockets = fetch_discovered_socketaddrs(
+                    &endpoint_discovery_url,
+                    discovered_endpoints_port,
+                    dest_sockets.clone(),
+                );
+                let new_sockets = match fetched_sockets {
+                    Ok(s) => {
+                        info!("Received {} destinations: {s:?}", s.len());
+                        s
+                    }
+                    Err(e) => {
+                        warn!("Failed to connect to discovery service, retrying. Error: {e}");
+                        if let Some(log_ctx) = &log_context {
+                            datapoint_warn!("shredstream_proxy-destination_refresh_error",
+                                            "solana_cluster" => log_ctx.solana_cluster,
+                                            "region" => log_ctx.region,
+                                            ("errors", 1, i64),
+                                            ("error_str", e.to_string(), String),
+                            );
+                        }
+                        continue;
+                    }
+                };
+                let mut sockets = shared_sockets.lock().unwrap();
+                sockets.clear();
+                sockets.extend(new_sockets);
+                drop(sockets);
+            }
+        })
+        .unwrap()
+}
+
+// combines dynamically discovered endpoints with CLI arg defined endpoints
+fn fetch_discovered_socketaddrs(
+    endpoint_discovery_url: &str,
+    discovered_endpoints_port: u16,
+    dest_sockets: Vec<SocketAddr>,
+) -> reqwest::Result<Vec<SocketAddr>> {
+    let sockets = reqwest::blocking::get(endpoint_discovery_url)?
+        .json::<Vec<IpAddr>>()?
+        .into_iter()
+        .map(|ip| SocketAddr::new(ip, discovered_endpoints_port))
+        .chain(dest_sockets.into_iter())
+        .unique()
+        .collect::<Vec<SocketAddr>>();
+    Ok(sockets)
+}
+
 /// Bind to ports and start forwarding shreds
 pub fn start_forwarder_threads(
-    dst_sockets: Vec<SocketAddr>,
+    dst_sockets: Arc<Mutex<Vec<SocketAddr>>>,
     src_port: u16,
     num_threads: Option<usize>,
     exit: Arc<AtomicBool>,
@@ -76,11 +141,12 @@ pub fn start_forwarder_threads(
 
     // all forwarder threads share these sockets
     let outgoing_sockets = dst_sockets
+        .lock()
+        .unwrap()
         .iter()
         .map(|dst| {
             let sock =
                 UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).unwrap();
-            sock.connect(dst).unwrap();
             (sock, *dst)
         })
         .collect::<Vec<_>>();
@@ -109,8 +175,8 @@ pub fn start_forwarder_threads(
             exit.clone(),
             packet_sender,
             recycler.clone(),
-            Arc::new(StreamerReceiveStats::new("shredstream-proxy-listen-thread")),
-            1,
+            Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
+            0, // do not coalesce since batching consumes more cpu cycles and adds latency.
             true,
             None,
         );
@@ -119,7 +185,7 @@ pub fn start_forwarder_threads(
         let successful_shred_count = successful_shred_count.clone();
         let failed_shred_count = failed_shred_count.clone();
         let send_thread = Builder::new()
-            .name(format!("shredstream-proxy-send-thread-{thread_id}"))
+            .name(format!("shredstream_proxy-send_thread_{thread_id}"))
             .spawn(move || {
                 while !exit.load(Ordering::Relaxed) {
                     send_multiple_destination_from_receiver(
@@ -132,7 +198,7 @@ pub fn start_forwarder_threads(
                 }
 
                 info!(
-                    "Exiting forward thread {thread_id}, sent {} successful, {} failed shreds",
+                    "Exiting send thread {thread_id}, sent {} successful, {} failed shreds",
                     successful_shred_count.load(Ordering::SeqCst),
                     failed_shred_count.load(Ordering::SeqCst)
                 );

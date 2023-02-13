@@ -137,7 +137,7 @@ impl ClientInterceptor {
                             }
                         };
                         datapoint_info!(
-                            "shredstream-subscriber-full-auth",
+                            "shredstream_proxy-full_auth",
                             ("is_error", is_error, bool)
                         );
                     }
@@ -160,7 +160,7 @@ impl ClientInterceptor {
                         };
 
                         datapoint_info!(
-                            "shredstream-subscriber-refresh-auth",
+                            "shredstream_proxy-refresh_auth",
                             ("is_error", is_error, bool)
                         );
                     }
