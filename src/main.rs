@@ -74,8 +74,8 @@ struct Args {
     #[arg(long, env)]
     public_ip: Option<IpAddr>,
 
-    /// Heartbeat stats sampling probability. Defaults to 1%.
-    #[arg(long, env, default_value_t = 0.01)]
+    /// Heartbeat stats sampling probability. Defaults to 100%.
+    #[arg(long, env, default_value_t = 1.0)]
     heartbeat_stats_sampling_prob: f64,
 
     /// Number of threads to use. Defaults to use all cores.

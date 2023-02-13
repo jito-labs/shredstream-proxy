@@ -1,12 +1,11 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
-    ops::Sub,
     panic,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    thread::{sleep, Builder, JoinHandle},
+    thread::{Builder, JoinHandle},
     time::Duration,
 };
 
@@ -20,7 +19,6 @@ use solana_streamer::{
     streamer,
     streamer::{PacketBatchReceiver, StreamerError, StreamerReceiveStats},
 };
-use tokio::time::Instant;
 
 use crate::{heartbeat::LogContext, ShredstreamProxyError};
 
@@ -77,44 +75,41 @@ pub fn start_destination_refresh_thread(
     log_context: Option<LogContext>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    let heartbeat_interval = Duration::from_secs(30);
     Builder::new()
         .name("shredstream_proxy-destination_refresh_thread".to_string())
         .spawn(move || {
+            let socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
             while !exit.load(Ordering::Relaxed) {
-                let start = Instant::now();
-                let fetched_sockets = fetch_discovered_socketaddrs(
-                    &endpoint_discovery_url,
-                    discovered_endpoints_port,
-                    dest_sockets.clone(),
-                );
-                let new_sockets = match fetched_sockets {
-                    Ok(s) => {
-                        info!("Received {} destinations: {s:?}", s.len());
-                        s
+                crossbeam_channel::select! {
+                    recv(socket_tick) -> _ => {
+                        let fetched_sockets = fetch_discovered_socketaddrs(
+                            &endpoint_discovery_url,
+                            discovered_endpoints_port,
+                            dest_sockets.clone(),
+                        );
+                        let new_sockets = match fetched_sockets {
+                            Ok(s) => {
+                                info!("Received {} destinations: {s:?}", s.len());
+                                s
+                            }
+                            Err(e) => {
+                                warn!("Failed to connect to discovery service, retrying. Error: {e}");
+                                if let Some(log_ctx) = &log_context {
+                                    datapoint_warn!("shredstream_proxy-destination_refresh_error",
+                                                    "solana_cluster" => log_ctx.solana_cluster,
+                                                    "region" => log_ctx.region,
+                                                    ("errors", 1, i64),
+                                                    ("error_str", e.to_string(), String),
+                                    );
+                                }
+                                continue;
+                            }
+                        };
+                        let mut sockets = shared_sockets.lock().unwrap();
+                        sockets.clear();
+                        sockets.extend(new_sockets);
+                        drop(sockets);
                     }
-                    Err(e) => {
-                        warn!("Failed to connect to discovery service, retrying. Error: {e}");
-                        if let Some(log_ctx) = &log_context {
-                            datapoint_warn!("shredstream_proxy-destination_refresh_error",
-                                            "solana_cluster" => log_ctx.solana_cluster,
-                                            "region" => log_ctx.region,
-                                            ("errors", 1, i64),
-                                            ("error_str", e.to_string(), String),
-                            );
-                        }
-                        sleep(heartbeat_interval);
-                        continue;
-                    }
-                };
-                let mut sockets = shared_sockets.lock().unwrap();
-                sockets.clear();
-                sockets.extend(new_sockets);
-                drop(sockets);
-
-                let elapsed = start.elapsed();
-                if elapsed.lt(&heartbeat_interval) {
-                    sleep(heartbeat_interval.sub(elapsed));
                 }
             }
         })
@@ -155,7 +150,6 @@ pub fn start_forwarder_threads(
         .map(|dst| {
             let sock =
                 UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).unwrap();
-            // sock.connect(dst).unwrap();
             (sock, *dst)
         })
         .collect::<Vec<_>>();
