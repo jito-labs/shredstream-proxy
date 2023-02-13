@@ -6,7 +6,7 @@ Connects to Jito infrastructure, providing a fast path to shreds.
 1. Submit your auth pubkey to be allowed
 2. Ensure your firewall is open. Default listen port for shreds is 10000/udp. NAT connections currently not supported.
 3. Run via docker or natively
-    - These examples: receive shreds from `dallas` and `nyc`, only directly connecting to `dallas` region
+    - These examples: receive shreds from `dallas` and `nyc`, only directly connecting to `nyc` region
 
 ### Docker
 
