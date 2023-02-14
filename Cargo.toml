@@ -19,6 +19,7 @@ log = "0.4.14"
 prost-types = "0.11.6"
 rand = "0.8"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde_json = "1"
 solana-client = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
 solana-metrics = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
 solana-perf = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }

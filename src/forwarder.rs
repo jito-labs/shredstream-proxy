@@ -92,7 +92,7 @@ pub fn start_destination_refresh_thread(
                         s
                     }
                     Err(e) => {
-                        warn!("Failed to connect to discovery service, retrying. Error: {e}");
+                        warn!("Failed to fetch from discovery service, retrying. Error: {e}");
                         if let Some(log_ctx) = &log_context {
                             datapoint_warn!("shredstream_proxy-destination_refresh_error",
                                             "solana_cluster" => log_ctx.solana_cluster,
@@ -118,15 +118,27 @@ fn fetch_discovered_socketaddrs(
     endpoint_discovery_url: &str,
     discovered_endpoints_port: u16,
     dest_sockets: Vec<SocketAddr>,
-) -> reqwest::Result<Vec<SocketAddr>> {
-    let sockets = reqwest::blocking::get(endpoint_discovery_url)?
-        .json::<Vec<IpAddr>>()?
+) -> Result<Vec<SocketAddr>, ShredstreamProxyError> {
+    let bytes = reqwest::blocking::get(endpoint_discovery_url)?.bytes()?;
+
+    let sockets_json = match serde_json::from_slice::<Vec<IpAddr>>(&bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(
+                "Failed to parse json from: {:?}",
+                std::str::from_utf8(&bytes)
+            );
+            return Err(ShredstreamProxyError::from(e));
+        }
+    };
+
+    let all_discovered_sockets = sockets_json
         .into_iter()
         .map(|ip| SocketAddr::new(ip, discovered_endpoints_port))
         .chain(dest_sockets.into_iter())
         .unique()
         .collect::<Vec<SocketAddr>>();
-    Ok(sockets)
+    Ok(all_discovered_sockets)
 }
 
 /// Bind to ports and start forwarding shreds

@@ -1886,6 +1886,7 @@ dependencies = [
  "prost-types",
  "rand 0.8.5",
  "reqwest",
+ "serde_json",
  "solana-client",
  "solana-metrics",
  "solana-net-utils",
