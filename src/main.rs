@@ -70,7 +70,8 @@ struct Args {
     #[arg(long, env)]
     region: Option<String>,
 
-    /// Public IP address. Skips checking with `ifconfig.me`.
+    /// Public IP address to use.
+    /// Overrides value fetched from `ifconfig.me`.
     #[arg(long, env)]
     public_ip: Option<IpAddr>,
 
@@ -89,6 +90,10 @@ pub enum ShredstreamProxyError {
     TonicError(#[from] tonic::transport::Error),
     #[error("GrpcError {0}")]
     GrpcError(#[from] Status),
+    #[error("ReqwestError {0}")]
+    ReqwestError(#[from] reqwest::Error),
+    #[error("SerdeJsonError {0}")]
+    SerdeJsonError(#[from] serde_json::Error),
     #[error("RpcError {0}")]
     RpcError(#[from] ClientError),
     #[error("BlockEngineConnectionError {0}")]
