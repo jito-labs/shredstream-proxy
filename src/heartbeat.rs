@@ -49,7 +49,7 @@ pub fn heartbeat_loop_thread(
             let mut client_restart_count = 0u64;
             let mut successful_heartbeat_count = 0u64;
             let mut failed_heartbeat_count = 0u64;
-            let (mut heartbeat_interval, mut failed_heartbeat_interval) = (Duration::from_millis(100), Duration::from_millis(100)); //start with 100ms, change based on server suggestion
+            let (mut heartbeat_interval, mut failed_heartbeat_interval) = (Duration::from_millis(500), Duration::from_millis(500)); //start with 500ms, change based on server suggestion
             let heartbeat_socket = jito_protos::shared::Socket {
                 ip: recv_socket.ip().to_string(),
                 port: recv_socket.port() as i64,
@@ -73,6 +73,8 @@ pub fn heartbeat_loop_thread(
                                             ("error_str", e.to_string(), String),
                             )
                         }
+
+                        sleep(failed_heartbeat_interval);
                         continue;
                     }
                 };
