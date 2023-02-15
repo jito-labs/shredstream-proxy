@@ -13,7 +13,7 @@ use jito_protos::{
     auth::{auth_service_client::AuthServiceClient, Role},
     shredstream::{shredstream_client::ShredstreamClient, Heartbeat},
 };
-use log::{error, info, warn};
+use log::{info, warn};
 use rand::{thread_rng, Rng};
 use solana_metrics::{datapoint_info, datapoint_warn};
 use solana_sdk::signature::Keypair;
@@ -104,9 +104,7 @@ pub fn heartbeat_loop_thread(
                         }
                         Err(err) => {
                             if err.code() == Code::InvalidArgument {
-                                exit.store(true, Ordering::SeqCst);
-                                error!("Invalid arguments: {err}.");
-                                return;
+                                panic!("Invalid arguments: {err}.");
                             };
                             warn!("Error sending heartbeat: {err}");
                             if let Some(log_ctx) = &log_context {
