@@ -29,7 +29,7 @@ mod token_authenticator;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// Address for Jito Block Engine. See https://jito-labs.gitbook.io/mev/systems/connecting
+    /// Address for Jito Block Engine. See https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
     #[arg(long, env)]
     block_engine_url: String,
 
@@ -47,14 +47,14 @@ struct Args {
     src_bind_addr: IpAddr,
 
     /// Port where Shredstream proxy on. `0` for random ephemeral port.
-    #[arg(long, env, default_value_t = 10_000)]
+    #[arg(long, env, default_value_t = 20_000)]
     src_bind_port: u16,
 
-    /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated. Eg. `10.0.0.1:9000,10.0.0.2:9000`.
+    /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated. Eg. `127.0.0.1:8002,10.0.0.1:8002`.
     #[arg(long, env, value_delimiter = ',')]
     dest_ip_ports: Vec<SocketAddr>,
 
-    /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds. Endpoints are then set-union with `dest-sockets`.
+    /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds. Endpoints are then set-union with `dest-ip-ports`.
     #[arg(long, env)]
     endpoint_discovery_url: Option<String>,
 
