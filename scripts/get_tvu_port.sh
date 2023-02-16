@@ -27,13 +27,13 @@ if [[ -x "$(command -v solana)" && -d $LEDGER_DIR ]]; then
   exit 0
 fi
 
-# check jq exists
+# exit if jq not exists
 if [[ ! -x "$(command -v jq)" ]]; then
   echo "'jq' not found"
   exit 1
 fi
 
-# check curl exists
+# exit if curl not exists
 if [[ ! -x "$(command -v curl)" ]]; then
   echo "'curl' not found"
   exit 1
