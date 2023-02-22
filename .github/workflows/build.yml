@@ -1,0 +1,38 @@
+name: build
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - name: Install tools
+        run: |
+          apt-get update
+          apt-get install -y libssl-dev pkg-config gcc wget git
+
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v1
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.65.0
+          default: true
+
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --all-features
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: "jito-shredstream-proxy-linux-x86_64"
+          path: target/release/jito-shredstream-proxy
