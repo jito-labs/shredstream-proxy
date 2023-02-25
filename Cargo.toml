@@ -1,7 +1,7 @@
 [package]
 name = "jito-shredstream-proxy"
 version = "0.1.0"
-description = "Receives shreds from Jito, forwarding to local consumers."
+description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://jito-labs.gitbook.io/mev/searcher-services/shredstream for details."
 authors = ["Jito Team <team@jito.wtf>"]
 homepage = "https://jito.wtf/"
 edition = "2021"

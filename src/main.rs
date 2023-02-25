@@ -7,6 +7,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
+    thread::sleep,
+    time::Duration,
 };
 
 use clap::{arg, Parser};
@@ -29,11 +31,12 @@ mod token_authenticator;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// Address for Jito Block Engine. See https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
+    /// Address for Jito Block Engine.
+    /// See https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
     #[arg(long, env)]
     block_engine_url: String,
 
-    /// Path to keypair file used to authenticate with the backend
+    /// Path to keypair file used to authenticate with the backend.
     #[arg(long, env)]
     auth_keypair: PathBuf,
 
@@ -42,23 +45,27 @@ struct Args {
     #[arg(long, env, value_delimiter = ',', required(true))]
     desired_regions: Vec<String>,
 
-    /// Address where Shredstream proxy listens on.
+    /// Address where Shredstream proxy listens.
     #[arg(long, env, default_value_t = IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)))]
     src_bind_addr: IpAddr,
 
-    /// Port where Shredstream proxy on. `0` for random ephemeral port.
+    /// Port where Shredstream proxy listens. Use `0` for random ephemeral port.
     #[arg(long, env, default_value_t = 20_000)]
     src_bind_port: u16,
 
-    /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated. Eg. `127.0.0.1:8002,10.0.0.1:8002`.
+    /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated.
+    /// Eg. `127.0.0.1:8002,10.0.0.1:8002`.
     #[arg(long, env, value_delimiter = ',')]
     dest_ip_ports: Vec<SocketAddr>,
 
-    /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds. Endpoints are then set-union with `dest-ip-ports`.
+    /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds.
+    /// Endpoints are then set-union with `dest-ip-ports`.
     #[arg(long, env)]
     endpoint_discovery_url: Option<String>,
 
-    /// Port to send shreds to for hosts fetched via `endpoint-discovery-url`. Port can be found using `scripts/get_tvu_port.sh`.
+    /// Port to send shreds to for hosts fetched via `endpoint-discovery-url`.
+    /// Port can be found using `scripts/get_tvu_port.sh`.
+    /// See https://jito-labs.gitbook.io/mev/searcher-services/shredstream#running-shredstream
     #[arg(long, env)]
     discovered_endpoints_port: Option<u16>,
 
@@ -138,10 +145,11 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let panic_hook = panic::take_hook();
     let exit_signal = exit.clone();
     panic::set_hook(Box::new(move |panic_info| {
-        // invoke the default handler and exit the process
         exit_signal.store(true, Ordering::SeqCst);
-        panic_hook(panic_info);
         error!("exiting process");
+        sleep(Duration::from_secs(1));
+        // invoke the default handler and exit the process
+        panic_hook(panic_info);
     }));
     let runtime = Runtime::new().unwrap();
 
