@@ -272,8 +272,9 @@ impl ShredMetrics {
             datapoint_info!("shredstream_proxy-connection_metrics",
             "solana_cluster" => log_context.solana_cluster,
             "region" => log_context.region,
-            ("success", self.agg_success_forward, i64),
-            ("fail", self.agg_fail_forward, i64),
+            ("agg_received", self.agg_received, i64),
+            ("agg_success_forward", self.agg_success_forward, i64),
+            ("agg_fail_forward", self.agg_fail_forward, i64),
             ("duplicate", self.duplicate, i64),
             );
         }
