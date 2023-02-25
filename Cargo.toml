@@ -27,5 +27,5 @@ solana-sdk = { git = "https://github.com/jito-foundation/jito-solana.git", rev =
 solana-net-utils = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
 solana-streamer = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
 thiserror = "1.0.34"
-tokio = "1.24.2"
+tokio = "1"
 tonic = { version = "0.8.3", features = ["tls", "tls-roots", "tls-webpki-roots"] }

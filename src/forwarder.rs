@@ -13,7 +13,7 @@ use crossbeam_channel::RecvTimeoutError;
 use itertools::Itertools;
 use log::{error, info, warn};
 use solana_metrics::datapoint_warn;
-use solana_perf::{packet::PacketBatchRecycler, recycler::Recycler};
+use solana_perf::{packet::PacketBatchRecycler, recycler::Recycler, sigverify::Deduper};
 use solana_streamer::{
     sendmmsg::{batch_send, SendPktsError},
     streamer,
@@ -22,25 +22,130 @@ use solana_streamer::{
 
 use crate::{heartbeat::LogContext, ShredstreamProxyError};
 
+/// Bind to ports and start forwarding shreds
+pub fn start_forwarder_threads(
+    dst_sockets: Arc<Mutex<Vec<SocketAddr>>>,
+    src_port: u16,
+    num_threads: Option<usize>,
+    exit: Arc<AtomicBool>,
+) -> Vec<JoinHandle<()>> {
+    let num_threads =
+        num_threads.unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()));
+
+    // all forwarder threads share these sockets
+    let outgoing_sockets = dst_sockets
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|dst| {
+            let sock =
+                UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).unwrap();
+            (sock, *dst)
+        })
+        .collect::<Vec<_>>();
+    let outgoing_sockets = Arc::new(outgoing_sockets);
+    let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
+    let successful_shred_count = Arc::new(AtomicU64::new(0));
+    let failed_shred_count = Arc::new(AtomicU64::new(0));
+    let duplicate_shred_count = Arc::new(AtomicU64::new(0));
+
+    // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
+    solana_net_utils::multi_bind_in_range(
+        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+        (src_port, src_port + 1),
+        num_threads,
+    )
+    .unwrap_or_else(|_| {
+        panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
+    })
+    .1
+    .into_iter()
+    .enumerate()
+    .flat_map(|(thread_id, incoming_shred_socket)| {
+        let exit = exit.clone();
+        let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
+        let listen_thread = streamer::receiver(
+            Arc::new(incoming_shred_socket),
+            exit.clone(),
+            packet_sender,
+            recycler.clone(),
+            Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
+            0, // do not coalesce since batching consumes more cpu cycles and adds latency.
+            true,
+            None,
+        );
+
+        let outgoing_sockets = outgoing_sockets.clone();
+        let successful_shred_count = successful_shred_count.clone();
+        let failed_shred_count = failed_shred_count.clone();
+        let duplicate_shred_count = duplicate_shred_count.clone();
+        let send_thread = Builder::new()
+            .name(format!("shredstream_proxy-send_thread_{thread_id}"))
+            .spawn(move || {
+                const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
+                const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
+                let mut deduper = Deduper::new(MAX_DEDUPER_ITEMS, MAX_DEDUPER_AGE);
+
+                while !exit.load(Ordering::Relaxed) {
+                    deduper.reset();
+                    recv_from_channel_and_send_multiple_dest(
+                        &packet_receiver,
+                        &deduper,
+                        &outgoing_sockets,
+                        &successful_shred_count,
+                        &failed_shred_count,
+                        &duplicate_shred_count,
+                    )
+                    .unwrap();
+                }
+
+                info!(
+                    "Exiting send thread {thread_id}, sent {} successful, {} failed shreds",
+                    successful_shred_count.load(Ordering::SeqCst),
+                    failed_shred_count.load(Ordering::SeqCst)
+                );
+            })
+            .unwrap();
+
+        [listen_thread, send_thread]
+    })
+    .collect::<Vec<JoinHandle<()>>>()
+}
+
 /// broadcasts same packet to multiple recipients
 /// for best performance, connect sockets to their destinations
 /// Returns Err when unable to receive packets.
-fn send_multiple_destination_from_receiver(
+fn recv_from_channel_and_send_multiple_dest(
     receiver: &PacketBatchReceiver,
+    deduper: &Deduper,
     outgoing_sockets: &Arc<Vec<(UdpSocket, SocketAddr)>>,
     successful_shred_count: &Arc<AtomicU64>,
     failed_shred_count: &Arc<AtomicU64>,
+    duplicate_shred_count: &Arc<AtomicU64>,
 ) -> Result<(), ShredstreamProxyError> {
     let packet_batch = match receiver.recv_timeout(Duration::from_secs(1)) {
         Ok(x) => Ok(x),
         Err(RecvTimeoutError::Timeout) => return Ok(()),
         Err(e) => Err(ShredstreamProxyError::StreamerError(StreamerError::from(e))),
     }?;
+    info!(
+        "Got packet_batch of size {}, total size: {}",
+        packet_batch.len(),
+        packet_batch.iter().map(|x| x.meta.size).sum::<usize>()
+    );
+    let mut packet_batch_vec = vec![packet_batch];
+
+    let num_deduped = deduper.dedup_packets_and_count_discards(
+        &mut packet_batch_vec,
+        #[inline(always)]
+        |_received_packet, _is_already_marked_as_discard, _is_dup| {},
+    );
+    duplicate_shred_count.fetch_add(num_deduped, Ordering::Relaxed);
 
     outgoing_sockets
         .iter()
         .for_each(|(outgoing_socket, outgoing_socketaddr)| {
-            let packets = packet_batch
+            let packets = packet_batch_vec[0]
                 .iter()
                 .filter(|pkt| !pkt.meta.discard())
                 .filter_map(|pkt| {
@@ -141,87 +246,6 @@ fn fetch_discovered_socketaddrs(
     Ok(all_discovered_sockets)
 }
 
-/// Bind to ports and start forwarding shreds
-pub fn start_forwarder_threads(
-    dst_sockets: Arc<Mutex<Vec<SocketAddr>>>,
-    src_port: u16,
-    num_threads: Option<usize>,
-    exit: Arc<AtomicBool>,
-) -> Vec<JoinHandle<()>> {
-    let num_threads =
-        num_threads.unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()));
-
-    // all forwarder threads share these sockets
-    let outgoing_sockets = dst_sockets
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|dst| {
-            let sock =
-                UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).unwrap();
-            (sock, *dst)
-        })
-        .collect::<Vec<_>>();
-    let outgoing_sockets = Arc::new(outgoing_sockets);
-    let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
-    let successful_shred_count = Arc::new(AtomicU64::new(0));
-    let failed_shred_count = Arc::new(AtomicU64::new(0));
-
-    // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
-    solana_net_utils::multi_bind_in_range(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        (src_port, src_port + 1),
-        num_threads,
-    )
-    .unwrap_or_else(|_| {
-        panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
-    })
-    .1
-    .into_iter()
-    .enumerate()
-    .flat_map(|(thread_id, incoming_shred_socket)| {
-        let exit = exit.clone();
-        let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
-        let listen_thread = streamer::receiver(
-            Arc::new(incoming_shred_socket),
-            exit.clone(),
-            packet_sender,
-            recycler.clone(),
-            Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
-            0, // do not coalesce since batching consumes more cpu cycles and adds latency.
-            true,
-            None,
-        );
-
-        let outgoing_sockets = outgoing_sockets.clone();
-        let successful_shred_count = successful_shred_count.clone();
-        let failed_shred_count = failed_shred_count.clone();
-        let send_thread = Builder::new()
-            .name(format!("shredstream_proxy-send_thread_{thread_id}"))
-            .spawn(move || {
-                while !exit.load(Ordering::Relaxed) {
-                    send_multiple_destination_from_receiver(
-                        &packet_receiver,
-                        &outgoing_sockets,
-                        &successful_shred_count,
-                        &failed_shred_count,
-                    )
-                    .unwrap();
-                }
-
-                info!(
-                    "Exiting send thread {thread_id}, sent {} successful, {} failed shreds",
-                    successful_shred_count.load(Ordering::SeqCst),
-                    failed_shred_count.load(Ordering::SeqCst)
-                );
-            })
-            .unwrap();
-
-        [listen_thread, send_thread]
-    })
-    .collect::<Vec<JoinHandle<()>>>()
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -233,10 +257,13 @@ mod tests {
         time::Duration,
     };
 
-    use solana_perf::packet::{Meta, Packet, PacketBatch};
+    use solana_perf::{
+        packet::{Meta, Packet, PacketBatch},
+        sigverify::Deduper,
+    };
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
 
-    use crate::forwarder::send_multiple_destination_from_receiver;
+    use crate::forwarder::recv_from_channel_and_send_multiple_dest;
 
     fn listen_and_collect(listen_socket: UdpSocket, received_packets: Arc<Mutex<Vec<Vec<u8>>>>) {
         let mut buf = [0u8; PACKET_DATA_SIZE];
@@ -305,11 +332,15 @@ mod tests {
                 let to_receive = to_receive.to_owned();
                 thread::spawn(move || listen_and_collect(socket, to_receive));
             });
+        const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
+        const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
 
         // send packets
-        send_multiple_destination_from_receiver(
+        recv_from_channel_and_send_multiple_dest(
             &packet_receiver,
+            &Deduper::new(MAX_DEDUPER_ITEMS, MAX_DEDUPER_AGE),
             &Arc::new(destinations),
+            &Arc::new(AtomicU64::new(0)),
             &Arc::new(AtomicU64::new(0)),
             &Arc::new(AtomicU64::new(0)),
         )
