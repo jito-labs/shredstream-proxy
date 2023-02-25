@@ -134,7 +134,7 @@ fn recv_from_channel_and_send_multiple_dest(
         Err(e) => Err(ShredstreamProxyError::RecvError(e)),
     }?;
     info!(
-        "Got packet_batch of size {}, total size: {}",
+        "Got batch of {} packets, total size in bytes: {}",
         packet_batch.len(),
         packet_batch.iter().map(|x| x.meta.size).sum::<usize>()
     );
@@ -142,7 +142,6 @@ fn recv_from_channel_and_send_multiple_dest(
 
     let num_deduped = deduper.dedup_packets_and_count_discards(
         &mut packet_batch_vec,
-        #[inline(always)]
         |_received_packet, _is_already_marked_as_discard, _is_dup| {},
     );
 
@@ -153,18 +152,17 @@ fn recv_from_channel_and_send_multiple_dest(
             Some((data, addr))
         }).collect::<Vec<_>>();
 
-        let num_packets = packets.len() as u64;
         match batch_send(outgoing_socket, &packets) {
             Ok(_) => {
                 let mut metrics_guard = metrics.lock().unwrap();
-                metrics_guard.agg_success_forward = metrics_guard.agg_success_forward.saturating_add(num_packets);
+                metrics_guard.agg_success_forward = metrics_guard.agg_success_forward.saturating_add(packets.len() as u64);
                 metrics_guard.duplicate = metrics_guard.duplicate.saturating_add(num_deduped);
             }
             Err(SendPktsError::IoError(err, num_failed)) => {
                 let mut metrics_guard = metrics.lock().unwrap();
                 metrics_guard.agg_fail_forward = metrics_guard.agg_fail_forward.saturating_add(packets.len() as u64);
-                metrics_guard.duplicate = metrics_guard.duplicate.saturating_add(num_deduped);
-                error!("Failed to send batch of size {num_packets} to {outgoing_socket:?}. {num_failed} packets failed. Error: {err}");
+                metrics_guard.duplicate = metrics_guard.duplicate.saturating_add(num_failed as u64);
+                error!("Failed to send batch of size {} to {outgoing_socket:?}. {num_failed} packets failed. Error: {err}", packets.len());
             }
         }
     });
