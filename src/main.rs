@@ -10,12 +10,12 @@ use std::{
 };
 
 use clap::{arg, Parser};
+use crossbeam_channel::RecvError;
 use env_logger::TimestampPrecision;
 use log::*;
 use solana_client::client_error::{reqwest, ClientError};
 use solana_metrics::set_host_id;
 use solana_sdk::signature::read_keypair_file;
-use solana_streamer::streamer::StreamerError;
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tonic::Status;
@@ -98,8 +98,8 @@ pub enum ShredstreamProxyError {
     RpcError(#[from] ClientError),
     #[error("BlockEngineConnectionError {0}")]
     BlockEngineConnectionError(#[from] BlockEngineConnectionError),
-    #[error("StreamerError {0}")]
-    StreamerError(#[from] StreamerError),
+    #[error("RecvError {0}")]
+    RecvError(#[from] RecvError),
     #[error("IoError {0}")]
     IoError(#[from] std::io::Error),
     #[error("Shutdown")]
@@ -173,6 +173,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         shared_sockets.clone(),
         args.src_bind_port,
         args.num_threads,
+        log_context.clone(),
         exit.clone(),
     );
 
