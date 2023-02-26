@@ -11,7 +11,7 @@ use std::{
 
 use crossbeam_channel::RecvError;
 use itertools::Itertools;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use solana_metrics::{datapoint_info, datapoint_warn};
 use solana_perf::{
     packet::{PacketBatch, PacketBatchRecycler},
@@ -133,7 +133,7 @@ fn recv_from_channel_and_send_multiple_dest(
         Ok(x) => Ok(x),
         Err(e) => Err(ShredstreamProxyError::RecvError(e)),
     }?;
-    info!(
+    debug!(
         "Got batch of {} packets, total size in bytes: {}",
         packet_batch.len(),
         packet_batch.iter().map(|x| x.meta.size).sum::<usize>()

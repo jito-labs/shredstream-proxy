@@ -130,28 +130,34 @@ fn main() -> Result<(), ShredstreamProxyError> {
         .format_timestamp(Some(TimestampPrecision::Micros))
         .init();
     let args = Args::parse();
-
-    let auth_keypair = Arc::new(
-        read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
-            panic!(
-                "Unable parse keypair file. Ensure that file {:?} is readable. Error: {e}",
-                args.auth_keypair
-            )
-        }),
-    );
-
     set_host_id(hostname::get().unwrap().into_string().unwrap());
+
+    if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
+        || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
+    {
+        panic!("Invalid arguments provided, dynamic endpoints requires both --endpoint-discovery-url and --discovered-endpoints-port.")
+    }
+    if args.endpoint_discovery_url.is_none()
+        && args.discovered_endpoints_port.is_none()
+        && args.dest_ip_ports.is_empty()
+    {
+        panic!("No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")
+    }
+
     let exit = Arc::new(AtomicBool::new(false));
     let panic_hook = panic::take_hook();
-    let exit_signal = exit.clone();
-    panic::set_hook(Box::new(move |panic_info| {
-        exit_signal.store(true, Ordering::SeqCst);
-        error!("exiting process");
-        sleep(Duration::from_secs(1));
-        // invoke the default handler and exit the process
-        panic_hook(panic_info);
-    }));
-    let runtime = Runtime::new().unwrap();
+    {
+        let exit = exit.clone();
+        panic::set_hook(Box::new(move |panic_info| {
+            exit.store(true, Ordering::SeqCst);
+            error!("exiting process");
+            sleep(Duration::from_secs(1));
+            // invoke the default handler and exit the process
+            panic_hook(panic_info);
+        }));
+    }
+    signal_hook::flag::register(signal_hook::consts::SIGINT, exit.clone())?;
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, exit.clone())?;
 
     let log_context = match args.solana_cluster.is_some() && args.region.is_some() {
         true => Some(LogContext {
@@ -161,9 +167,15 @@ fn main() -> Result<(), ShredstreamProxyError> {
         false => None,
     };
 
-    // share var between refresh and forwarder thread
-    let shared_sockets = Arc::new(Mutex::new(args.dest_ip_ports.clone()));
-
+    let runtime = Runtime::new().unwrap();
+    let auth_keypair = Arc::new(
+        read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
+            panic!(
+                "Unable parse keypair file. Ensure that file {:?} is readable. Error: {e}",
+                args.auth_keypair
+            )
+        }),
+    );
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
         args.block_engine_url,
         &auth_keypair,
@@ -177,6 +189,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
         runtime,
         exit.clone(),
     );
+    // share var between refresh and forwarder thread
+    let shared_sockets = Arc::new(Mutex::new(args.dest_ip_ports.clone()));
     let mut thread_handles = forwarder::start_forwarder_threads(
         shared_sockets.clone(),
         args.src_bind_port,
@@ -184,20 +198,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
         log_context.clone(),
         exit.clone(),
     );
-
     thread_handles.push(heartbeat_hdl);
 
-    if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
-        || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
-    {
-        panic!("Invalid arguments provided, shredstream proxy requires both --endpoint-discovery-url and --discovered-endpoints-port.")
-    }
-    if args.endpoint_discovery_url.is_none()
-        && args.discovered_endpoints_port.is_none()
-        && args.dest_ip_ports.is_empty()
-    {
-        panic!("No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")
-    }
     if args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some() {
         let refresh_handle = forwarder::start_destination_refresh_thread(
             args.endpoint_discovery_url.unwrap(),
