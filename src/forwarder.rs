@@ -92,12 +92,16 @@ pub fn start_forwarder_threads(
                         deduper.reset();
                         crossbeam_channel::select! {
                             recv(packet_receiver) -> maybe_packet_batch => {
-                                recv_from_channel_and_send_multiple_dest(
+                               let res = recv_from_channel_and_send_multiple_dest(
                                 maybe_packet_batch,
                                 &deduper,
                                 &outgoing_sockets,
                                 &metrics,
-                                ).unwrap()
+                                );
+
+                                if res.is_err(){
+                                    break;
+                                }
                             }
                             recv(metrics_tick) -> _ => {
                                 metrics.lock().unwrap().report();

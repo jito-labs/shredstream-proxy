@@ -1,4 +1,5 @@
 use std::{
+    io,
     net::{IpAddr, SocketAddr},
     panic,
     path::{Path, PathBuf},
@@ -7,14 +8,16 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
+    thread,
     thread::sleep,
     time::Duration,
 };
 
 use clap::{arg, Parser};
-use crossbeam_channel::RecvError;
+use crossbeam_channel::{Receiver, RecvError, Sender};
 use env_logger::TimestampPrecision;
 use log::*;
+use signal_hook::consts::{SIGINT, SIGTERM};
 use solana_client::client_error::{reqwest, ClientError};
 use solana_metrics::set_host_id;
 use solana_sdk::signature::read_keypair_file;
@@ -124,7 +127,22 @@ fn get_public_ip() -> IpAddr {
 
     public_ip
 }
+// Creates a channel that gets a message every time `SIGINT` is signalled.
+fn shutdown_notifier() -> io::Result<(Sender<()>, Receiver<()>)> {
+    let (s, r) = crossbeam_channel::bounded(100);
+    let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?;
 
+    let s_thread = s.clone();
+    thread::spawn(move || {
+        for _ in signals.forever() {
+            if s_thread.send(()).is_err() {
+                break;
+            }
+        }
+    });
+
+    Ok((s, r))
+}
 fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder()
         .format_timestamp(Some(TimestampPrecision::Micros))
@@ -144,20 +162,21 @@ fn main() -> Result<(), ShredstreamProxyError> {
         panic!("No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")
     }
 
+    let (shutdown_sender, shutdown_receiver) =
+        shutdown_notifier().expect("Failed to set up signal handler");
     let exit = Arc::new(AtomicBool::new(false));
     let panic_hook = panic::take_hook();
     {
         let exit = exit.clone();
         panic::set_hook(Box::new(move |panic_info| {
             exit.store(true, Ordering::SeqCst);
+            let _ = shutdown_sender.send(());
             error!("exiting process");
             sleep(Duration::from_secs(1));
             // invoke the default handler and exit the process
             panic_hook(panic_info);
         }));
     }
-    signal_hook::flag::register(signal_hook::consts::SIGINT, exit.clone())?;
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, exit.clone())?;
 
     let log_context = match args.solana_cluster.is_some() && args.region.is_some() {
         true => Some(LogContext {

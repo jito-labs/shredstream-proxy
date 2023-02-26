@@ -73,9 +73,10 @@ pub fn heartbeat_loop_thread(
                                             ("error_str", e.to_string(), String),
                             )
                         }
-
-                        sleep(failed_heartbeat_interval);
-                        continue;
+                        if !exit.load(Ordering::Relaxed) {
+                            sleep(failed_heartbeat_interval);
+                        }
+                        continue; // avoid sending heartbeat, try acquiring grpc client again
                     }
                 };
                 while !exit.load(Ordering::Relaxed) {
@@ -98,7 +99,9 @@ pub fn heartbeat_loop_thread(
                             successful_heartbeat_count += 1;
 
                             let elapsed = start.elapsed();
-                            if elapsed.lt(&heartbeat_interval) {
+
+                            // don't sleep if we need to exit
+                            if elapsed.lt(&heartbeat_interval) && !exit.load(Ordering::Relaxed) {
                                 sleep(heartbeat_interval.sub(elapsed));
                             }
                         }
@@ -120,12 +123,13 @@ pub fn heartbeat_loop_thread(
 
                             // sleep for shorter time period to avoid TTL expiration in NATS
                             let elapsed = start.elapsed();
-                            if elapsed.lt(&failed_heartbeat_interval) {
+                            if elapsed.lt(&failed_heartbeat_interval) && !exit.load(Ordering::Relaxed){
                                 sleep(failed_heartbeat_interval.sub(elapsed));
                             }
                         }
                     }
 
+                    // try logging
                     if let Some(log_ctx) = &log_context {
                         if rng.gen_bool(heartbeat_stats_sampling_prob) {
                             datapoint_info!("shredstream_proxy-heartbeat_stats",
@@ -138,13 +142,7 @@ pub fn heartbeat_loop_thread(
                             );
                         }
                     }
-
-                    let elapsed = start.elapsed();
-                    if elapsed.lt(&heartbeat_interval) {
-                        sleep(heartbeat_interval.sub(elapsed));
-                    }
                 }
-                sleep(Duration::from_millis(200)); // back off for a bit as client failed
             }
             info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed shreds.");
         })
