@@ -95,13 +95,13 @@ pub fn start_forwarder_threads(
                         crossbeam_channel::select! {
                             recv(packet_receiver) -> maybe_packet_batch => {
                                let res = recv_from_channel_and_send_multiple_dest(
-                                maybe_packet_batch,
-                                &deduper,
-                                &outgoing_sockets,
-                                &metrics,
-                                );
+                                   maybe_packet_batch,
+                                   &deduper,
+                                   &outgoing_sockets,
+                                   &metrics,
+                               );
 
-                                // avoid unwrap to prevent log spam from panic handler
+                                // avoid unwrap to prevent log spam from panic handler in each thread
                                 if res.is_err(){
                                     break;
                                 }
