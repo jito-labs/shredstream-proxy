@@ -95,7 +95,7 @@ pub fn heartbeat_loop_thread(
                                 if heartbeat_interval != new_interval {
                                     info!("Sending heartbeat every {new_interval:?}.");
                                     heartbeat_interval = new_interval;
-                                    heartbeat_tick = crossbeam_channel::tick(heartbeat_interval);
+                                    heartbeat_tick = crossbeam_channel::tick(new_interval);
                                     failed_heartbeat_interval = Duration::from_millis(new_ttl / 4);
                                 }
                                 successful_heartbeat_count += 1;
@@ -136,7 +136,7 @@ pub fn heartbeat_loop_thread(
                 }
             }
         }
-        info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed heartbeats.");
+        info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed heartbeats. Client restarted {client_restart_count} times.");
     }).unwrap()
 }
 
