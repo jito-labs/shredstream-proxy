@@ -264,6 +264,29 @@ fn fetch_discovered_socketaddrs(
     Ok(all_discovered_sockets)
 }
 
+pub fn start_metrics_thread(
+    metrics: Arc<Mutex<ShredMetrics>>,
+    shutdown_receiver: Receiver<()>,
+    exit: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    Builder::new()
+        .name("shredstream_proxy-metrics_thread".to_string())
+        .spawn(move || {
+            let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
+            while !exit.load(Ordering::Relaxed) {
+                crossbeam_channel::select! {
+                    recv(metrics_tick) -> _ => {
+                        metrics.lock().unwrap().report();
+                    }
+                    recv(shutdown_receiver) -> _ => {
+                        break;
+                    }
+                }
+            }
+        })
+        .unwrap()
+}
+
 pub struct ShredMetrics {
     /// Total number of shreds received. Includes duplicates when receiving shreds from multiple regions
     pub agg_received: u64,

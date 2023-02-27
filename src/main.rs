@@ -126,13 +126,14 @@ fn get_public_ip() -> IpAddr {
     public_ip
 }
 // Creates a channel that gets a message every time `SIGINT` is signalled.
-fn shutdown_notifier() -> io::Result<(Sender<()>, Receiver<()>)> {
+fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<()>)> {
     let (s, r) = crossbeam_channel::bounded(100);
     let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?;
 
     let s_thread = s.clone();
     thread::spawn(move || {
         for _ in signals.forever() {
+            exit.store(true, Ordering::SeqCst);
             // send shutdown signal multiple times since crossbeam doesn't have broadcast channels
             // each thread will consume a shutdown signal
             for _ in 0..128 {
@@ -163,9 +164,9 @@ fn main() -> Result<(), ShredstreamProxyError> {
         panic!("No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")
     }
 
-    let (shutdown_sender, shutdown_receiver) =
-        shutdown_notifier().expect("Failed to set up signal handler");
     let exit = Arc::new(AtomicBool::new(false));
+    let (shutdown_sender, shutdown_receiver) =
+        shutdown_notifier(exit.clone()).expect("Failed to set up signal handler");
     let panic_hook = panic::take_hook();
     {
         let exit = exit.clone();
@@ -178,8 +179,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
             panic_hook(panic_info);
         }));
     }
-    signal_hook::flag::register(signal_hook::consts::SIGINT, exit.clone())?;
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, exit.clone())?;
 
     let log_context = match args.solana_cluster.is_some() && args.region.is_some() {
         true => Some(LogContext {
@@ -223,7 +222,9 @@ fn main() -> Result<(), ShredstreamProxyError> {
         exit.clone(),
     );
     thread_handles.push(heartbeat_hdl);
-
+    let metrics_hdl =
+        forwarder::start_metrics_thread(metrics.clone(), shutdown_receiver.clone(), exit.clone());
+    thread_handles.push(metrics_hdl);
     if args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some() {
         let refresh_handle = forwarder::start_destination_refresh_thread(
             args.endpoint_discovery_url.unwrap(),
