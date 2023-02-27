@@ -83,6 +83,10 @@ struct Args {
     #[arg(long, env)]
     region: Option<String>,
 
+    /// Interval between logging stats to CLI and influx
+    #[arg(long, env, default_value_t = 15_000)]
+    metrics_update_interval_ms: u64,
+
     /// Public IP address to use.
     /// Overrides value fetched from `ifconfig.me`.
     #[arg(long, env)]
@@ -241,6 +245,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let metrics_hdl = forwarder::start_forwarder_accessory_thread(
         deduper,
         metrics.clone(),
+        args.metrics_update_interval_ms,
         shutdown_receiver.clone(),
         exit.clone(),
     );

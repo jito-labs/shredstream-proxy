@@ -267,13 +267,15 @@ fn fetch_unioned_destinations(
 pub fn start_forwarder_accessory_thread(
     deduper: Arc<RwLock<Deduper>>,
     metrics: Arc<ShredMetrics>,
+    metrics_update_interval_ms: u64,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     Builder::new()
         .name("shredstream_proxy-accessory_thread".to_string())
         .spawn(move || {
-            let metrics_tick = crossbeam_channel::tick(Duration::from_secs(15));
+            let metrics_tick =
+                crossbeam_channel::tick(Duration::from_millis(metrics_update_interval_ms));
             let deduper_tick = crossbeam_channel::tick(Duration::from_secs(2));
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
