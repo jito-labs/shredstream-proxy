@@ -1885,7 +1885,6 @@ dependencies = [
  "jito-protos",
  "log",
  "prost-types",
- "rand 0.8.5",
  "reqwest",
  "serde_json",
  "signal-hook",

@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::RecvError;
+use crossbeam_channel::{Receiver, RecvError};
 use itertools::Itertools;
 use log::{debug, error, info, warn};
 use solana_metrics::{datapoint_info, datapoint_warn};
@@ -32,6 +32,7 @@ pub fn start_forwarder_threads(
     src_port: u16,
     num_threads: Option<usize>,
     log_context: Option<LogContext>,
+    shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
     let num_threads =
@@ -67,6 +68,7 @@ pub fn start_forwarder_threads(
         .flat_map(|(thread_id, incoming_shred_socket)| {
             let exit = exit.clone();
             let metrics = metrics.clone();
+            let shutdown_receiver = shutdown_receiver.clone();
             let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
             let listen_thread = streamer::receiver(
                 Arc::new(incoming_shred_socket),
@@ -99,6 +101,7 @@ pub fn start_forwarder_threads(
                                 &metrics,
                                 );
 
+                                // avoid unwrap to prevent log spam from panic handler
                                 if res.is_err(){
                                     break;
                                 }
@@ -106,16 +109,19 @@ pub fn start_forwarder_threads(
                             recv(metrics_tick) -> _ => {
                                 metrics.lock().unwrap().report();
                             }
+                            recv(shutdown_receiver) -> _ => {
+                                break;
+                            }
                         }
                     }
 
                     let metrics_lock = metrics.lock().unwrap();
                     info!(
-                    "Exiting send thread {thread_id}, sent {} successful, {} failed shreds, {} duplicate shreds.",
-                    metrics_lock.agg_success_forward,
-                    metrics_lock.agg_fail_forward,
-                    metrics_lock.duplicate,
-                );
+                        "Exiting forwarder thread {thread_id}, sent {} successful, {} failed shreds, {} duplicate shreds.",
+                        metrics_lock.agg_success_forward,
+                        metrics_lock.agg_fail_forward,
+                        metrics_lock.duplicate,
+                    );
                 })
                 .unwrap();
 
@@ -180,41 +186,59 @@ pub fn start_destination_refresh_thread(
     dest_sockets: Vec<SocketAddr>,
     shared_sockets: Arc<Mutex<Vec<SocketAddr>>>,
     log_context: Option<LogContext>,
+    shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     Builder::new()
         .name("shredstream_proxy-destination_refresh_thread".to_string())
         .spawn(move || {
             let socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
+            let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
+            let mut socket_count = shared_sockets.lock().unwrap().len();
             while !exit.load(Ordering::Relaxed) {
-                socket_tick.recv().unwrap();
-                let fetched_sockets = fetch_discovered_socketaddrs(
-                    &endpoint_discovery_url,
-                    discovered_endpoints_port,
-                    dest_sockets.clone(),
-                );
-                let new_sockets = match fetched_sockets {
-                    Ok(s) => {
-                        info!("Received {} destinations: {s:?}", s.len());
-                        s
+                crossbeam_channel::select! {
+                    recv(socket_tick) -> _ => {
+                        let fetched_sockets = fetch_discovered_socketaddrs(
+                            &endpoint_discovery_url,
+                            discovered_endpoints_port,
+                            dest_sockets.clone(),
+                        );
+                        let new_sockets = match fetched_sockets {
+                            Ok(s) => {
+                                info!("Received {} destinations: {s:?}", s.len());
+                                s
+                            }
+                            Err(e) => {
+                                warn!("Failed to fetch from discovery service, retrying. Error: {e}");
+                                if let Some(log_ctx) = &log_context {
+                                    datapoint_warn!("shredstream_proxy-destination_refresh_error",
+                                                    "solana_cluster" => log_ctx.solana_cluster,
+                                                    "region" => log_ctx.region,
+                                                    ("errors", 1, i64),
+                                                    ("error_str", e.to_string(), String),
+                                    );
+                                }
+                                continue;
+                            }
+                        };
+                        socket_count = new_sockets.len();
+                        let mut sockets = shared_sockets.lock().unwrap();
+                        sockets.clear();
+                        sockets.extend(new_sockets);
                     }
-                    Err(e) => {
-                        warn!("Failed to fetch from discovery service, retrying. Error: {e}");
+                    recv(metrics_tick) -> _ => {
                         if let Some(log_ctx) = &log_context {
-                            datapoint_warn!("shredstream_proxy-destination_refresh_error",
+                            datapoint_info!("shredstream_proxy-destination_refresh_stats",
                                             "solana_cluster" => log_ctx.solana_cluster,
                                             "region" => log_ctx.region,
-                                            ("errors", 1, i64),
-                                            ("error_str", e.to_string(), String),
+                                            ("destination_count", socket_count, i64),
                             );
                         }
-                        continue;
                     }
-                };
-                let mut sockets = shared_sockets.lock().unwrap();
-                sockets.clear();
-                sockets.extend(new_sockets);
-                drop(sockets);
+                    recv(shutdown_receiver) -> _ => {
+                        break;
+                    }
+                }
             }
         })
         .unwrap()

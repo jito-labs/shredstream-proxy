@@ -85,10 +85,6 @@ struct Args {
     #[arg(long, env)]
     public_ip: Option<IpAddr>,
 
-    /// Heartbeat stats sampling probability. Defaults to 100%.
-    #[arg(long, env, default_value_t = 1.0)]
-    heartbeat_stats_sampling_prob: f64,
-
     /// Number of threads to use. Defaults to use all cores.
     #[arg(long, env)]
     num_threads: Option<usize>,
@@ -135,8 +131,12 @@ fn shutdown_notifier() -> io::Result<(Sender<()>, Receiver<()>)> {
     let s_thread = s.clone();
     thread::spawn(move || {
         for _ in signals.forever() {
-            if s_thread.send(()).is_err() {
-                break;
+            // send shutdown signal multiple times since crossbeam doesn't have broadcast channels
+            // each thread will consume a shutdown signal
+            for _ in 0..128 {
+                if s_thread.send(()).is_err() {
+                    break;
+                }
             }
         }
     });
@@ -149,7 +149,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
         .init();
     let args = Args::parse();
     set_host_id(hostname::get().unwrap().into_string().unwrap());
-
     if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
         || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
     {
@@ -177,6 +176,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
             panic_hook(panic_info);
         }));
     }
+    signal_hook::flag::register(signal_hook::consts::SIGINT, exit.clone())?;
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, exit.clone())?;
 
     let log_context = match args.solana_cluster.is_some() && args.region.is_some() {
         true => Some(LogContext {
@@ -204,8 +205,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
             args.src_bind_port,
         ),
         log_context.clone(),
-        args.heartbeat_stats_sampling_prob,
         runtime,
+        shutdown_receiver.clone(),
         exit.clone(),
     );
     // share var between refresh and forwarder thread
@@ -215,6 +216,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.src_bind_port,
         args.num_threads,
         log_context.clone(),
+        shutdown_receiver.clone(),
         exit.clone(),
     );
     thread_handles.push(heartbeat_hdl);
@@ -226,6 +228,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
             args.dest_ip_ports,
             shared_sockets,
             log_context,
+            shutdown_receiver,
             exit,
         );
         thread_handles.push(refresh_handle);
