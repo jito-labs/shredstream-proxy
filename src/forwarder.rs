@@ -3,12 +3,13 @@ use std::{
     panic,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
     },
     thread::{Builder, JoinHandle},
     time::Duration,
 };
 
+use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError};
 use itertools::Itertools;
 use log::{debug, error, info, warn};
@@ -28,28 +29,17 @@ use crate::{heartbeat::LogContext, ShredstreamProxyError};
 
 /// Bind to ports and start forwarding shreds
 pub fn start_forwarder_threads(
-    dst_sockets: Arc<Mutex<Vec<SocketAddr>>>,
+    unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
     src_port: u16,
     num_threads: Option<usize>,
     metrics: Arc<Mutex<ShredMetrics>>,
+    deduper: Arc<RwLock<Deduper>>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
-    let num_threads =
-        num_threads.unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()));
+    let num_threads = num_threads
+        .unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()).max(8));
 
-    // all forwarder threads share these sockets
-    let outgoing_sockets = dst_sockets
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|dst| {
-            let sock =
-                UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).unwrap();
-            (sock, *dst)
-        })
-        .collect::<Vec<_>>();
-    let outgoing_sockets = Arc::new(outgoing_sockets);
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
@@ -65,9 +55,6 @@ pub fn start_forwarder_threads(
     .into_iter()
     .enumerate()
     .flat_map(|(thread_id, incoming_shred_socket)| {
-        let exit = exit.clone();
-        let metrics = metrics.clone();
-        let shutdown_receiver = shutdown_receiver.clone();
         let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
         let listen_thread = streamer::receiver(
             Arc::new(incoming_shred_socket),
@@ -80,23 +67,29 @@ pub fn start_forwarder_threads(
             None,
         );
 
-        let outgoing_sockets = outgoing_sockets.clone();
+        let deduper = deduper.clone();
+        let unioned_dest_sockets = unioned_dest_sockets.clone();
+        let metrics = metrics.clone();
+        let shutdown_receiver = shutdown_receiver.clone();
+        let exit = exit.clone();
+
         let send_thread = Builder::new()
             .name(format!("shredstream_proxy-send_thread_{thread_id}"))
             .spawn(move || {
-                const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
-                const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
-                let mut deduper = Deduper::new(MAX_DEDUPER_ITEMS, MAX_DEDUPER_AGE);
-
-                let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
+                let send_socket =
+                    UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+                        .expect("to bind to udp port for forwarding");
+                let mut local_dest_sockets = unioned_dest_sockets.load();
+                let refresh_subscribers_tick = crossbeam_channel::tick(Duration::from_secs(30));
                 while !exit.load(Ordering::Relaxed) {
-                    deduper.reset();
                     crossbeam_channel::select! {
+                        // forward packets
                         recv(packet_receiver) -> maybe_packet_batch => {
                            let res = recv_from_channel_and_send_multiple_dest(
                                maybe_packet_batch,
                                &deduper,
-                               &outgoing_sockets,
+                               &send_socket,
+                               &local_dest_sockets,
                                &metrics,
                            );
 
@@ -105,9 +98,11 @@ pub fn start_forwarder_threads(
                                 break;
                             }
                         }
-                        recv(metrics_tick) -> _ => {
-                            metrics.lock().unwrap().report();
+                        // refresh thread-local subscribers
+                        recv(refresh_subscribers_tick) -> _ => {
+                            local_dest_sockets = unioned_dest_sockets.load();
                         }
+                        // handle shutdown (avoid using sleep since it will hang under SIGINT)
                         recv(shutdown_receiver) -> _ => {
                             break;
                         }
@@ -127,8 +122,9 @@ pub fn start_forwarder_threads(
 /// Returns Err when unable to receive packets.
 fn recv_from_channel_and_send_multiple_dest(
     maybe_packet_batch: Result<PacketBatch, RecvError>,
-    deduper: &Deduper,
-    outgoing_sockets: &Arc<Vec<(UdpSocket, SocketAddr)>>,
+    deduper: &Arc<RwLock<Deduper>>,
+    send_socket: &UdpSocket,
+    local_dest_sockets: &Arc<Vec<SocketAddr>>,
     metrics: &Arc<Mutex<ShredMetrics>>,
 ) -> Result<(), ShredstreamProxyError> {
     let packet_batch = match maybe_packet_batch {
@@ -142,19 +138,19 @@ fn recv_from_channel_and_send_multiple_dest(
     );
     let mut packet_batch_vec = vec![packet_batch];
 
-    let num_deduped = deduper.dedup_packets_and_count_discards(
+    let num_deduped = deduper.read().unwrap().dedup_packets_and_count_discards(
         &mut packet_batch_vec,
         |_received_packet, _is_already_marked_as_discard, _is_dup| {},
     );
 
-    outgoing_sockets.iter().for_each(|(outgoing_socket, outgoing_socketaddr)| {
+    local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
         let packets = packet_batch_vec[0].iter().filter(|pkt| !pkt.meta.discard()).filter_map(|pkt| {
             let data = pkt.data(..)?;
             let addr = outgoing_socketaddr;
             Some((data, addr))
         }).collect::<Vec<_>>();
 
-        match batch_send(outgoing_socket, &packets) {
+        match batch_send(send_socket, &packets) {
             Ok(_) => {
                 let mut metrics_guard = metrics.lock().unwrap();
                 metrics_guard.agg_success_forward = metrics_guard.agg_success_forward.saturating_add(packets.len() as u64);
@@ -164,7 +160,7 @@ fn recv_from_channel_and_send_multiple_dest(
                 let mut metrics_guard = metrics.lock().unwrap();
                 metrics_guard.agg_fail_forward = metrics_guard.agg_fail_forward.saturating_add(packets.len() as u64);
                 metrics_guard.duplicate = metrics_guard.duplicate.saturating_add(num_failed as u64);
-                error!("Failed to send batch of size {} to {outgoing_socket:?}. {num_failed} packets failed. Error: {err}", packets.len());
+                error!("Failed to send batch of size {} to {outgoing_socketaddr:?}. {num_failed} packets failed. Error: {err}", packets.len());
             }
         }
     });
@@ -175,8 +171,8 @@ fn recv_from_channel_and_send_multiple_dest(
 pub fn start_destination_refresh_thread(
     endpoint_discovery_url: String,
     discovered_endpoints_port: u16,
-    dest_sockets: Vec<SocketAddr>,
-    shared_sockets: Arc<Mutex<Vec<SocketAddr>>>,
+    static_dest_sockets: Vec<SocketAddr>,
+    unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>,
     log_context: Option<LogContext>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
@@ -186,18 +182,18 @@ pub fn start_destination_refresh_thread(
         .spawn(move || {
             let socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
             let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
-            let mut socket_count = shared_sockets.lock().unwrap().len();
+            let mut socket_count = static_dest_sockets.len();
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
                     recv(socket_tick) -> _ => {
-                        let fetched_sockets = fetch_discovered_socketaddrs(
+                        let unioned_destinations = fetch_unioned_destinations(
                             &endpoint_discovery_url,
                             discovered_endpoints_port,
-                            dest_sockets.clone(),
+                            static_dest_sockets.clone(),
                         );
-                        let new_sockets = match fetched_sockets {
+                        let new_sockets = match unioned_destinations {
                             Ok(s) => {
-                                info!("Received {} destinations: {s:?}", s.len());
+                                info!("Sending shreds to {} destinations: {s:?}", s.len());
                                 s
                             }
                             Err(e) => {
@@ -206,6 +202,7 @@ pub fn start_destination_refresh_thread(
                                     datapoint_warn!("shredstream_proxy-destination_refresh_error",
                                                     "solana_cluster" => log_ctx.solana_cluster,
                                                     "region" => log_ctx.region,
+                                                    ("prev_unioned_dest_count", socket_count, i64),
                                                     ("errors", 1, i64),
                                                     ("error_str", e.to_string(), String),
                                     );
@@ -214,9 +211,7 @@ pub fn start_destination_refresh_thread(
                             }
                         };
                         socket_count = new_sockets.len();
-                        let mut sockets = shared_sockets.lock().unwrap();
-                        sockets.clear();
-                        sockets.extend(new_sockets);
+                        unioned_dest_sockets.store(Arc::new(new_sockets));
                     }
                     recv(metrics_tick) -> _ => {
                         if let Some(log_ctx) = &log_context {
@@ -237,10 +232,10 @@ pub fn start_destination_refresh_thread(
 }
 
 // combines dynamically discovered endpoints with CLI arg defined endpoints
-fn fetch_discovered_socketaddrs(
+fn fetch_unioned_destinations(
     endpoint_discovery_url: &str,
     discovered_endpoints_port: u16,
-    dest_sockets: Vec<SocketAddr>,
+    static_dest_sockets: Vec<SocketAddr>,
 ) -> Result<Vec<SocketAddr>, ShredstreamProxyError> {
     let bytes = reqwest::blocking::get(endpoint_discovery_url)?.bytes()?;
 
@@ -255,29 +250,37 @@ fn fetch_discovered_socketaddrs(
         }
     };
 
-    let all_discovered_sockets = sockets_json
+    let unioned_dest_sockets = sockets_json
         .into_iter()
         .map(|ip| SocketAddr::new(ip, discovered_endpoints_port))
-        .chain(dest_sockets.into_iter())
+        .chain(static_dest_sockets.into_iter())
         .unique()
         .collect::<Vec<SocketAddr>>();
-    Ok(all_discovered_sockets)
+    Ok(unioned_dest_sockets)
 }
 
-pub fn start_metrics_thread(
+pub fn start_forwarder_accessory_thread(
     metrics: Arc<Mutex<ShredMetrics>>,
+    deduper: Arc<RwLock<Deduper>>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     Builder::new()
-        .name("shredstream_proxy-metrics_thread".to_string())
+        .name("shredstream_proxy-accessory_thread".to_string())
         .spawn(move || {
             let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
+            let deduper_tick = crossbeam_channel::tick(Duration::from_secs(2));
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
+                    // reset deduper to avoid false positives
+                    recv(deduper_tick) -> _ => {
+                        deduper.write().unwrap().reset();
+                    }
+                    // send metrics to influx
                     recv(metrics_tick) -> _ => {
                         metrics.lock().unwrap().report();
                     }
+                    // handle SIGINT shutdown
                     recv(shutdown_receiver) -> _ => {
                         break;
                     }
@@ -329,7 +332,7 @@ mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         str::FromStr,
-        sync::{Arc, Mutex},
+        sync::{Arc, Mutex, RwLock},
         thread,
         thread::sleep,
         time::Duration,
@@ -397,10 +400,6 @@ mod tests {
             .collect::<Vec<_>>();
 
         let udp_sender = UdpSocket::bind("0.0.0.0:10000").unwrap();
-        let destinations = dest_socketaddrs
-            .iter()
-            .map(|destination| (udp_sender.try_clone().unwrap(), destination.to_owned()))
-            .collect::<Vec<_>>();
 
         // spawn listeners
         test_listeners
@@ -416,8 +415,12 @@ mod tests {
         // send packets
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
-            &Deduper::new(MAX_DEDUPER_ITEMS, MAX_DEDUPER_AGE),
-            &Arc::new(destinations),
+            &Arc::new(RwLock::new(Deduper::new(
+                MAX_DEDUPER_ITEMS,
+                MAX_DEDUPER_AGE,
+            ))),
+            &udp_sender,
+            &Arc::new(dest_socketaddrs),
             &Arc::new(Mutex::new(ShredMetrics::new(None))),
         )
         .unwrap();

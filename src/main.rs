@@ -6,13 +6,14 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
     },
     thread,
     thread::sleep,
     time::Duration,
 };
 
+use arc_swap::ArcSwap;
 use clap::{arg, Parser};
 use crossbeam_channel::{Receiver, RecvError, Sender};
 use env_logger::TimestampPrecision;
@@ -210,27 +211,43 @@ fn main() -> Result<(), ShredstreamProxyError> {
         shutdown_receiver.clone(),
         exit.clone(),
     );
-    // share var between refresh and forwarder thread
-    let shared_sockets = Arc::new(Mutex::new(args.dest_ip_ports.clone()));
+    // share sockets between refresh and forwarder thread
+    let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(args.dest_ip_ports.clone()));
+
+    // share metrics + deduper between forwarder <-> accessory thread
+    const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
+    const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
+    let deduper = Arc::new(RwLock::new(solana_perf::sigverify::Deduper::new(
+        MAX_DEDUPER_ITEMS,
+        MAX_DEDUPER_AGE,
+    )));
+    // use mutex since metrics are write heavy. cheaper than rwlock
     let metrics = Arc::new(Mutex::new(ShredMetrics::new(log_context.clone())));
+
     let mut thread_handles = forwarder::start_forwarder_threads(
-        shared_sockets.clone(),
+        unioned_dest_sockets.clone(),
         args.src_bind_port,
         args.num_threads,
         metrics.clone(),
+        deduper.clone(),
         shutdown_receiver.clone(),
         exit.clone(),
     );
     thread_handles.push(heartbeat_hdl);
-    let metrics_hdl =
-        forwarder::start_metrics_thread(metrics.clone(), shutdown_receiver.clone(), exit.clone());
+
+    let metrics_hdl = forwarder::start_forwarder_accessory_thread(
+        metrics.clone(),
+        deduper,
+        shutdown_receiver.clone(),
+        exit.clone(),
+    );
     thread_handles.push(metrics_hdl);
     if args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some() {
         let refresh_handle = forwarder::start_destination_refresh_thread(
             args.endpoint_discovery_url.unwrap(),
             args.discovered_endpoints_port.unwrap(),
             args.dest_ip_ports,
-            shared_sockets,
+            unioned_dest_sockets,
             log_context,
             shutdown_receiver,
             exit,
