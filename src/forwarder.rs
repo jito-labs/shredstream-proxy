@@ -186,12 +186,12 @@ pub fn start_destination_refresh_thread(
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
                     recv(socket_tick) -> _ => {
-                        let unioned_destinations = fetch_unioned_destinations(
+                        let fetched = fetch_unioned_destinations(
                             &endpoint_discovery_url,
                             discovered_endpoints_port,
                             static_dest_sockets.clone(),
                         );
-                        let new_sockets = match unioned_destinations {
+                        let new_sockets = match fetched {
                             Ok(s) => {
                                 info!("Sending shreds to {} destinations: {s:?}", s.len());
                                 s
