@@ -224,12 +224,15 @@ fn main() -> Result<(), ShredstreamProxyError> {
     // use mutex since metrics are write heavy. cheaper than rwlock
     let metrics = Arc::new(ShredMetrics::new(log_context.clone()));
 
+    let use_discovery_service =
+        args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
     let mut thread_handles = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_port,
         args.num_threads,
         deduper.clone(),
         metrics.clone(),
+        use_discovery_service,
         shutdown_receiver.clone(),
         exit.clone(),
     );
@@ -242,7 +245,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         exit.clone(),
     );
     thread_handles.push(metrics_hdl);
-    if args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some() {
+    if use_discovery_service {
         let refresh_handle = forwarder::start_destination_refresh_thread(
             args.endpoint_discovery_url.unwrap(),
             args.discovered_endpoints_port.unwrap(),

@@ -34,6 +34,7 @@ pub fn start_forwarder_threads(
     num_threads: Option<usize>,
     deduper: Arc<RwLock<Deduper>>,
     metrics: Arc<ShredMetrics>,
+    use_discovery_service: bool,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
@@ -80,7 +81,12 @@ pub fn start_forwarder_threads(
                     UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
                         .expect("to bind to udp port for forwarding");
                 let mut local_dest_sockets = unioned_dest_sockets.load();
-                let refresh_subscribers_tick = crossbeam_channel::tick(Duration::from_secs(30));
+
+                let refresh_subscribers_tick = if use_discovery_service {
+                    crossbeam_channel::tick(Duration::from_secs(30))
+                } else {
+                    crossbeam_channel::tick(Duration::MAX)
+                };
                 while !exit.load(Ordering::Relaxed) {
                     crossbeam_channel::select! {
                         // forward packets
