@@ -25,7 +25,9 @@ use thiserror::Error;
 use tokio::runtime::Runtime;
 use tonic::Status;
 
-use crate::{heartbeat::LogContext, token_authenticator::BlockEngineConnectionError};
+use crate::{
+    forwarder::ShredMetrics, heartbeat::LogContext, token_authenticator::BlockEngineConnectionError,
+};
 
 mod forwarder;
 mod heartbeat;
@@ -211,11 +213,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
     );
     // share var between refresh and forwarder thread
     let shared_sockets = Arc::new(Mutex::new(args.dest_ip_ports.clone()));
+    let metrics = Arc::new(Mutex::new(ShredMetrics::new(log_context.clone())));
     let mut thread_handles = forwarder::start_forwarder_threads(
         shared_sockets.clone(),
         args.src_bind_port,
         args.num_threads,
-        log_context.clone(),
+        metrics.clone(),
         shutdown_receiver.clone(),
         exit.clone(),
     );
@@ -237,5 +240,11 @@ fn main() -> Result<(), ShredstreamProxyError> {
     for thread in thread_handles {
         thread.join().expect("thread panicked");
     }
+
+    let metrics_lock = metrics.lock().unwrap();
+    info!(
+        "Exiting shredstream, sent {} successful, {} failed shreds, {} duplicate shreds.",
+        metrics_lock.agg_success_forward, metrics_lock.agg_fail_forward, metrics_lock.duplicate,
+    );
     Ok(())
 }

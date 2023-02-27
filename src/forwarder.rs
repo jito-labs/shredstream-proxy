@@ -31,7 +31,7 @@ pub fn start_forwarder_threads(
     dst_sockets: Arc<Mutex<Vec<SocketAddr>>>,
     src_port: u16,
     num_threads: Option<usize>,
-    log_context: Option<LogContext>,
+    metrics: Arc<Mutex<ShredMetrics>>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
@@ -51,7 +51,6 @@ pub fn start_forwarder_threads(
         .collect::<Vec<_>>();
     let outgoing_sockets = Arc::new(outgoing_sockets);
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
-    let metrics = Arc::new(Mutex::new(ShredMetrics::new(log_context)));
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
     solana_net_utils::multi_bind_in_range(
@@ -59,75 +58,68 @@ pub fn start_forwarder_threads(
         (src_port, src_port + 1),
         num_threads,
     )
-        .unwrap_or_else(|_| {
-            panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
-        })
-        .1
-        .into_iter()
-        .enumerate()
-        .flat_map(|(thread_id, incoming_shred_socket)| {
-            let exit = exit.clone();
-            let metrics = metrics.clone();
-            let shutdown_receiver = shutdown_receiver.clone();
-            let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
-            let listen_thread = streamer::receiver(
-                Arc::new(incoming_shred_socket),
-                exit.clone(),
-                packet_sender,
-                recycler.clone(),
-                Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
-                0, // do not coalesce since batching consumes more cpu cycles and adds latency.
-                true,
-                None,
-            );
+    .unwrap_or_else(|_| {
+        panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
+    })
+    .1
+    .into_iter()
+    .enumerate()
+    .flat_map(|(thread_id, incoming_shred_socket)| {
+        let exit = exit.clone();
+        let metrics = metrics.clone();
+        let shutdown_receiver = shutdown_receiver.clone();
+        let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
+        let listen_thread = streamer::receiver(
+            Arc::new(incoming_shred_socket),
+            exit.clone(),
+            packet_sender,
+            recycler.clone(),
+            Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
+            0, // do not coalesce since batching consumes more cpu cycles and adds latency.
+            true,
+            None,
+        );
 
-            let outgoing_sockets = outgoing_sockets.clone();
-            let send_thread = Builder::new()
-                .name(format!("shredstream_proxy-send_thread_{thread_id}"))
-                .spawn(move || {
-                    const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
-                    const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
-                    let mut deduper = Deduper::new(MAX_DEDUPER_ITEMS, MAX_DEDUPER_AGE);
+        let outgoing_sockets = outgoing_sockets.clone();
+        let send_thread = Builder::new()
+            .name(format!("shredstream_proxy-send_thread_{thread_id}"))
+            .spawn(move || {
+                const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
+                const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
+                let mut deduper = Deduper::new(MAX_DEDUPER_ITEMS, MAX_DEDUPER_AGE);
 
-                    let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
-                    while !exit.load(Ordering::Relaxed) {
-                        deduper.reset();
-                        crossbeam_channel::select! {
-                            recv(packet_receiver) -> maybe_packet_batch => {
-                               let res = recv_from_channel_and_send_multiple_dest(
-                                   maybe_packet_batch,
-                                   &deduper,
-                                   &outgoing_sockets,
-                                   &metrics,
-                               );
+                let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
+                while !exit.load(Ordering::Relaxed) {
+                    deduper.reset();
+                    crossbeam_channel::select! {
+                        recv(packet_receiver) -> maybe_packet_batch => {
+                           let res = recv_from_channel_and_send_multiple_dest(
+                               maybe_packet_batch,
+                               &deduper,
+                               &outgoing_sockets,
+                               &metrics,
+                           );
 
-                                // avoid unwrap to prevent log spam from panic handler in each thread
-                                if res.is_err(){
-                                    break;
-                                }
-                            }
-                            recv(metrics_tick) -> _ => {
-                                metrics.lock().unwrap().report();
-                            }
-                            recv(shutdown_receiver) -> _ => {
+                            // avoid unwrap to prevent log spam from panic handler in each thread
+                            if res.is_err(){
                                 break;
                             }
                         }
+                        recv(metrics_tick) -> _ => {
+                            metrics.lock().unwrap().report();
+                        }
+                        recv(shutdown_receiver) -> _ => {
+                            break;
+                        }
                     }
+                }
+                info!("Exiting forwarder thread {thread_id}.");
+            })
+            .unwrap();
 
-                    let metrics_lock = metrics.lock().unwrap();
-                    info!(
-                        "Exiting forwarder thread {thread_id}, sent {} successful, {} failed shreds, {} duplicate shreds.",
-                        metrics_lock.agg_success_forward,
-                        metrics_lock.agg_fail_forward,
-                        metrics_lock.duplicate,
-                    );
-                })
-                .unwrap();
-
-            [listen_thread, send_thread]
-        })
-        .collect::<Vec<JoinHandle<()>>>()
+        [listen_thread, send_thread]
+    })
+    .collect::<Vec<JoinHandle<()>>>()
 }
 
 /// broadcasts same packet to multiple recipients
