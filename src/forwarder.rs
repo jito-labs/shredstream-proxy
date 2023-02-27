@@ -2,8 +2,8 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     panic,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, RwLock,
     },
     thread::{Builder, JoinHandle},
     time::Duration,
@@ -32,8 +32,8 @@ pub fn start_forwarder_threads(
     unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
     src_port: u16,
     num_threads: Option<usize>,
-    metrics: Arc<Mutex<ShredMetrics>>,
     deduper: Arc<RwLock<Deduper>>,
+    metrics: Arc<ShredMetrics>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
@@ -125,12 +125,15 @@ fn recv_from_channel_and_send_multiple_dest(
     deduper: &Arc<RwLock<Deduper>>,
     send_socket: &UdpSocket,
     local_dest_sockets: &Arc<Vec<SocketAddr>>,
-    metrics: &Arc<Mutex<ShredMetrics>>,
+    metrics: &Arc<ShredMetrics>,
 ) -> Result<(), ShredstreamProxyError> {
     let packet_batch = match maybe_packet_batch {
         Ok(x) => Ok(x),
         Err(e) => Err(ShredstreamProxyError::RecvError(e)),
     }?;
+    metrics
+        .agg_received
+        .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
     debug!(
         "Got batch of {} packets, total size in bytes: {}",
         packet_batch.len(),
@@ -152,14 +155,12 @@ fn recv_from_channel_and_send_multiple_dest(
 
         match batch_send(send_socket, &packets) {
             Ok(_) => {
-                let mut metrics_guard = metrics.lock().unwrap();
-                metrics_guard.agg_success_forward = metrics_guard.agg_success_forward.saturating_add(packets.len() as u64);
-                metrics_guard.duplicate = metrics_guard.duplicate.saturating_add(num_deduped);
+                metrics.agg_success_forward.fetch_add(packets.len() as u64, Ordering::Relaxed);
+                metrics.duplicate.fetch_add(num_deduped, Ordering::Relaxed);
             }
             Err(SendPktsError::IoError(err, num_failed)) => {
-                let mut metrics_guard = metrics.lock().unwrap();
-                metrics_guard.agg_fail_forward = metrics_guard.agg_fail_forward.saturating_add(packets.len() as u64);
-                metrics_guard.duplicate = metrics_guard.duplicate.saturating_add(num_failed as u64);
+                metrics.agg_fail_forward.fetch_add(packets.len() as u64, Ordering::Relaxed);
+                metrics.duplicate.fetch_add(num_failed as u64, Ordering::Relaxed);
                 error!("Failed to send batch of size {} to {outgoing_socketaddr:?}. {num_failed} packets failed. Error: {err}", packets.len());
             }
         }
@@ -177,14 +178,12 @@ pub fn start_destination_refresh_thread(
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    Builder::new()
-        .name("shredstream_proxy-destination_refresh_thread".to_string())
-        .spawn(move || {
-            let socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
-            let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
-            let mut socket_count = static_dest_sockets.len();
-            while !exit.load(Ordering::Relaxed) {
-                crossbeam_channel::select! {
+    Builder::new().name("shredstream_proxy-destination_refresh_thread".to_string()).spawn(move || {
+        let socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
+        let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
+        let mut socket_count = static_dest_sockets.len();
+        while !exit.load(Ordering::Relaxed) {
+            crossbeam_channel::select! {
                     recv(socket_tick) -> _ => {
                         let fetched = fetch_unioned_destinations(
                             &endpoint_discovery_url,
@@ -226,12 +225,11 @@ pub fn start_destination_refresh_thread(
                         break;
                     }
                 }
-            }
-        })
-        .unwrap()
+        }
+    }).unwrap()
 }
 
-// combines dynamically discovered endpoints with CLI arg defined endpoints
+// Returns dynamically discovered endpoints with CLI arg defined endpoints
 fn fetch_unioned_destinations(
     endpoint_discovery_url: &str,
     discovered_endpoints_port: u16,
@@ -260,8 +258,8 @@ fn fetch_unioned_destinations(
 }
 
 pub fn start_forwarder_accessory_thread(
-    metrics: Arc<Mutex<ShredMetrics>>,
     deduper: Arc<RwLock<Deduper>>,
+    metrics: Arc<ShredMetrics>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
@@ -278,7 +276,7 @@ pub fn start_forwarder_accessory_thread(
                     }
                     // send metrics to influx
                     recv(metrics_tick) -> _ => {
-                        metrics.lock().unwrap().report();
+                        metrics.report();
                     }
                     // handle SIGINT shutdown
                     recv(shutdown_receiver) -> _ => {
@@ -292,23 +290,23 @@ pub fn start_forwarder_accessory_thread(
 
 pub struct ShredMetrics {
     /// Total number of shreds received. Includes duplicates when receiving shreds from multiple regions
-    pub agg_received: u64,
+    pub agg_received: AtomicU64,
     /// Total number of shreds successfully forwarded, accounting for all destinations
-    pub agg_success_forward: u64,
+    pub agg_success_forward: AtomicU64,
     /// Total number of shreds failed to forward, accounting for all destinations
-    pub agg_fail_forward: u64,
+    pub agg_fail_forward: AtomicU64,
     /// Number of duplicate shreds received
-    pub duplicate: u64,
+    pub duplicate: AtomicU64,
     pub log_context: Option<LogContext>,
 }
 
 impl ShredMetrics {
     pub fn new(log_context: Option<LogContext>) -> Self {
         Self {
-            agg_received: 0,
-            agg_success_forward: 0,
-            agg_fail_forward: 0,
-            duplicate: 0,
+            agg_received: Default::default(),
+            agg_success_forward: Default::default(),
+            agg_fail_forward: Default::default(),
+            duplicate: Default::default(),
             log_context,
         }
     }
@@ -318,10 +316,10 @@ impl ShredMetrics {
             datapoint_info!("shredstream_proxy-connection_metrics",
             "solana_cluster" => log_context.solana_cluster,
             "region" => log_context.region,
-            ("agg_received", self.agg_received, i64),
-            ("agg_success_forward", self.agg_success_forward, i64),
-            ("agg_fail_forward", self.agg_fail_forward, i64),
-            ("duplicate", self.duplicate, i64),
+            ("agg_received", self.agg_received.load(Ordering::Relaxed), i64),
+            ("agg_success_forward", self.agg_success_forward.load(Ordering::Relaxed), i64),
+            ("agg_fail_forward", self.agg_fail_forward.load(Ordering::Relaxed), i64),
+            ("duplicate", self.duplicate.load(Ordering::Relaxed), i64),
             );
         }
     }
@@ -421,7 +419,7 @@ mod tests {
             ))),
             &udp_sender,
             &Arc::new(dest_socketaddrs),
-            &Arc::new(Mutex::new(ShredMetrics::new(None))),
+            &Arc::new(ShredMetrics::new(None)),
         )
         .unwrap();
 

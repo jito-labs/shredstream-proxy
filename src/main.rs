@@ -6,7 +6,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, RwLock,
+        Arc, RwLock,
     },
     thread,
     thread::sleep,
@@ -214,7 +214,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
     // share sockets between refresh and forwarder thread
     let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(args.dest_ip_ports.clone()));
 
-    // share metrics + deduper between forwarder <-> accessory thread
+    // share deduper + metrics between forwarder <-> accessory thread
     const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
     const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
     let deduper = Arc::new(RwLock::new(solana_perf::sigverify::Deduper::new(
@@ -222,22 +222,22 @@ fn main() -> Result<(), ShredstreamProxyError> {
         MAX_DEDUPER_AGE,
     )));
     // use mutex since metrics are write heavy. cheaper than rwlock
-    let metrics = Arc::new(Mutex::new(ShredMetrics::new(log_context.clone())));
+    let metrics = Arc::new(ShredMetrics::new(log_context.clone()));
 
     let mut thread_handles = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_port,
         args.num_threads,
-        metrics.clone(),
         deduper.clone(),
+        metrics.clone(),
         shutdown_receiver.clone(),
         exit.clone(),
     );
     thread_handles.push(heartbeat_hdl);
 
     let metrics_hdl = forwarder::start_forwarder_accessory_thread(
-        metrics.clone(),
         deduper,
+        metrics.clone(),
         shutdown_receiver.clone(),
         exit.clone(),
     );
@@ -259,10 +259,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
         thread.join().expect("thread panicked");
     }
 
-    let metrics_lock = metrics.lock().unwrap();
     info!(
-        "Exiting shredstream, sent {} successful, {} failed shreds, {} duplicate shreds.",
-        metrics_lock.agg_success_forward, metrics_lock.agg_fail_forward, metrics_lock.duplicate,
+        "Exiting shredstream, {} received , {} sent successfully, {} failed, {} duplicate shreds.",
+        metrics.agg_received.load(Ordering::Relaxed),
+        metrics.agg_success_forward.load(Ordering::Relaxed),
+        metrics.agg_fail_forward.load(Ordering::Relaxed),
+        metrics.duplicate.load(Ordering::Relaxed),
     );
     Ok(())
 }
