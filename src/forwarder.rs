@@ -179,12 +179,12 @@ pub fn start_destination_refresh_thread(
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     Builder::new().name("shredstream_proxy-destination_refresh_thread".to_string()).spawn(move || {
-        let socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
+        let fetch_socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
         let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
         let mut socket_count = static_dest_sockets.len();
         while !exit.load(Ordering::Relaxed) {
             crossbeam_channel::select! {
-                    recv(socket_tick) -> _ => {
+                    recv(fetch_socket_tick) -> _ => {
                         let fetched = fetch_unioned_destinations(
                             &endpoint_discovery_url,
                             discovered_endpoints_port,
@@ -257,6 +257,7 @@ fn fetch_unioned_destinations(
     Ok(unioned_dest_sockets)
 }
 
+/// Reset dedup + send metrics to influx
 pub fn start_forwarder_accessory_thread(
     deduper: Arc<RwLock<Deduper>>,
     metrics: Arc<ShredMetrics>,
@@ -266,7 +267,7 @@ pub fn start_forwarder_accessory_thread(
     Builder::new()
         .name("shredstream_proxy-accessory_thread".to_string())
         .spawn(move || {
-            let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
+            let metrics_tick = crossbeam_channel::tick(Duration::from_secs(15));
             let deduper_tick = crossbeam_channel::tick(Duration::from_secs(2));
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
