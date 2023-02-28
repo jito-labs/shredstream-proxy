@@ -269,10 +269,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     info!(
         "Exiting shredstream, {} received , {} sent successfully, {} failed, {} duplicate shreds.",
-        metrics.agg_received.load(Ordering::Relaxed),
-        metrics.agg_success_forward.load(Ordering::Relaxed),
-        metrics.agg_fail_forward.load(Ordering::Relaxed),
-        metrics.duplicate.load(Ordering::Relaxed),
+        metrics.agg_received_cumulative.load(Ordering::Relaxed),
+        metrics
+            .agg_success_forward_cumulative
+            .load(Ordering::Relaxed),
+        metrics.agg_fail_forward_cumulative.load(Ordering::Relaxed),
+        metrics.duplicate_cumulative.load(Ordering::Relaxed),
     );
     Ok(())
 }

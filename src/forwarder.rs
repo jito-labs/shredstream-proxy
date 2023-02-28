@@ -286,6 +286,7 @@ pub fn start_forwarder_accessory_thread(
                     // send metrics to influx
                     recv(metrics_tick) -> _ => {
                         metrics.report();
+                        metrics.reset();
                     }
                     // handle SIGINT shutdown
                     recv(shutdown_receiver) -> _ => {
@@ -307,6 +308,12 @@ pub struct ShredMetrics {
     /// Number of duplicate shreds received
     pub duplicate: AtomicU64,
     pub log_context: Option<LogContext>,
+
+    // cumulative metrics (persist after reset)
+    pub agg_received_cumulative: AtomicU64,
+    pub agg_success_forward_cumulative: AtomicU64,
+    pub agg_fail_forward_cumulative: AtomicU64,
+    pub duplicate_cumulative: AtomicU64,
 }
 
 impl ShredMetrics {
@@ -316,6 +323,10 @@ impl ShredMetrics {
             agg_success_forward: Default::default(),
             agg_fail_forward: Default::default(),
             duplicate: Default::default(),
+            agg_received_cumulative: Default::default(),
+            agg_success_forward_cumulative: Default::default(),
+            agg_fail_forward_cumulative: Default::default(),
+            duplicate_cumulative: Default::default(),
             log_context,
         }
     }
@@ -331,6 +342,24 @@ impl ShredMetrics {
             ("duplicate", self.duplicate.load(Ordering::Relaxed), i64),
             );
         }
+    }
+
+    /// resets current values, increments cumulative values
+    pub fn reset(&self) {
+        self.agg_received_cumulative.fetch_add(
+            self.agg_received.swap(0, Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.agg_success_forward_cumulative.fetch_add(
+            self.agg_success_forward.swap(0, Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.agg_fail_forward_cumulative.fetch_add(
+            self.agg_fail_forward.swap(0, Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.duplicate_cumulative
+            .fetch_add(self.duplicate.swap(0, Ordering::Relaxed), Ordering::Relaxed);
     }
 }
 

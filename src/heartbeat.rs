@@ -54,6 +54,9 @@ pub fn heartbeat_loop_thread(
         let mut client_restart_count = 0u64;
         let mut successful_heartbeat_count = 0u64;
         let mut failed_heartbeat_count = 0u64;
+        let mut client_restart_count_cumulative = 0u64;
+        let mut successful_heartbeat_count_cumulative = 0u64;
+        let mut failed_heartbeat_count_cumulative = 0u64;
 
         while !exit.load(Ordering::Relaxed) {
             let shredstream_client = runtime.block_on(get_grpc_client(&block_engine_url, &auth_keypair, exit.clone()));
@@ -129,6 +132,12 @@ pub fn heartbeat_loop_thread(
                                             ("client_restart_count", client_restart_count, i64),
                             );
                         }
+                        successful_heartbeat_count_cumulative += successful_heartbeat_count;
+                        failed_heartbeat_count_cumulative += failed_heartbeat_count;
+                        client_restart_count_cumulative += client_restart_count;
+                        successful_heartbeat_count = 0;
+                        failed_heartbeat_count = 0;
+                        client_restart_count = 0;
                     }
                     recv(shutdown_receiver) -> _ => {
                         break;
@@ -136,7 +145,7 @@ pub fn heartbeat_loop_thread(
                 }
             }
         }
-        info!("Exiting heartbeat thread, sent {successful_heartbeat_count} successful, {failed_heartbeat_count} failed heartbeats. Client restarted {client_restart_count} times.");
+        info!("Exiting heartbeat thread, sent {successful_heartbeat_count_cumulative} successful, {failed_heartbeat_count_cumulative} failed heartbeats. Client restarted {client_restart_count_cumulative} times.");
     }).unwrap()
 }
 
