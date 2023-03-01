@@ -1,13 +1,14 @@
 [package]
 name = "jito-shredstream-proxy"
 version = "0.1.0"
-description = "Receives shreds from Jito, forwarding to local consumers."
+description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://jito-labs.gitbook.io/mev/searcher-services/shredstream for details."
 authors = ["Jito Team <team@jito.wtf>"]
 homepage = "https://jito.wtf/"
 edition = "2021"
 publish = false
 
 [dependencies]
+arc-swap = "1.6"
 clap = { version = "4", features = ["derive", "env"] }
 crossbeam-channel = "0.5.6"
 env_logger = "0.10.0"
@@ -17,9 +18,9 @@ itertools = "0.10"
 jito-protos = { path = "./jito_protos" }
 log = "0.4.14"
 prost-types = "0.11.6"
-rand = "0.8"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde_json = "1"
+signal-hook = "0.3"
 solana-client = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
 solana-metrics = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
 solana-perf = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
@@ -27,5 +28,5 @@ solana-sdk = { git = "https://github.com/jito-foundation/jito-solana.git", rev =
 solana-net-utils = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
 solana-streamer = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
 thiserror = "1.0.34"
-tokio = "1.24.2"
+tokio = "1"
 tonic = { version = "0.8.3", features = ["tls", "tls-roots", "tls-webpki-roots"] }

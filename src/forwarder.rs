@@ -3,169 +3,45 @@ use std::{
     panic,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, RwLock,
     },
     thread::{Builder, JoinHandle},
     time::Duration,
 };
 
-use crossbeam_channel::RecvTimeoutError;
+use arc_swap::ArcSwap;
+use crossbeam_channel::{Receiver, RecvError};
 use itertools::Itertools;
-use log::{error, info, warn};
-use solana_metrics::datapoint_warn;
-use solana_perf::{packet::PacketBatchRecycler, recycler::Recycler};
+use log::{debug, error, info, warn};
+use solana_metrics::{datapoint_info, datapoint_warn};
+use solana_perf::{
+    packet::{PacketBatch, PacketBatchRecycler},
+    recycler::Recycler,
+    sigverify::Deduper,
+};
 use solana_streamer::{
     sendmmsg::{batch_send, SendPktsError},
     streamer,
-    streamer::{PacketBatchReceiver, StreamerError, StreamerReceiveStats},
+    streamer::StreamerReceiveStats,
 };
 
 use crate::{heartbeat::LogContext, ShredstreamProxyError};
 
-/// broadcasts same packet to multiple recipients
-/// for best performance, connect sockets to their destinations
-/// Returns Err when unable to receive packets.
-fn send_multiple_destination_from_receiver(
-    receiver: &PacketBatchReceiver,
-    outgoing_sockets: &Arc<Vec<(UdpSocket, SocketAddr)>>,
-    successful_shred_count: &Arc<AtomicU64>,
-    failed_shred_count: &Arc<AtomicU64>,
-) -> Result<(), ShredstreamProxyError> {
-    let packet_batch = match receiver.recv_timeout(Duration::from_secs(1)) {
-        Ok(x) => Ok(x),
-        Err(RecvTimeoutError::Timeout) => return Ok(()),
-        Err(e) => Err(ShredstreamProxyError::StreamerError(StreamerError::from(e))),
-    }?;
-
-    outgoing_sockets
-        .iter()
-        .for_each(|(outgoing_socket, outgoing_socketaddr)| {
-            let packets = packet_batch
-                .iter()
-                .filter(|pkt| !pkt.meta.discard())
-                .filter_map(|pkt| {
-                    let data = pkt.data(..)?;
-                    let addr = outgoing_socketaddr;
-                    Some((data, addr))
-                })
-                .collect::<Vec<_>>();
-
-            match batch_send(outgoing_socket, &packets) {
-                Ok(_) => {
-                    successful_shred_count.fetch_add(packets.len() as u64, Ordering::SeqCst);
-                }
-                Err(SendPktsError::IoError(err, num_failed)) => {
-                    failed_shred_count.fetch_add(num_failed as u64, Ordering::SeqCst);
-                    error!(
-                        "Failed to send batch of size {} to {outgoing_socket:?}. {num_failed} packets failed. Error: {err}",
-                        packets.len()
-                    );
-                }
-            }
-        });
-    Ok(())
-}
-
-// starts a thread that updates our destinations used by the forwarder threads
-pub fn start_destination_refresh_thread(
-    endpoint_discovery_url: String,
-    discovered_endpoints_port: u16,
-    dest_sockets: Vec<SocketAddr>,
-    shared_sockets: Arc<Mutex<Vec<SocketAddr>>>,
-    log_context: Option<LogContext>,
-    exit: Arc<AtomicBool>,
-) -> JoinHandle<()> {
-    Builder::new()
-        .name("shredstream_proxy-destination_refresh_thread".to_string())
-        .spawn(move || {
-            let socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
-            while !exit.load(Ordering::Relaxed) {
-                socket_tick.recv().unwrap();
-                let fetched_sockets = fetch_discovered_socketaddrs(
-                    &endpoint_discovery_url,
-                    discovered_endpoints_port,
-                    dest_sockets.clone(),
-                );
-                let new_sockets = match fetched_sockets {
-                    Ok(s) => {
-                        info!("Received {} destinations: {s:?}", s.len());
-                        s
-                    }
-                    Err(e) => {
-                        warn!("Failed to fetch from discovery service, retrying. Error: {e}");
-                        if let Some(log_ctx) = &log_context {
-                            datapoint_warn!("shredstream_proxy-destination_refresh_error",
-                                            "solana_cluster" => log_ctx.solana_cluster,
-                                            "region" => log_ctx.region,
-                                            ("errors", 1, i64),
-                                            ("error_str", e.to_string(), String),
-                            );
-                        }
-                        continue;
-                    }
-                };
-                let mut sockets = shared_sockets.lock().unwrap();
-                sockets.clear();
-                sockets.extend(new_sockets);
-                drop(sockets);
-            }
-        })
-        .unwrap()
-}
-
-// combines dynamically discovered endpoints with CLI arg defined endpoints
-fn fetch_discovered_socketaddrs(
-    endpoint_discovery_url: &str,
-    discovered_endpoints_port: u16,
-    dest_sockets: Vec<SocketAddr>,
-) -> Result<Vec<SocketAddr>, ShredstreamProxyError> {
-    let bytes = reqwest::blocking::get(endpoint_discovery_url)?.bytes()?;
-
-    let sockets_json = match serde_json::from_slice::<Vec<IpAddr>>(&bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(
-                "Failed to parse json from: {:?}",
-                std::str::from_utf8(&bytes)
-            );
-            return Err(ShredstreamProxyError::from(e));
-        }
-    };
-
-    let all_discovered_sockets = sockets_json
-        .into_iter()
-        .map(|ip| SocketAddr::new(ip, discovered_endpoints_port))
-        .chain(dest_sockets.into_iter())
-        .unique()
-        .collect::<Vec<SocketAddr>>();
-    Ok(all_discovered_sockets)
-}
-
 /// Bind to ports and start forwarding shreds
 pub fn start_forwarder_threads(
-    dst_sockets: Arc<Mutex<Vec<SocketAddr>>>,
+    unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
     src_port: u16,
     num_threads: Option<usize>,
+    deduper: Arc<RwLock<Deduper>>,
+    metrics: Arc<ShredMetrics>,
+    use_discovery_service: bool,
+    shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
-    let num_threads =
-        num_threads.unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()));
+    let num_threads = num_threads
+        .unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()).max(8));
 
-    // all forwarder threads share these sockets
-    let outgoing_sockets = dst_sockets
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|dst| {
-            let sock =
-                UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).unwrap();
-            (sock, *dst)
-        })
-        .collect::<Vec<_>>();
-    let outgoing_sockets = Arc::new(outgoing_sockets);
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
-    let successful_shred_count = Arc::new(AtomicU64::new(0));
-    let failed_shred_count = Arc::new(AtomicU64::new(0));
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
     solana_net_utils::multi_bind_in_range(
@@ -180,7 +56,6 @@ pub fn start_forwarder_threads(
     .into_iter()
     .enumerate()
     .flat_map(|(thread_id, incoming_shred_socket)| {
-        let exit = exit.clone();
         let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
         let listen_thread = streamer::receiver(
             Arc::new(incoming_shred_socket),
@@ -193,27 +68,53 @@ pub fn start_forwarder_threads(
             None,
         );
 
-        let outgoing_sockets = outgoing_sockets.clone();
-        let successful_shred_count = successful_shred_count.clone();
-        let failed_shred_count = failed_shred_count.clone();
+        let deduper = deduper.clone();
+        let unioned_dest_sockets = unioned_dest_sockets.clone();
+        let metrics = metrics.clone();
+        let shutdown_receiver = shutdown_receiver.clone();
+        let exit = exit.clone();
+
         let send_thread = Builder::new()
             .name(format!("shredstream_proxy-send_thread_{thread_id}"))
             .spawn(move || {
-                while !exit.load(Ordering::Relaxed) {
-                    send_multiple_destination_from_receiver(
-                        &packet_receiver,
-                        &outgoing_sockets,
-                        &successful_shred_count,
-                        &failed_shred_count,
-                    )
-                    .unwrap();
-                }
+                let send_socket =
+                    UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+                        .expect("to bind to udp port for forwarding");
+                let mut local_dest_sockets = unioned_dest_sockets.load();
 
-                info!(
-                    "Exiting send thread {thread_id}, sent {} successful, {} failed shreds",
-                    successful_shred_count.load(Ordering::SeqCst),
-                    failed_shred_count.load(Ordering::SeqCst)
-                );
+                let refresh_subscribers_tick = if use_discovery_service {
+                    crossbeam_channel::tick(Duration::from_secs(30))
+                } else {
+                    crossbeam_channel::tick(Duration::MAX)
+                };
+                while !exit.load(Ordering::Relaxed) {
+                    crossbeam_channel::select! {
+                        // forward packets
+                        recv(packet_receiver) -> maybe_packet_batch => {
+                           let res = recv_from_channel_and_send_multiple_dest(
+                               maybe_packet_batch,
+                               &deduper,
+                               &send_socket,
+                               &local_dest_sockets,
+                               &metrics,
+                           );
+
+                            // avoid unwrap to prevent log spam from panic handler in each thread
+                            if res.is_err(){
+                                break;
+                            }
+                        }
+                        // refresh thread-local subscribers
+                        recv(refresh_subscribers_tick) -> _ => {
+                            local_dest_sockets = unioned_dest_sockets.load();
+                        }
+                        // handle shutdown (avoid using sleep since it will hang under SIGINT)
+                        recv(shutdown_receiver) -> _ => {
+                            break;
+                        }
+                    }
+                }
+                info!("Exiting forwarder thread {thread_id}.");
             })
             .unwrap();
 
@@ -222,21 +123,264 @@ pub fn start_forwarder_threads(
     .collect::<Vec<JoinHandle<()>>>()
 }
 
+/// broadcasts same packet to multiple recipients
+/// for best performance, connect sockets to their destinations
+/// Returns Err when unable to receive packets.
+fn recv_from_channel_and_send_multiple_dest(
+    maybe_packet_batch: Result<PacketBatch, RecvError>,
+    deduper: &Arc<RwLock<Deduper>>,
+    send_socket: &UdpSocket,
+    local_dest_sockets: &Arc<Vec<SocketAddr>>,
+    metrics: &Arc<ShredMetrics>,
+) -> Result<(), ShredstreamProxyError> {
+    let packet_batch = match maybe_packet_batch {
+        Ok(x) => Ok(x),
+        Err(e) => Err(ShredstreamProxyError::RecvError(e)),
+    }?;
+    metrics
+        .agg_received
+        .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
+    debug!(
+        "Got batch of {} packets, total size in bytes: {}",
+        packet_batch.len(),
+        packet_batch.iter().map(|x| x.meta.size).sum::<usize>()
+    );
+    let mut packet_batch_vec = vec![packet_batch];
+
+    let num_deduped = deduper.read().unwrap().dedup_packets_and_count_discards(
+        &mut packet_batch_vec,
+        |_received_packet, _is_already_marked_as_discard, _is_dup| {},
+    );
+
+    local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
+        let packets = packet_batch_vec[0].iter().filter(|pkt| !pkt.meta.discard()).filter_map(|pkt| {
+            let data = pkt.data(..)?;
+            let addr = outgoing_socketaddr;
+            Some((data, addr))
+        }).collect::<Vec<_>>();
+
+        match batch_send(send_socket, &packets) {
+            Ok(_) => {
+                metrics.agg_success_forward.fetch_add(packets.len() as u64, Ordering::Relaxed);
+                metrics.duplicate.fetch_add(num_deduped, Ordering::Relaxed);
+            }
+            Err(SendPktsError::IoError(err, num_failed)) => {
+                metrics.agg_fail_forward.fetch_add(packets.len() as u64, Ordering::Relaxed);
+                metrics.duplicate.fetch_add(num_failed as u64, Ordering::Relaxed);
+                error!("Failed to send batch of size {} to {outgoing_socketaddr:?}. {num_failed} packets failed. Error: {err}", packets.len());
+            }
+        }
+    });
+    Ok(())
+}
+
+// starts a thread that updates our destinations used by the forwarder threads
+pub fn start_destination_refresh_thread(
+    endpoint_discovery_url: String,
+    discovered_endpoints_port: u16,
+    static_dest_sockets: Vec<SocketAddr>,
+    unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>,
+    log_context: Option<LogContext>,
+    shutdown_receiver: Receiver<()>,
+    exit: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    Builder::new().name("shredstream_proxy-destination_refresh_thread".to_string()).spawn(move || {
+        let fetch_socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
+        let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
+        let mut socket_count = static_dest_sockets.len();
+        while !exit.load(Ordering::Relaxed) {
+            crossbeam_channel::select! {
+                    recv(fetch_socket_tick) -> _ => {
+                        let fetched = fetch_unioned_destinations(
+                            &endpoint_discovery_url,
+                            discovered_endpoints_port,
+                            static_dest_sockets.clone(),
+                        );
+                        let new_sockets = match fetched {
+                            Ok(s) => {
+                                info!("Sending shreds to {} destinations: {s:?}", s.len());
+                                s
+                            }
+                            Err(e) => {
+                                warn!("Failed to fetch from discovery service, retrying. Error: {e}");
+                                if let Some(log_ctx) = &log_context {
+                                    datapoint_warn!("shredstream_proxy-destination_refresh_error",
+                                                    "solana_cluster" => log_ctx.solana_cluster,
+                                                    "region" => log_ctx.region,
+                                                    ("prev_unioned_dest_count", socket_count, i64),
+                                                    ("errors", 1, i64),
+                                                    ("error_str", e.to_string(), String),
+                                    );
+                                }
+                                continue;
+                            }
+                        };
+                        socket_count = new_sockets.len();
+                        unioned_dest_sockets.store(Arc::new(new_sockets));
+                    }
+                    recv(metrics_tick) -> _ => {
+                        if let Some(log_ctx) = &log_context {
+                            datapoint_info!("shredstream_proxy-destination_refresh_stats",
+                                            "solana_cluster" => log_ctx.solana_cluster,
+                                            "region" => log_ctx.region,
+                                            ("destination_count", socket_count, i64),
+                            );
+                        }
+                    }
+                    recv(shutdown_receiver) -> _ => {
+                        break;
+                    }
+                }
+        }
+    }).unwrap()
+}
+
+// Returns dynamically discovered endpoints with CLI arg defined endpoints
+fn fetch_unioned_destinations(
+    endpoint_discovery_url: &str,
+    discovered_endpoints_port: u16,
+    static_dest_sockets: Vec<SocketAddr>,
+) -> Result<Vec<SocketAddr>, ShredstreamProxyError> {
+    let bytes = reqwest::blocking::get(endpoint_discovery_url)?.bytes()?;
+
+    let sockets_json = match serde_json::from_slice::<Vec<IpAddr>>(&bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(
+                "Failed to parse json from: {:?}",
+                std::str::from_utf8(&bytes)
+            );
+            return Err(ShredstreamProxyError::from(e));
+        }
+    };
+
+    let unioned_dest_sockets = sockets_json
+        .into_iter()
+        .map(|ip| SocketAddr::new(ip, discovered_endpoints_port))
+        .chain(static_dest_sockets.into_iter())
+        .unique()
+        .collect::<Vec<SocketAddr>>();
+    Ok(unioned_dest_sockets)
+}
+
+/// Reset dedup + send metrics to influx
+pub fn start_forwarder_accessory_thread(
+    deduper: Arc<RwLock<Deduper>>,
+    metrics: Arc<ShredMetrics>,
+    metrics_update_interval_ms: u64,
+    shutdown_receiver: Receiver<()>,
+    exit: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    Builder::new()
+        .name("shredstream_proxy-accessory_thread".to_string())
+        .spawn(move || {
+            let metrics_tick =
+                crossbeam_channel::tick(Duration::from_millis(metrics_update_interval_ms));
+            let deduper_tick = crossbeam_channel::tick(Duration::from_secs(2));
+            while !exit.load(Ordering::Relaxed) {
+                crossbeam_channel::select! {
+                    // reset deduper to avoid false positives
+                    recv(deduper_tick) -> _ => {
+                        deduper.write().unwrap().reset();
+                    }
+                    // send metrics to influx
+                    recv(metrics_tick) -> _ => {
+                        metrics.report();
+                        metrics.reset();
+                    }
+                    // handle SIGINT shutdown
+                    recv(shutdown_receiver) -> _ => {
+                        break;
+                    }
+                }
+            }
+        })
+        .unwrap()
+}
+
+pub struct ShredMetrics {
+    /// Total number of shreds received. Includes duplicates when receiving shreds from multiple regions
+    pub agg_received: AtomicU64,
+    /// Total number of shreds successfully forwarded, accounting for all destinations
+    pub agg_success_forward: AtomicU64,
+    /// Total number of shreds failed to forward, accounting for all destinations
+    pub agg_fail_forward: AtomicU64,
+    /// Number of duplicate shreds received
+    pub duplicate: AtomicU64,
+    pub log_context: Option<LogContext>,
+
+    // cumulative metrics (persist after reset)
+    pub agg_received_cumulative: AtomicU64,
+    pub agg_success_forward_cumulative: AtomicU64,
+    pub agg_fail_forward_cumulative: AtomicU64,
+    pub duplicate_cumulative: AtomicU64,
+}
+
+impl ShredMetrics {
+    pub fn new(log_context: Option<LogContext>) -> Self {
+        Self {
+            agg_received: Default::default(),
+            agg_success_forward: Default::default(),
+            agg_fail_forward: Default::default(),
+            duplicate: Default::default(),
+            agg_received_cumulative: Default::default(),
+            agg_success_forward_cumulative: Default::default(),
+            agg_fail_forward_cumulative: Default::default(),
+            duplicate_cumulative: Default::default(),
+            log_context,
+        }
+    }
+
+    pub fn report(&self) {
+        if let Some(log_context) = &self.log_context {
+            datapoint_info!("shredstream_proxy-connection_metrics",
+            "solana_cluster" => log_context.solana_cluster,
+            "region" => log_context.region,
+            ("agg_received", self.agg_received.load(Ordering::Relaxed), i64),
+            ("agg_success_forward", self.agg_success_forward.load(Ordering::Relaxed), i64),
+            ("agg_fail_forward", self.agg_fail_forward.load(Ordering::Relaxed), i64),
+            ("duplicate", self.duplicate.load(Ordering::Relaxed), i64),
+            );
+        }
+    }
+
+    /// resets current values, increments cumulative values
+    pub fn reset(&self) {
+        self.agg_received_cumulative.fetch_add(
+            self.agg_received.swap(0, Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.agg_success_forward_cumulative.fetch_add(
+            self.agg_success_forward.swap(0, Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.agg_fail_forward_cumulative.fetch_add(
+            self.agg_fail_forward.swap(0, Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.duplicate_cumulative
+            .fetch_add(self.duplicate.swap(0, Ordering::Relaxed), Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         str::FromStr,
-        sync::{atomic::AtomicU64, Arc, Mutex},
+        sync::{Arc, Mutex, RwLock},
         thread,
         thread::sleep,
         time::Duration,
     };
 
-    use solana_perf::packet::{Meta, Packet, PacketBatch};
+    use solana_perf::{
+        packet::{Meta, Packet, PacketBatch},
+        sigverify::Deduper,
+    };
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
 
-    use crate::forwarder::send_multiple_destination_from_receiver;
+    use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
 
     fn listen_and_collect(listen_socket: UdpSocket, received_packets: Arc<Mutex<Vec<Vec<u8>>>>) {
         let mut buf = [0u8; PACKET_DATA_SIZE];
@@ -292,10 +436,6 @@ mod tests {
             .collect::<Vec<_>>();
 
         let udp_sender = UdpSocket::bind("0.0.0.0:10000").unwrap();
-        let destinations = dest_socketaddrs
-            .iter()
-            .map(|destination| (udp_sender.try_clone().unwrap(), destination.to_owned()))
-            .collect::<Vec<_>>();
 
         // spawn listeners
         test_listeners
@@ -305,13 +445,19 @@ mod tests {
                 let to_receive = to_receive.to_owned();
                 thread::spawn(move || listen_and_collect(socket, to_receive));
             });
+        const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
+        const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
 
         // send packets
-        send_multiple_destination_from_receiver(
-            &packet_receiver,
-            &Arc::new(destinations),
-            &Arc::new(AtomicU64::new(0)),
-            &Arc::new(AtomicU64::new(0)),
+        recv_from_channel_and_send_multiple_dest(
+            packet_receiver.recv(),
+            &Arc::new(RwLock::new(Deduper::new(
+                MAX_DEDUPER_ITEMS,
+                MAX_DEDUPER_AGE,
+            ))),
+            &udp_sender,
+            &Arc::new(dest_socketaddrs),
+            &Arc::new(ShredMetrics::new(None)),
         )
         .unwrap();
 

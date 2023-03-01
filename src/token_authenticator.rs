@@ -1,5 +1,8 @@
 use std::{
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
+    },
     time::{Duration, SystemTime},
 };
 
@@ -46,6 +49,7 @@ impl ClientInterceptor {
         mut auth_service_client: AuthServiceClient<Channel>,
         keypair: &Arc<Keypair>,
         role: Role,
+        exit: Arc<AtomicBool>,
     ) -> BlockEngineConnectionResult<Self> {
         let (access_token, refresh_token) =
             Self::auth(&mut auth_service_client, keypair, role).await?;
@@ -59,6 +63,7 @@ impl ClientInterceptor {
             access_token.expires_at_utc.unwrap(),
             keypair.clone(),
             role,
+            exit,
         );
 
         Ok(Self { bearer_token })
@@ -98,12 +103,13 @@ impl ClientInterceptor {
         access_token_expiration: Timestamp,
         keypair: Arc<Keypair>,
         role: Role,
+        exit: Arc<AtomicBool>,
     ) -> JoinHandle<BlockEngineConnectionResult<()>> {
         tokio::spawn(async move {
             let mut refresh_token = refresh_token;
             let mut access_token_expiration = access_token_expiration;
 
-            loop {
+            while !exit.load(Ordering::Relaxed) {
                 let access_token_ttl = SystemTime::try_from(access_token_expiration.clone())
                     .unwrap()
                     .duration_since(SystemTime::now())
@@ -165,10 +171,13 @@ impl ClientInterceptor {
                         );
                     }
                     _ => {
-                        sleep(Duration::from_secs(60)).await;
+                        if !exit.load(Ordering::Relaxed) {
+                            sleep(Duration::from_secs(60)).await
+                        };
                     }
                 }
             }
+            Ok(())
         })
     }
 }

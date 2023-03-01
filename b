@@ -5,6 +5,6 @@ set -eux
 TAG=$(git describe --match=NeVeRmAtCh --always --abbrev=8 --dirty)
 ORG="jitolabs"
 
-DOCKER_BUILDKIT=1 docker build -t "$ORG/shredstream-proxy:${TAG}" .
+DOCKER_BUILDKIT=1 docker build -t "$ORG/jito-shredstream-proxy:${TAG}" .
 
-docker run "$ORG/shredstream-proxy:${TAG}"
+docker run "$ORG/jito-shredstream-proxy:${TAG}"
