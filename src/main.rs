@@ -132,7 +132,7 @@ fn get_public_ip() -> IpAddr {
 }
 // Creates a channel that gets a message every time `SIGINT` is signalled.
 fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<()>)> {
-    let (s, r) = crossbeam_channel::bounded(100);
+    let (s, r) = crossbeam_channel::bounded(256);
     let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?;
 
     let s_thread = s.clone();
@@ -141,7 +141,7 @@ fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<
             exit.store(true, Ordering::SeqCst);
             // send shutdown signal multiple times since crossbeam doesn't have broadcast channels
             // each thread will consume a shutdown signal
-            for _ in 0..128 {
+            for _ in 0..256 {
                 if s_thread.send(()).is_err() {
                     break;
                 }
@@ -197,7 +197,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let auth_keypair = Arc::new(
         read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
             panic!(
-                "Unable parse keypair file. Ensure that file {:?} is readable. Error: {e}",
+                "Unable to parse keypair file. Ensure that file {:?} is readable. Error: {e}",
                 args.auth_keypair
             )
         }),
@@ -263,12 +263,17 @@ fn main() -> Result<(), ShredstreamProxyError> {
         thread_handles.push(refresh_handle);
     }
 
+    info!(
+        "Starting Shredstream, listening on port {}/udp.",
+        args.src_bind_port
+    );
+
     for thread in thread_handles {
         thread.join().expect("thread panicked");
     }
 
     info!(
-        "Exiting shredstream, {} received , {} sent successfully, {} failed, {} duplicate shreds.",
+        "Exiting Shredstream, {} received , {} sent successfully, {} failed, {} duplicate shreds.",
         metrics.agg_received_cumulative.load(Ordering::Relaxed),
         metrics
             .agg_success_forward_cumulative
