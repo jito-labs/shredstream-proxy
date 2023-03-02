@@ -202,6 +202,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
             )
         }),
     );
+    let (grpc_restart_signal_s, grpc_restart_signal_r) = crossbeam_channel::bounded(1);
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
         args.block_engine_url,
         &auth_keypair,
@@ -212,6 +213,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         ),
         log_context.clone(),
         runtime,
+        grpc_restart_signal_r,
         shutdown_receiver.clone(),
         exit.clone(),
     );
@@ -246,6 +248,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         deduper,
         metrics.clone(),
         args.metrics_report_interval_ms,
+        grpc_restart_signal_s,
         shutdown_receiver.clone(),
         exit.clone(),
     );

@@ -10,7 +10,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use crossbeam_channel::{Receiver, RecvError};
+use crossbeam_channel::{Receiver, RecvError, Sender, TrySendError};
 use itertools::Itertools;
 use log::{debug, error, info, warn};
 use solana_metrics::{datapoint_info, datapoint_warn};
@@ -28,6 +28,7 @@ use solana_streamer::{
 use crate::{heartbeat::LogContext, ShredstreamProxyError};
 
 /// Bind to ports and start forwarding shreds
+#[allow(clippy::too_many_arguments)]
 pub fn start_forwarder_threads(
     unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
     src_port: u16,
@@ -268,6 +269,7 @@ pub fn start_forwarder_accessory_thread(
     deduper: Arc<RwLock<Deduper>>,
     metrics: Arc<ShredMetrics>,
     metrics_update_interval_ms: u64,
+    grpc_restart_signal: Sender<()>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
@@ -277,6 +279,8 @@ pub fn start_forwarder_accessory_thread(
             let metrics_tick =
                 crossbeam_channel::tick(Duration::from_millis(metrics_update_interval_ms));
             let deduper_tick = crossbeam_channel::tick(Duration::from_secs(2));
+            let stale_connection_tick = crossbeam_channel::tick(Duration::from_secs(30));
+            let mut last_cumulative_received_shred_count = 0;
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
                     // reset deduper to avoid false positives
@@ -287,6 +291,19 @@ pub fn start_forwarder_accessory_thread(
                     recv(metrics_tick) -> _ => {
                         metrics.report();
                         metrics.reset();
+                    }
+                    // handle scenario when grpc connection is open, but backend doesn't receive heartbeat
+                    // possibly due to envoy losing track of the pod when backend restarts.
+                    // we restart our grpc connection work around the stale connection
+                    recv(stale_connection_tick) -> _ => {
+                        // if no shreds received, then restart
+                        let new_received_count = metrics.agg_received_cumulative.load(Ordering::Relaxed);
+                        if new_received_count == last_cumulative_received_shred_count {
+                            if let Err(TrySendError::Disconnected(())) = grpc_restart_signal.try_send(()) {
+                                panic!("Failed to send grpc restart signal, channel disconnected");
+                            }
+                        }
+                        last_cumulative_received_shred_count = new_received_count;
                     }
                     // handle SIGINT shutdown
                     recv(shutdown_receiver) -> _ => {
