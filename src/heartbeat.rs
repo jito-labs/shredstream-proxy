@@ -38,6 +38,7 @@ pub fn heartbeat_loop_thread(
     recv_socket: SocketAddr,
     log_context: Option<LogContext>,
     runtime: Runtime,
+    grpc_restart_signal: Receiver<()>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
@@ -84,6 +85,7 @@ pub fn heartbeat_loop_thread(
 
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
+                    // send heartbeat
                     recv(heartbeat_tick) -> _ => {
                         let heartbeat_result = runtime.block_on(shredstream_client
                             .send_heartbeat(Heartbeat {
@@ -121,6 +123,7 @@ pub fn heartbeat_loop_thread(
                             }
                         }
                     }
+                    // send metrics
                     recv(metrics_tick) -> _ => {
                         if let Some(log_ctx) = &log_context {
                             datapoint_info!("shredstream_proxy-heartbeat_stats",
@@ -139,7 +142,24 @@ pub fn heartbeat_loop_thread(
                         failed_heartbeat_count = 0;
                         client_restart_count = 0;
                     }
+                    // restart grpc client if no shreds received
+                    recv(grpc_restart_signal) -> _ => {
+                        warn!("No shreds received recently, restarting GRPC connection.");
+                        if let Some(log_ctx) = &log_context {
+                            datapoint_warn!("shredstream_proxy-heartbeat_restart_signal",
+                                            "solana_cluster" => log_ctx.solana_cluster,
+                                            "region" => log_ctx.region,
+                                            "block_engine_url" => block_engine_url,
+                                            ("desired_regions", format!("{desired_regions:?}"), String),
+                                            ("client_restart_count", client_restart_count, i64),
+                            );
+                        }
+                        // exit should be false
+                        break;
+                    }
+                    // handle SIGINT shutdown
                     recv(shutdown_receiver) -> _ => {
+                        // exit should be true
                         break;
                     }
                 }
