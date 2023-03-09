@@ -9,12 +9,12 @@ use std::{
         Arc, RwLock,
     },
     thread,
-    thread::sleep,
+    thread::{sleep, JoinHandle},
     time::Duration,
 };
 
 use arc_swap::ArcSwap;
-use clap::{arg, Parser};
+use clap::{arg, Command, Parser};
 use crossbeam_channel::{Receiver, RecvError, Sender};
 use env_logger::TimestampPrecision;
 use log::*;
@@ -34,7 +34,7 @@ mod forwarder;
 mod heartbeat;
 mod token_authenticator;
 
-#[derive(Parser, Debug)]
+#[derive(Clone, Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// Address for Jito Block Engine.
@@ -92,11 +92,123 @@ struct Args {
     #[arg(long, env)]
     public_ip: Option<IpAddr>,
 
+    #[command(flatten)]
+    // action: Action,
+    cmd_demo: StashArgs,
+
     /// Number of threads to use. Defaults to use all cores.
     #[arg(long, env)]
     num_threads: Option<usize>,
 }
 
+#[derive(Clone, Debug, clap::Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct StashArgs {
+    #[command(subcommand)]
+    command: Option<StashCommands>,
+
+    #[command(flatten)]
+    common_args: CommonArgs,
+}
+
+#[derive(Clone, Debug, clap::Subcommand)]
+enum StashCommands {
+    Push(CommonArgs),
+    Shredstream(ShredstreamArgs),
+}
+
+#[derive(Clone, Debug, clap::Args)]
+struct StashPushArgs {
+    #[arg(short, long)]
+    message: Option<String>,
+}
+// #[derive(clap::Subcommand, Clone, Debug)]
+// enum Action {
+//     Shredstream {
+//         /// Address for Jito Block Engine.
+//         /// See https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
+//         #[arg(long, env)]
+//         block_engine_url: String,
+//
+//         /// Path to keypair file used to authenticate with the backend.
+//         #[arg(long, env)]
+//         auth_keypair: PathBuf,
+//
+//         /// Desired regions to receive heartbeats from.
+//         /// Receives `n` different streams. Requires at least 1 region, comma separated.
+//         #[arg(long, env, value_delimiter = ',', required(true))]
+//         desired_regions: Vec<String>,
+//     },
+//     ForwardOnly,
+// }
+
+#[derive(clap::Args, Clone, Debug)]
+struct ShredstreamArgs {
+    /// Address for Jito Block Engine.
+    /// See https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
+    #[arg(long, env)]
+    block_engine_url1: String,
+
+    /// Path to keypair file used to authenticate with the backend.
+    #[arg(long, env)]
+    auth_keypair1: PathBuf,
+
+    /// Desired regions to receive heartbeats from.
+    /// Receives `n` different streams. Requires at least 1 region, comma separated.
+    #[arg(long, env, value_delimiter = ',', required(true))]
+    desired_regions1: Vec<String>,
+
+    #[clap(flatten)]
+    common_args: CommonArgs,
+}
+
+#[derive(clap::Args, Clone, Debug)]
+struct CommonArgs {
+    /// Address where Shredstream proxy listens.
+    #[arg(long, env, default_value_t = IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)))]
+    src_bind_addr1: IpAddr,
+
+    /// Port where Shredstream proxy listens. Use `0` for random ephemeral port.
+    #[arg(long, env, default_value_t = 20_000)]
+    src_bind_port1: u16,
+
+    /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated.
+    /// Eg. `127.0.0.1:8002,10.0.0.1:8002`.
+    #[arg(long, env, value_delimiter = ',')]
+    dest_ip_ports1: Vec<SocketAddr>,
+
+    /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds.
+    /// Endpoints are then set-union with `dest-ip-ports`.
+    #[arg(long, env)]
+    endpoint_discovery_url1: Option<String>,
+
+    /// Port to send shreds to for hosts fetched via `endpoint-discovery-url`.
+    /// Port can be found using `scripts/get_tvu_port.sh`.
+    /// See https://jito-labs.gitbook.io/mev/searcher-services/shredstream#running-shredstream
+    #[arg(long, env)]
+    discovered_endpoints_port1: Option<u16>,
+
+    /// Solana cluster e.g. testnet, mainnet, devnet. Used for logging purposes.
+    #[arg(long, env)]
+    solana_cluster1: Option<String>,
+
+    /// Cluster region. Used for logging purposes.
+    #[arg(long, env)]
+    region1: Option<String>,
+
+    /// Interval between logging stats to CLI and influx
+    #[arg(long, env, default_value_t = 15_000)]
+    metrics_report_interval_ms1: u64,
+
+    /// Public IP address to use.
+    /// Overrides value fetched from `ifconfig.me`.
+    #[arg(long, env)]
+    public_ip1: Option<IpAddr>,
+
+    /// Number of threads to use. Defaults to use all cores.
+    #[arg(long, env)]
+    num_threads1: Option<usize>,
+}
 #[derive(Debug, Error)]
 pub enum ShredstreamProxyError {
     #[error("TonicError {0}")]
@@ -151,11 +263,21 @@ fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<
 
     Ok((s, r))
 }
+
+fn fwd_start() {}
 fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder()
         .format_timestamp(Some(TimestampPrecision::Micros))
         .init();
     let args = Args::parse();
+    let args2 = args.clone();
+    let foo = Command::new("myprog")
+        .subcommand(
+            Command::new("config")
+                .about("Controls configuration features")
+                .arg(arg!("<config> 'Required configuration file to use'")),
+        )
+        .subcommand_required(false);
     set_host_id(hostname::get().unwrap().into_string().unwrap());
     if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
         || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
@@ -194,28 +316,14 @@ fn main() -> Result<(), ShredstreamProxyError> {
     };
 
     let runtime = Runtime::new().unwrap();
-    let auth_keypair = Arc::new(
-        read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
-            panic!(
-                "Unable to parse keypair file. Ensure that file {:?} is readable. Error: {e}",
-                args.auth_keypair
-            )
-        }),
-    );
     let (grpc_restart_signal_s, grpc_restart_signal_r) = crossbeam_channel::bounded(1);
-    let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
-        args.block_engine_url,
-        &auth_keypair,
-        args.desired_regions,
-        SocketAddr::new(
-            args.public_ip.unwrap_or_else(get_public_ip),
-            args.src_bind_port,
-        ),
-        log_context.clone(),
+    let heartbeat_hdl = start_heartbeat(
+        args2,
+        &exit,
+        &shutdown_receiver,
+        &log_context,
         runtime,
         grpc_restart_signal_r,
-        shutdown_receiver.clone(),
-        exit.clone(),
     );
     // share sockets between refresh and forwarder thread
     let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(args.dest_ip_ports.clone()));
@@ -285,4 +393,37 @@ fn main() -> Result<(), ShredstreamProxyError> {
         metrics.duplicate_cumulative.load(Ordering::Relaxed),
     );
     Ok(())
+}
+
+fn start_heartbeat(
+    args: Args,
+    exit: &Arc<AtomicBool>,
+    shutdown_receiver: &Receiver<()>,
+    log_context: &Option<LogContext>,
+    runtime: Runtime,
+    grpc_restart_signal_r: Receiver<()>,
+) -> JoinHandle<()> {
+    let auth_keypair = Arc::new(
+        read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
+            panic!(
+                "Unable to parse keypair file. Ensure that file {:?} is readable. Error: {e}",
+                args.auth_keypair
+            )
+        }),
+    );
+    let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
+        args.block_engine_url,
+        &auth_keypair,
+        args.desired_regions,
+        SocketAddr::new(
+            args.public_ip.unwrap_or_else(get_public_ip),
+            args.src_bind_port,
+        ),
+        log_context.clone(),
+        runtime,
+        grpc_restart_signal_r,
+        shutdown_receiver.clone(),
+        exit.clone(),
+    );
+    heartbeat_hdl
 }
