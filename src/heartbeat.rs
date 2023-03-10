@@ -60,6 +60,7 @@ pub fn heartbeat_loop_thread(
         let mut failed_heartbeat_count_cumulative = 0u64;
 
         while !exit.load(Ordering::Relaxed) {
+            info!("Starting heartbeat client");
             let shredstream_client = runtime.block_on(get_grpc_client(&block_engine_url, &auth_keypair, exit.clone()));
 
             let mut shredstream_client = match shredstream_client {
@@ -144,7 +145,7 @@ pub fn heartbeat_loop_thread(
                     }
                     // restart grpc client if no shreds received
                     recv(grpc_restart_signal) -> _ => {
-                        warn!("No shreds received recently, restarting GRPC connection.");
+                        warn!("No shreds received recently, restarting heartbeat client.");
                         if let Some(log_ctx) = &log_context {
                             datapoint_warn!("shredstream_proxy-heartbeat_restart_signal",
                                             "solana_cluster" => log_ctx.solana_cluster,

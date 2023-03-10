@@ -9,7 +9,7 @@ use std::{
         Arc, RwLock,
     },
     thread,
-    thread::sleep,
+    thread::{sleep, JoinHandle},
     time::Duration,
 };
 
@@ -34,9 +34,25 @@ mod forwarder;
 mod heartbeat;
 mod token_authenticator;
 
-#[derive(Parser, Debug)]
+#[derive(Clone, Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
+// https://docs.rs/clap/latest/clap/_derive/_cookbook/git_derive/index.html
 struct Args {
+    #[command(subcommand)]
+    shredstream_args: ProxySubcommands,
+}
+
+#[derive(Clone, Debug, clap::Subcommand)]
+enum ProxySubcommands {
+    /// Requests shreds from Jito and sends to all destinations.
+    Shredstream(ShredstreamArgs),
+
+    /// Does not request shreds from Jito. Sends anything received on `src-bind-addr`:`src-bind-port` to all destinations.
+    ForwardOnly(CommonArgs),
+}
+
+#[derive(clap::Args, Clone, Debug)]
+struct ShredstreamArgs {
     /// Address for Jito Block Engine.
     /// See https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
     #[arg(long, env)]
@@ -51,6 +67,12 @@ struct Args {
     #[arg(long, env, value_delimiter = ',', required(true))]
     desired_regions: Vec<String>,
 
+    #[clap(flatten)]
+    common_args: CommonArgs,
+}
+
+#[derive(clap::Args, Clone, Debug)]
+struct CommonArgs {
     /// Address where Shredstream proxy listens.
     #[arg(long, env, default_value_t = IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)))]
     src_bind_addr: IpAddr,
@@ -130,6 +152,7 @@ fn get_public_ip() -> IpAddr {
 
     public_ip
 }
+
 // Creates a channel that gets a message every time `SIGINT` is signalled.
 fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<()>)> {
     let (s, r) = crossbeam_channel::bounded(256);
@@ -151,11 +174,19 @@ fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<
 
     Ok((s, r))
 }
+
 fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder()
         .format_timestamp(Some(TimestampPrecision::Micros))
         .init();
-    let args = Args::parse();
+    let all_args: Args = Args::parse();
+
+    let shredstream_args = all_args.shredstream_args.clone();
+    // common args
+    let args = match all_args.shredstream_args {
+        ProxySubcommands::Shredstream(x) => x.common_args,
+        ProxySubcommands::ForwardOnly(x) => x,
+    };
     set_host_id(hostname::get().unwrap().into_string().unwrap());
     if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
         || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
@@ -194,29 +225,20 @@ fn main() -> Result<(), ShredstreamProxyError> {
     };
 
     let runtime = Runtime::new().unwrap();
-    let auth_keypair = Arc::new(
-        read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
-            panic!(
-                "Unable to parse keypair file. Ensure that file {:?} is readable. Error: {e}",
-                args.auth_keypair
-            )
-        }),
-    );
     let (grpc_restart_signal_s, grpc_restart_signal_r) = crossbeam_channel::bounded(1);
-    let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
-        args.block_engine_url,
-        &auth_keypair,
-        args.desired_regions,
-        SocketAddr::new(
-            args.public_ip.unwrap_or_else(get_public_ip),
-            args.src_bind_port,
-        ),
-        log_context.clone(),
-        runtime,
-        grpc_restart_signal_r,
-        shutdown_receiver.clone(),
-        exit.clone(),
-    );
+    let mut thread_handles = vec![];
+    if let ProxySubcommands::Shredstream(args) = shredstream_args {
+        let heartbeat_hdl = start_heartbeat(
+            args,
+            &exit,
+            &shutdown_receiver,
+            &log_context,
+            runtime,
+            grpc_restart_signal_r,
+        );
+        thread_handles.push(heartbeat_hdl);
+    }
+
     // share sockets between refresh and forwarder thread
     let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(args.dest_ip_ports.clone()));
 
@@ -232,7 +254,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
-    let mut thread_handles = forwarder::start_forwarder_threads(
+    let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_port,
         args.num_threads,
@@ -242,7 +264,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         shutdown_receiver.clone(),
         exit.clone(),
     );
-    thread_handles.push(heartbeat_hdl);
+    thread_handles.extend(forwarder_hdls);
 
     let metrics_hdl = forwarder::start_forwarder_accessory_thread(
         deduper,
@@ -267,8 +289,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
     }
 
     info!(
-        "Starting Shredstream, listening on port {}/udp.",
-        args.src_bind_port
+        "Shredstream started, listening on {}:{}/udp.",
+        args.src_bind_addr, args.src_bind_port
     );
 
     for thread in thread_handles {
@@ -285,4 +307,37 @@ fn main() -> Result<(), ShredstreamProxyError> {
         metrics.duplicate_cumulative.load(Ordering::Relaxed),
     );
     Ok(())
+}
+
+fn start_heartbeat(
+    args: ShredstreamArgs,
+    exit: &Arc<AtomicBool>,
+    shutdown_receiver: &Receiver<()>,
+    log_context: &Option<LogContext>,
+    runtime: Runtime,
+    grpc_restart_signal_r: Receiver<()>,
+) -> JoinHandle<()> {
+    let auth_keypair = Arc::new(
+        read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
+            panic!(
+                "Unable to parse keypair file. Ensure that file {:?} is readable. Error: {e}",
+                args.auth_keypair
+            )
+        }),
+    );
+    let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
+        args.block_engine_url,
+        &auth_keypair,
+        args.desired_regions,
+        SocketAddr::new(
+            args.common_args.public_ip.unwrap_or_else(get_public_ip),
+            args.common_args.src_bind_port,
+        ),
+        log_context.clone(),
+        runtime,
+        grpc_restart_signal_r,
+        shutdown_receiver.clone(),
+        exit.clone(),
+    );
+    heartbeat_hdl
 }
