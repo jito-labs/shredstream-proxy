@@ -145,7 +145,7 @@ pub fn heartbeat_loop_thread(
                     }
                     // restart grpc client if no shreds received
                     recv(grpc_restart_signal) -> _ => {
-                        warn!("No shreds received recently, restarting heartbeat client connection.");
+                        warn!("No shreds received recently, restarting heartbeat client.");
                         if let Some(log_ctx) = &log_context {
                             datapoint_warn!("shredstream_proxy-heartbeat_restart_signal",
                                             "solana_cluster" => log_ctx.solana_cluster,
