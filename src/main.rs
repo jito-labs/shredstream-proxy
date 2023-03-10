@@ -289,8 +289,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
     }
 
     info!(
-        "Shredstream started, listening on port {}/udp.",
-        args.src_bind_port
+        "Shredstream started, listening on {}:{}/udp.",
+        args.src_bind_addr, args.src_bind_port
     );
 
     for thread in thread_handles {
