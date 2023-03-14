@@ -33,6 +33,7 @@ pub struct LogContext {
 #[allow(clippy::too_many_arguments)]
 pub fn heartbeat_loop_thread(
     block_engine_url: String,
+    auth_url: String,
     auth_keypair: &Arc<Keypair>,
     desired_regions: Vec<String>,
     recv_socket: SocketAddr,
@@ -61,7 +62,7 @@ pub fn heartbeat_loop_thread(
 
         while !exit.load(Ordering::Relaxed) {
             info!("Starting heartbeat client");
-            let shredstream_client = runtime.block_on(get_grpc_client(&block_engine_url, &auth_keypair, exit.clone()));
+            let shredstream_client = runtime.block_on(get_grpc_client(&block_engine_url, &auth_url, &auth_keypair, exit.clone()));
 
             let mut shredstream_client = match shredstream_client {
                 Ok(c) => c,
@@ -172,11 +173,12 @@ pub fn heartbeat_loop_thread(
 
 pub async fn get_grpc_client(
     block_engine_url: &str,
+    auth_url: &str,
     auth_keypair: &Arc<Keypair>,
     exit: Arc<AtomicBool>,
 ) -> Result<ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>, ShredstreamProxyError>
 {
-    let auth_channel = create_grpc_channel(block_engine_url).await?;
+    let auth_channel = create_grpc_channel(auth_url).await?;
     let client_interceptor = ClientInterceptor::new(
         AuthServiceClient::new(auth_channel),
         auth_keypair,
