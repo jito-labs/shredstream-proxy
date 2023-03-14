@@ -16,7 +16,6 @@ use std::{
 use arc_swap::ArcSwap;
 use clap::{arg, Parser};
 use crossbeam_channel::{Receiver, RecvError, Sender};
-use env_logger::TimestampPrecision;
 use log::*;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use solana_client::client_error::{reqwest, ClientError};
@@ -57,6 +56,10 @@ struct ShredstreamArgs {
     /// See https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
     #[arg(long, env)]
     block_engine_url: String,
+
+    /// Manual override for auth service address. For internal use.
+    #[arg(long, env)]
+    auth_url: Option<String>,
 
     /// Path to keypair file used to authenticate with the backend.
     #[arg(long, env)]
@@ -176,10 +179,9 @@ fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<
 }
 
 fn main() -> Result<(), ShredstreamProxyError> {
-    env_logger::builder()
-        .format_timestamp(Some(TimestampPrecision::Micros))
-        .init();
+    env_logger::builder().init();
     let all_args: Args = Args::parse();
+    info!("Starting Shredstream with args: {all_args:?}");
 
     let shredstream_args = all_args.shredstream_args.clone();
     // common args
@@ -326,7 +328,8 @@ fn start_heartbeat(
         }),
     );
     let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
-        args.block_engine_url,
+        args.block_engine_url.clone(),
+        args.auth_url.unwrap_or(args.block_engine_url),
         &auth_keypair,
         args.desired_regions,
         SocketAddr::new(
