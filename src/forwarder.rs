@@ -143,7 +143,7 @@ fn recv_from_channel_and_send_multiple_dest(
         Ok(x) => Ok(x),
         Err(e) => Err(ShredstreamProxyError::RecvError(e)),
     }?;
-    let trace_received_time = SystemTime::now();
+    let trace_shred_received_time = SystemTime::now();
     metrics
         .agg_received
         .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
@@ -186,7 +186,7 @@ fn recv_from_channel_and_send_multiple_dest(
             .filter(|p| p.region.eq(&metrics.log_context.as_ref().unwrap().region)) // ignore other regions
             .filter(|p| p.created_at.is_some())
             .for_each(|trace_shred| {
-                let elapsed = trace_received_time
+                let elapsed = trace_shred_received_time
                     .duration_since(SystemTime::try_from(trace_shred.created_at.unwrap()).unwrap())
                     .unwrap();
                 datapoint_info!("shredstream_proxy-trace_shred_latency",
