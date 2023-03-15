@@ -183,8 +183,7 @@ fn recv_from_channel_and_send_multiple_dest(
         packet_batch_vec[0]
             .iter()
             .filter_map(|p| TraceShred::decode(p.data(..)?).ok())
-            .filter(|p| p.region.eq(&metrics.log_context.as_ref().unwrap().region)) // ignore other regions
-            .filter(|p| p.created_at.is_some())
+            .filter(|t| t.created_at.is_some())
             .for_each(|trace_shred| {
                 let elapsed = trace_shred_received_time
                     .duration_since(SystemTime::try_from(trace_shred.created_at.unwrap()).unwrap())
