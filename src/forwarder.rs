@@ -11,7 +11,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError, Sender, TrySendError};
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use jito_protos::trace_shred::TraceShred;
 use log::{debug, error, info, warn};
 use prost::Message;
@@ -21,7 +21,6 @@ use solana_perf::{
     recycler::Recycler,
     sigverify::Deduper,
 };
-use solana_sdk::packet::Packet;
 use solana_streamer::{
     sendmmsg::{batch_send, SendPktsError},
     streamer,
@@ -39,6 +38,7 @@ pub fn start_forwarder_threads(
     deduper: Arc<RwLock<Deduper>>,
     metrics: Arc<ShredMetrics>,
     use_discovery_service: bool,
+    debug_trace_shred: bool,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
@@ -100,6 +100,7 @@ pub fn start_forwarder_threads(
                                &deduper,
                                &send_socket,
                                &local_dest_sockets,
+                               debug_trace_shred,
                                &metrics,
                            );
 
@@ -135,6 +136,7 @@ fn recv_from_channel_and_send_multiple_dest(
     deduper: &Arc<RwLock<Deduper>>,
     send_socket: &UdpSocket,
     local_dest_sockets: &Arc<Vec<SocketAddr>>,
+    debug_trace_shred: bool,
     metrics: &Arc<ShredMetrics>,
 ) -> Result<(), ShredstreamProxyError> {
     let packet_batch = match maybe_packet_batch {
@@ -157,20 +159,8 @@ fn recv_from_channel_and_send_multiple_dest(
         |_received_packet, _is_already_marked_as_discard, _is_dup| {},
     );
 
-    let (trace_shreds, packets): (Vec<TraceShred>, Vec<Packet>) = packet_batch_vec[0]
-        .iter()
-        .cloned() // need to clone since PinnedVec doesn't provide into_iter()
-        .filter(|p| !p.meta.discard())
-        .partition_map(|p| {
-            let data = p.data(..).expect("Packet should not be marked as discard");
-            match TraceShred::decode(data) {
-                Ok(trace) => Either::Left(trace),
-                Err(_) => Either::Right(p),
-            }
-        });
-
     local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
-        let packets_with_dest = packets.iter().filter_map(|pkt| {
+        let packets_with_dest = packet_batch_vec[0].iter().filter_map(|pkt| {
             let data = pkt.data(..)?;
             let addr = outgoing_socketaddr;
             Some((data, addr))
@@ -189,10 +179,11 @@ fn recv_from_channel_and_send_multiple_dest(
         }
     });
 
-    if let Some(log_context) = &metrics.log_context {
-        trace_shreds
-            .into_iter()
-            .filter(|p| p.region.eq(&log_context.region)) // ignore other regions
+    if debug_trace_shred && metrics.log_context.is_some() {
+        packet_batch_vec[0]
+            .iter()
+            .filter_map(|p| TraceShred::decode(p.data(..)?).ok())
+            .filter(|p| p.region.eq(&metrics.log_context.as_ref().unwrap().region)) // ignore other regions
             .filter(|p| p.created_at.is_some())
             .for_each(|trace_shred| {
                 let elapsed = trace_received_time

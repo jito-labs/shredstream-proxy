@@ -112,6 +112,10 @@ struct CommonArgs {
     #[arg(long, env, default_value_t = 15_000)]
     metrics_report_interval_ms: u64,
 
+    /// Logs trace shreds cli and influx
+    #[arg(long, env, default_value_t = false)]
+    debug_trace_shred: bool,
+
     /// Public IP address to use.
     /// Overrides value fetched from `ifconfig.me`.
     #[arg(long, env)]
@@ -263,6 +267,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         deduper.clone(),
         metrics.clone(),
         use_discovery_service,
+        args.debug_trace_shred,
         shutdown_receiver.clone(),
         exit.clone(),
     );
