@@ -187,6 +187,13 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let all_args: Args = Args::parse();
     let shredstream_args = all_args.shredstream_args.clone();
     let args = all_args.shredstream_args.common_args.clone();
+
+    // let shredstream_args = all_args.shredstream_args.clone();
+    // // common args
+    // let args = match all_args.shredstream_args {
+    //     ProxySubcommands::Shredstream(x) => x.common_args,
+    //     ProxySubcommands::ForwardOnly(x) => x,
+    // };
     set_host_id(hostname::get().unwrap().into_string().unwrap());
     if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
         || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
@@ -234,6 +241,21 @@ fn main() -> Result<(), ShredstreamProxyError> {
         runtime,
         grpc_restart_signal_r,
     );
+    let mut thread_handles = vec![];
+    //     if let ProxySubcommands::Shredstream(args) = shredstream_args {
+    //         let heartbeat_hdl = start_heartbeat(
+    //             args,
+    //             &exit,
+    //             &shutdown_receiver,
+    //             &log_context,
+    //             runtime,
+    //             grpc_restart_signal_r,
+    //         );
+    //         thread_handles.push(heartbeat_hdl);
+    //     }
+    //
+    thread_handles.push(heartbeat_hdl);
+
     // share sockets between refresh and forwarder thread
     let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(args.dest_ip_ports.clone()));
 
@@ -249,7 +271,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
-    let mut thread_handles = forwarder::start_forwarder_threads(
+    let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_port,
         args.num_threads,
@@ -259,7 +281,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         shutdown_receiver.clone(),
         exit.clone(),
     );
-    thread_handles.push(heartbeat_hdl);
+    thread_handles.extend(forwarder_hdls);
 
     let metrics_hdl = forwarder::start_forwarder_accessory_thread(
         deduper,
@@ -284,8 +306,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
     }
 
     info!(
-        "Shredstream started, listening on port {}/udp.",
-        args.src_bind_port
+        "Shredstream started, listening on {}:{}/udp.",
+        args.src_bind_addr, args.src_bind_port
     );
 
     for thread in thread_handles {
