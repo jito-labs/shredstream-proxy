@@ -6,13 +6,15 @@ use std::{
         Arc, RwLock,
     },
     thread::{Builder, JoinHandle},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError, Sender, TrySendError};
 use itertools::Itertools;
+use jito_protos::trace_shred::TraceShred;
 use log::{debug, error, info, warn};
+use prost::Message;
 use solana_metrics::{datapoint_info, datapoint_warn};
 use solana_perf::{
     packet::{PacketBatch, PacketBatchRecycler},
@@ -36,6 +38,7 @@ pub fn start_forwarder_threads(
     deduper: Arc<RwLock<Deduper>>,
     metrics: Arc<ShredMetrics>,
     use_discovery_service: bool,
+    debug_trace_shred: bool,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
@@ -97,6 +100,7 @@ pub fn start_forwarder_threads(
                                &deduper,
                                &send_socket,
                                &local_dest_sockets,
+                               debug_trace_shred,
                                &metrics,
                            );
 
@@ -132,12 +136,14 @@ fn recv_from_channel_and_send_multiple_dest(
     deduper: &Arc<RwLock<Deduper>>,
     send_socket: &UdpSocket,
     local_dest_sockets: &Arc<Vec<SocketAddr>>,
+    debug_trace_shred: bool,
     metrics: &Arc<ShredMetrics>,
 ) -> Result<(), ShredstreamProxyError> {
     let packet_batch = match maybe_packet_batch {
         Ok(x) => Ok(x),
         Err(e) => Err(ShredstreamProxyError::RecvError(e)),
     }?;
+    let trace_shred_received_time = SystemTime::now();
     metrics
         .agg_received
         .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
@@ -154,24 +160,41 @@ fn recv_from_channel_and_send_multiple_dest(
     );
 
     local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
-        let packets = packet_batch_vec[0].iter().filter(|pkt| !pkt.meta.discard()).filter_map(|pkt| {
+        let packets_with_dest = packet_batch_vec[0].iter().filter_map(|pkt| {
             let data = pkt.data(..)?;
             let addr = outgoing_socketaddr;
             Some((data, addr))
-        }).collect::<Vec<_>>();
+        }).collect::<Vec<(&[u8], &SocketAddr)>>();
 
-        match batch_send(send_socket, &packets) {
+        match batch_send(send_socket, &packets_with_dest) {
             Ok(_) => {
-                metrics.agg_success_forward.fetch_add(packets.len() as u64, Ordering::Relaxed);
+                metrics.agg_success_forward.fetch_add(packets_with_dest.len() as u64, Ordering::Relaxed);
                 metrics.duplicate.fetch_add(num_deduped, Ordering::Relaxed);
             }
             Err(SendPktsError::IoError(err, num_failed)) => {
-                metrics.agg_fail_forward.fetch_add(packets.len() as u64, Ordering::Relaxed);
+                metrics.agg_fail_forward.fetch_add(packets_with_dest.len() as u64, Ordering::Relaxed);
                 metrics.duplicate.fetch_add(num_failed as u64, Ordering::Relaxed);
-                error!("Failed to send batch of size {} to {outgoing_socketaddr:?}. {num_failed} packets failed. Error: {err}", packets.len());
+                error!("Failed to send batch of size {} to {outgoing_socketaddr:?}. {num_failed} packets failed. Error: {err}", packets_with_dest.len());
             }
         }
     });
+
+    if debug_trace_shred && metrics.log_context.is_some() {
+        packet_batch_vec[0]
+            .iter()
+            .filter_map(|p| TraceShred::decode(p.data(..)?).ok())
+            .filter(|t| t.created_at.is_some())
+            .for_each(|trace_shred| {
+                let elapsed = trace_shred_received_time
+                    .duration_since(SystemTime::try_from(trace_shred.created_at.unwrap()).unwrap())
+                    .unwrap();
+                datapoint_info!("shredstream_proxy-trace_shred_latency",
+                                "trace_region" => trace_shred.region,
+                                ("trace_seq_num", trace_shred.seq_num as i64, i64),
+                                ("elapsed_micros", elapsed.as_micros() as i64, i64),
+                );
+            });
+    }
     Ok(())
 }
 
