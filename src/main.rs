@@ -35,15 +35,20 @@ mod token_authenticator;
 
 #[derive(Clone, Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
+// makes shredstream subcommand optional. forward-only mode is separate subcommand
 // https://docs.rs/clap/latest/clap/_derive/_cookbook/git_derive/index.html
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
+    #[command(flatten)]
+    shredstream_args: ShredstreamArgs, // default to shredstream mode
+
     #[command(subcommand)]
-    shredstream_args: ProxySubcommands,
+    subcommand: Option<ShredstreamSubcommands>, // allow for forward mode
 }
 
 #[derive(Clone, Debug, clap::Subcommand)]
-enum ProxySubcommands {
-    /// Requests shreds from Jito and sends to all destinations.
+enum ShredstreamSubcommands {
+    /// Default mode, requests shreds from Jito and sends to all destinations.
     Shredstream(ShredstreamArgs),
 
     /// Does not request shreds from Jito. Sends anything received on `src-bind-addr`:`src-bind-port` to all destinations.
@@ -185,13 +190,15 @@ fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<
 fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder().init();
     let all_args: Args = Args::parse();
-
     let shredstream_args = all_args.shredstream_args.clone();
-    // common args
-    let args = match all_args.shredstream_args {
-        ProxySubcommands::Shredstream(x) => x.common_args,
-        ProxySubcommands::ForwardOnly(x) => x,
-    };
+    let args = all_args.shredstream_args.common_args.clone();
+
+    // let shredstream_args = all_args.shredstream_args.clone();
+    // // common args
+    // let args = match all_args.shredstream_args {
+    //     ProxySubcommands::Shredstream(x) => x.common_args,
+    //     ProxySubcommands::ForwardOnly(x) => x,
+    // };
     set_host_id(hostname::get().unwrap().into_string().unwrap());
     if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
         || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
@@ -231,18 +238,28 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let runtime = Runtime::new().unwrap();
     let (grpc_restart_signal_s, grpc_restart_signal_r) = crossbeam_channel::bounded(1);
+    let heartbeat_hdl = start_heartbeat(
+        shredstream_args,
+        &exit,
+        &shutdown_receiver,
+        &log_context,
+        runtime,
+        grpc_restart_signal_r,
+    );
     let mut thread_handles = vec![];
-    if let ProxySubcommands::Shredstream(args) = shredstream_args {
-        let heartbeat_hdl = start_heartbeat(
-            args,
-            &exit,
-            &shutdown_receiver,
-            &log_context,
-            runtime,
-            grpc_restart_signal_r,
-        );
-        thread_handles.push(heartbeat_hdl);
-    }
+    //     if let ProxySubcommands::Shredstream(args) = shredstream_args {
+    //         let heartbeat_hdl = start_heartbeat(
+    //             args,
+    //             &exit,
+    //             &shutdown_receiver,
+    //             &log_context,
+    //             runtime,
+    //             grpc_restart_signal_r,
+    //         );
+    //         thread_handles.push(heartbeat_hdl);
+    //     }
+    //
+    thread_handles.push(heartbeat_hdl);
 
     // share sockets between refresh and forwarder thread
     let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(args.dest_ip_ports.clone()));
