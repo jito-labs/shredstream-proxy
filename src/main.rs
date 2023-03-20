@@ -1,6 +1,7 @@
 use std::{
     io,
-    net::{IpAddr, SocketAddr},
+    io::{Error, ErrorKind},
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     panic,
     path::{Path, PathBuf},
     str::FromStr,
@@ -25,9 +26,7 @@ use thiserror::Error;
 use tokio::runtime::Runtime;
 use tonic::Status;
 
-use crate::{
-    forwarder::ShredMetrics, heartbeat::LogContext, token_authenticator::BlockEngineConnectionError,
-};
+use crate::{forwarder::ShredMetrics, token_authenticator::BlockEngineConnectionError};
 
 mod forwarder;
 mod heartbeat;
@@ -86,8 +85,9 @@ struct CommonArgs {
 
     /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated.
     /// Eg. `127.0.0.1:8002,10.0.0.1:8002`.
-    #[arg(long, env, value_delimiter = ',')]
-    dest_ip_ports: Vec<SocketAddr>,
+    // Note: store the original string so we can do hostname resolution when refreshing destinations
+    #[arg(long, env, value_delimiter = ',', value_parser = resolve_hostname_port)]
+    dest_ip_ports: Vec<(SocketAddr, String)>,
 
     /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds.
     /// Endpoints are then set-union with `dest-ip-ports`.
@@ -99,14 +99,6 @@ struct CommonArgs {
     /// See https://jito-labs.gitbook.io/mev/searcher-services/shredstream#running-shredstream
     #[arg(long, env)]
     discovered_endpoints_port: Option<u16>,
-
-    /// Solana cluster e.g. testnet, mainnet, devnet. Used for logging purposes.
-    #[arg(long, env)]
-    solana_cluster: Option<String>,
-
-    /// Cluster region. Used for logging purposes.
-    #[arg(long, env)]
-    region: Option<String>,
 
     /// Interval between logging stats to CLI and influx
     #[arg(long, env, default_value_t = 15_000)]
@@ -143,19 +135,28 @@ pub enum ShredstreamProxyError {
     #[error("RecvError {0}")]
     RecvError(#[from] RecvError),
     #[error("IoError {0}")]
-    IoError(#[from] std::io::Error),
+    IoError(#[from] io::Error),
     #[error("Shutdown")]
     Shutdown,
 }
 
+fn resolve_hostname_port(hostname_port: &str) -> io::Result<(SocketAddr, String)> {
+    let socketaddr = hostname_port.to_socket_addrs()?.next().ok_or(Error::new(
+        ErrorKind::AddrNotAvailable,
+        format!("Could not find destination {hostname_port}"),
+    ))?;
+
+    Ok((socketaddr, hostname_port.to_string()))
+}
+
 fn get_public_ip() -> IpAddr {
-    info!("getting public ip from ifconfig.me...");
+    info!("Requesting public ip from ifconfig.me...");
     let response = reqwest::blocking::get("https://ifconfig.me")
         .expect("response from ifconfig.me")
         .text()
         .expect("public ip response");
     let public_ip = IpAddr::from_str(&response).unwrap();
-    info!("public ip: {:?}", public_ip);
+    info!("Retrieved public ip: {public_ip:?}");
 
     public_ip
 }
@@ -221,14 +222,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
         }));
     }
 
-    let log_context = match args.solana_cluster.is_some() && args.region.is_some() {
-        true => Some(LogContext {
-            solana_cluster: args.solana_cluster.unwrap(),
-            region: args.region.unwrap(),
-        }),
-        false => None,
-    };
-
     let runtime = Runtime::new().unwrap();
     let (grpc_restart_signal_s, grpc_restart_signal_r) = crossbeam_channel::bounded(1);
     let mut thread_handles = vec![];
@@ -237,7 +230,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
             args,
             &exit,
             &shutdown_receiver,
-            &log_context,
             runtime,
             grpc_restart_signal_r,
         );
@@ -245,22 +237,28 @@ fn main() -> Result<(), ShredstreamProxyError> {
     }
 
     // share sockets between refresh and forwarder thread
-    let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(args.dest_ip_ports.clone()));
+    let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(
+        args.dest_ip_ports
+            .iter()
+            .map(|x| x.0)
+            .collect::<Vec<SocketAddr>>(),
+    ));
 
     // share deduper + metrics between forwarder <-> accessory thread
     const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
     const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
+    // use mutex since metrics are write heavy. cheaper than rwlock
     let deduper = Arc::new(RwLock::new(solana_perf::sigverify::Deduper::new(
         MAX_DEDUPER_ITEMS,
         MAX_DEDUPER_AGE,
     )));
-    // use mutex since metrics are write heavy. cheaper than rwlock
-    let metrics = Arc::new(ShredMetrics::new(log_context.clone()));
 
+    let metrics = Arc::new(ShredMetrics::new());
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
+        args.src_bind_addr,
         args.src_bind_port,
         args.num_threads,
         deduper.clone(),
@@ -287,7 +285,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
             args.discovered_endpoints_port.unwrap(),
             args.dest_ip_ports,
             unioned_dest_sockets,
-            log_context,
             shutdown_receiver,
             exit,
         );
@@ -319,7 +316,6 @@ fn start_heartbeat(
     args: ShredstreamArgs,
     exit: &Arc<AtomicBool>,
     shutdown_receiver: &Receiver<()>,
-    log_context: &Option<LogContext>,
     runtime: Runtime,
     grpc_restart_signal_r: Receiver<()>,
 ) -> JoinHandle<()> {
@@ -331,7 +327,8 @@ fn start_heartbeat(
             )
         }),
     );
-    let heartbeat_hdl = heartbeat::heartbeat_loop_thread(
+
+    heartbeat::heartbeat_loop_thread(
         args.block_engine_url.clone(),
         args.auth_url.unwrap_or(args.block_engine_url),
         &auth_keypair,
@@ -340,11 +337,9 @@ fn start_heartbeat(
             args.common_args.public_ip.unwrap_or_else(get_public_ip),
             args.common_args.src_bind_port,
         ),
-        log_context.clone(),
         runtime,
         grpc_restart_signal_r,
         shutdown_receiver.clone(),
         exit.clone(),
-    );
-    heartbeat_hdl
+    )
 }
