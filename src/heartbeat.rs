@@ -24,12 +24,6 @@ use crate::{
     ShredstreamProxyError,
 };
 
-#[derive(Debug, Clone)]
-pub struct LogContext {
-    pub solana_cluster: String,
-    pub region: String,
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn heartbeat_loop_thread(
     block_engine_url: String,
@@ -37,7 +31,6 @@ pub fn heartbeat_loop_thread(
     auth_keypair: &Arc<Keypair>,
     desired_regions: Vec<String>,
     recv_socket: SocketAddr,
-    log_context: Option<LogContext>,
     runtime: Runtime,
     grpc_restart_signal: Receiver<()>,
     shutdown_receiver: Receiver<()>,
@@ -69,15 +62,12 @@ pub fn heartbeat_loop_thread(
                 Err(e) => {
                     warn!("Failed to connect to block engine, retrying. Error: {e}");
                     client_restart_count += 1;
-                    if let Some(log_ctx) = &log_context {
-                        datapoint_warn!("shredstream_proxy-heartbeat_client_error",
-                                            "solana_cluster" => log_ctx.solana_cluster,
-                                            "region" => log_ctx.region,
-                                            "block_engine_url" => block_engine_url,
-                                            ("errors", 1, i64),
-                                            ("error_str", e.to_string(), String),
-                            )
-                    }
+                    datapoint_warn!(
+                        "shredstream_proxy-heartbeat_client_error",
+                        "block_engine_url" => block_engine_url,
+                        ("errors", 1, i64),
+                        ("error_str", e.to_string(), String),
+                    );
                     if !exit.load(Ordering::Relaxed) {
                         sleep(failed_heartbeat_interval);
                     }
@@ -112,31 +102,23 @@ pub fn heartbeat_loop_thread(
                                     panic!("Invalid arguments: {err}.");
                                 };
                                 warn!("Error sending heartbeat: {err}");
-                                if let Some(log_ctx) = &log_context {
-                                    datapoint_warn!("shredstream_proxy-heartbeat_send_error",
-                                                    "solana_cluster" => log_ctx.solana_cluster,
-                                                    "region" => log_ctx.region,
-                                                    "block_engine_url" => block_engine_url,
-                                                    ("errors", 1, i64),
-                                                    ("error_str", err.to_string(), String),
-                                   );
-                                }
+                                datapoint_warn!("shredstream_proxy-heartbeat_send_error",
+                                                "block_engine_url" => block_engine_url,
+                                                ("errors", 1, i64),
+                                                ("error_str", err.to_string(), String),
+                                );
                                 failed_heartbeat_count += 1;
                             }
                         }
                     }
                     // send metrics
                     recv(metrics_tick) -> _ => {
-                        if let Some(log_ctx) = &log_context {
-                            datapoint_info!("shredstream_proxy-heartbeat_stats",
-                                            "solana_cluster" => log_ctx.solana_cluster,
-                                            "region" => log_ctx.region,
-                                            "block_engine_url" => block_engine_url,
-                                            ("successful_heartbeat_count", successful_heartbeat_count, i64),
-                                            ("failed_heartbeat_count", failed_heartbeat_count, i64),
-                                            ("client_restart_count", client_restart_count, i64),
-                            );
-                        }
+                        datapoint_info!("shredstream_proxy-heartbeat_stats",
+                                        "block_engine_url" => block_engine_url,
+                                        ("successful_heartbeat_count", successful_heartbeat_count, i64),
+                                        ("failed_heartbeat_count", failed_heartbeat_count, i64),
+                                        ("client_restart_count", client_restart_count, i64),
+                        );
                         successful_heartbeat_count_cumulative += successful_heartbeat_count;
                         failed_heartbeat_count_cumulative += failed_heartbeat_count;
                         client_restart_count_cumulative += client_restart_count;
@@ -147,15 +129,11 @@ pub fn heartbeat_loop_thread(
                     // restart grpc client if no shreds received
                     recv(grpc_restart_signal) -> _ => {
                         warn!("No shreds received recently, restarting heartbeat client.");
-                        if let Some(log_ctx) = &log_context {
-                            datapoint_warn!("shredstream_proxy-heartbeat_restart_signal",
-                                            "solana_cluster" => log_ctx.solana_cluster,
-                                            "region" => log_ctx.region,
-                                            "block_engine_url" => block_engine_url,
-                                            ("desired_regions", format!("{desired_regions:?}"), String),
-                                            ("client_restart_count", client_restart_count, i64),
-                            );
-                        }
+                        datapoint_warn!("shredstream_proxy-heartbeat_restart_signal",
+                                        "block_engine_url" => block_engine_url,
+                                        ("desired_regions", format!("{desired_regions:?}"), String),
+                                        ("client_restart_count", client_restart_count, i64),
+                        );
                         // exit should be false
                         break;
                     }

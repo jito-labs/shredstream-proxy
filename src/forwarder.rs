@@ -27,12 +27,13 @@ use solana_streamer::{
     streamer::StreamerReceiveStats,
 };
 
-use crate::{heartbeat::LogContext, ShredstreamProxyError};
+use crate::{resolve_hostname_port, ShredstreamProxyError};
 
 /// Bind to ports and start forwarding shreds
 #[allow(clippy::too_many_arguments)]
 pub fn start_forwarder_threads(
     unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
+    src_addr: IpAddr,
     src_port: u16,
     num_threads: Option<usize>,
     deduper: Arc<RwLock<Deduper>>,
@@ -48,88 +49,83 @@ pub fn start_forwarder_threads(
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
-    solana_net_utils::multi_bind_in_range(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        (src_port, src_port + 1),
-        num_threads,
-    )
-    .unwrap_or_else(|_| {
-        panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
-    })
-    .1
-    .into_iter()
-    .enumerate()
-    .flat_map(|(thread_id, incoming_shred_socket)| {
-        let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
-        let listen_thread = streamer::receiver(
-            Arc::new(incoming_shred_socket),
-            exit.clone(),
-            packet_sender,
-            recycler.clone(),
-            Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
-            0, // do not coalesce since batching consumes more cpu cycles and adds latency.
-            true,
-            None,
-        );
+    solana_net_utils::multi_bind_in_range(src_addr, (src_port, src_port + 1), num_threads)
+        .unwrap_or_else(|_| {
+            panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
+        })
+        .1
+        .into_iter()
+        .enumerate()
+        .flat_map(|(thread_id, incoming_shred_socket)| {
+            let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
+            let listen_thread = streamer::receiver(
+                Arc::new(incoming_shred_socket),
+                exit.clone(),
+                packet_sender,
+                recycler.clone(),
+                Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
+                0, // do not coalesce since batching consumes more cpu cycles and adds latency.
+                true,
+                None,
+            );
 
-        let deduper = deduper.clone();
-        let unioned_dest_sockets = unioned_dest_sockets.clone();
-        let metrics = metrics.clone();
-        let shutdown_receiver = shutdown_receiver.clone();
-        let exit = exit.clone();
+            let deduper = deduper.clone();
+            let unioned_dest_sockets = unioned_dest_sockets.clone();
+            let metrics = metrics.clone();
+            let shutdown_receiver = shutdown_receiver.clone();
+            let exit = exit.clone();
 
-        let send_thread = Builder::new()
-            .name(format!("shredstream_proxy-send_thread_{thread_id}"))
-            .spawn(move || {
-                let send_socket =
-                    UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
-                        .expect("to bind to udp port for forwarding");
-                let mut local_dest_sockets = unioned_dest_sockets.load();
+            let send_thread = Builder::new()
+                .name(format!("shredstream_proxy-send_thread_{thread_id}"))
+                .spawn(move || {
+                    let send_socket =
+                        UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+                            .expect("to bind to udp port for forwarding");
+                    let mut local_dest_sockets = unioned_dest_sockets.load();
 
-                let refresh_subscribers_tick = if use_discovery_service {
-                    crossbeam_channel::tick(Duration::from_secs(30))
-                } else {
-                    crossbeam_channel::tick(Duration::MAX)
-                };
-                while !exit.load(Ordering::Relaxed) {
-                    crossbeam_channel::select! {
-                        // forward packets
-                        recv(packet_receiver) -> maybe_packet_batch => {
-                           let res = recv_from_channel_and_send_multiple_dest(
-                               maybe_packet_batch,
-                               &deduper,
-                               &send_socket,
-                               &local_dest_sockets,
-                               debug_trace_shred,
-                               &metrics,
-                           );
+                    let refresh_subscribers_tick = if use_discovery_service {
+                        crossbeam_channel::tick(Duration::from_secs(30))
+                    } else {
+                        crossbeam_channel::tick(Duration::MAX)
+                    };
+                    while !exit.load(Ordering::Relaxed) {
+                        crossbeam_channel::select! {
+                            // forward packets
+                            recv(packet_receiver) -> maybe_packet_batch => {
+                               let res = recv_from_channel_and_send_multiple_dest(
+                                   maybe_packet_batch,
+                                   &deduper,
+                                   &send_socket,
+                                   &local_dest_sockets,
+                                   debug_trace_shred,
+                                   &metrics,
+                               );
 
-                            // avoid unwrap to prevent log spam from panic handler in each thread
-                            if res.is_err(){
+                                // avoid unwrap to prevent log spam from panic handler in each thread
+                                if res.is_err(){
+                                    break;
+                                }
+                            }
+                            // refresh thread-local subscribers
+                            recv(refresh_subscribers_tick) -> _ => {
+                                local_dest_sockets = unioned_dest_sockets.load();
+                            }
+                            // handle shutdown (avoid using sleep since it will hang under SIGINT)
+                            recv(shutdown_receiver) -> _ => {
                                 break;
                             }
                         }
-                        // refresh thread-local subscribers
-                        recv(refresh_subscribers_tick) -> _ => {
-                            local_dest_sockets = unioned_dest_sockets.load();
-                        }
-                        // handle shutdown (avoid using sleep since it will hang under SIGINT)
-                        recv(shutdown_receiver) -> _ => {
-                            break;
-                        }
                     }
-                }
-                info!("Exiting forwarder thread {thread_id}.");
-            })
-            .unwrap();
+                    info!("Exiting forwarder thread {thread_id}.");
+                })
+                .unwrap();
 
-        [listen_thread, send_thread]
-    })
-    .collect::<Vec<JoinHandle<()>>>()
+            [listen_thread, send_thread]
+        })
+        .collect::<Vec<JoinHandle<()>>>()
 }
 
-/// broadcasts same packet to multiple recipients
-/// for best performance, connect sockets to their destinations
+/// Broadcasts same packet to multiple recipients
 /// Returns Err when unable to receive packets.
 fn recv_from_channel_and_send_multiple_dest(
     maybe_packet_batch: Result<PacketBatch, RecvError>,
@@ -179,32 +175,33 @@ fn recv_from_channel_and_send_multiple_dest(
         }
     });
 
-    if debug_trace_shred && metrics.log_context.is_some() {
+    if debug_trace_shred {
         packet_batch_vec[0]
             .iter()
             .filter_map(|p| TraceShred::decode(p.data(..)?).ok())
-            .filter(|t| t.created_at.is_some())
-            .for_each(|trace_shred| {
-                let elapsed = trace_shred_received_time
-                    .duration_since(SystemTime::try_from(trace_shred.created_at.unwrap()).unwrap())
-                    .unwrap();
-                datapoint_info!("shredstream_proxy-trace_shred_latency",
-                                "trace_region" => trace_shred.region,
-                                ("trace_seq_num", trace_shred.seq_num as i64, i64),
-                                ("elapsed_micros", elapsed.as_micros() as i64, i64),
-                );
+            .filter_map(|t| {
+                let created_at = SystemTime::try_from(t.created_at?);
+                Some((t.region, t.seq_num, created_at.ok()?))
+            })
+            .for_each(|(region, seq_num, created_at)| {
+                if let Ok(elapsed) = trace_shred_received_time.duration_since(created_at) {
+                    datapoint_info!("shredstream_proxy-trace_shred_latency",
+                                    "trace_region" => region,
+                                    ("trace_seq_num", seq_num as i64, i64),
+                                    ("elapsed_micros", elapsed.as_micros() as i64, i64),
+                    );
+                }
             });
     }
     Ok(())
 }
 
-// starts a thread that updates our destinations used by the forwarder threads
+/// Starts a thread that updates our destinations used by the forwarder threads
 pub fn start_destination_refresh_thread(
     endpoint_discovery_url: String,
     discovered_endpoints_port: u16,
-    static_dest_sockets: Vec<SocketAddr>,
+    static_dest_sockets: Vec<(SocketAddr, String)>,
     unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>,
-    log_context: Option<LogContext>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
@@ -218,7 +215,7 @@ pub fn start_destination_refresh_thread(
                         let fetched = fetch_unioned_destinations(
                             &endpoint_discovery_url,
                             discovered_endpoints_port,
-                            static_dest_sockets.clone(),
+                            &static_dest_sockets,
                         );
                         let new_sockets = match fetched {
                             Ok(s) => {
@@ -227,15 +224,11 @@ pub fn start_destination_refresh_thread(
                             }
                             Err(e) => {
                                 warn!("Failed to fetch from discovery service, retrying. Error: {e}");
-                                if let Some(log_ctx) = &log_context {
-                                    datapoint_warn!("shredstream_proxy-destination_refresh_error",
-                                                    "solana_cluster" => log_ctx.solana_cluster,
-                                                    "region" => log_ctx.region,
-                                                    ("prev_unioned_dest_count", socket_count, i64),
-                                                    ("errors", 1, i64),
-                                                    ("error_str", e.to_string(), String),
-                                    );
-                                }
+                                datapoint_warn!("shredstream_proxy-destination_refresh_error",
+                                                ("prev_unioned_dest_count", socket_count, i64),
+                                                ("errors", 1, i64),
+                                                ("error_str", e.to_string(), String),
+                                );
                                 continue;
                             }
                         };
@@ -243,13 +236,9 @@ pub fn start_destination_refresh_thread(
                         unioned_dest_sockets.store(Arc::new(new_sockets));
                     }
                     recv(metrics_tick) -> _ => {
-                        if let Some(log_ctx) = &log_context {
-                            datapoint_info!("shredstream_proxy-destination_refresh_stats",
-                                            "solana_cluster" => log_ctx.solana_cluster,
-                                            "region" => log_ctx.region,
-                                            ("destination_count", socket_count, i64),
-                            );
-                        }
+                        datapoint_info!("shredstream_proxy-destination_refresh_stats",
+                                        ("destination_count", socket_count, i64),
+                        );
                     }
                     recv(shutdown_receiver) -> _ => {
                         break;
@@ -259,11 +248,11 @@ pub fn start_destination_refresh_thread(
     }).unwrap()
 }
 
-// Returns dynamically discovered endpoints with CLI arg defined endpoints
+/// Returns dynamically discovered endpoints with CLI arg defined endpoints
 fn fetch_unioned_destinations(
     endpoint_discovery_url: &str,
     discovered_endpoints_port: u16,
-    static_dest_sockets: Vec<SocketAddr>,
+    static_dest_sockets: &[(SocketAddr, String)],
 ) -> Result<Vec<SocketAddr>, ShredstreamProxyError> {
     let bytes = reqwest::blocking::get(endpoint_discovery_url)?.bytes()?;
 
@@ -278,10 +267,18 @@ fn fetch_unioned_destinations(
         }
     };
 
+    // resolve again since ip address could change
+    let static_dest_sockets = static_dest_sockets
+        .iter()
+        .filter_map(|(_socketaddr, hostname_port)| {
+            Some(resolve_hostname_port(hostname_port).ok()?.0)
+        })
+        .collect::<Vec<_>>();
+
     let unioned_dest_sockets = sockets_json
         .into_iter()
         .map(|ip| SocketAddr::new(ip, discovered_endpoints_port))
-        .chain(static_dest_sockets.into_iter())
+        .chain(static_dest_sockets)
         .unique()
         .collect::<Vec<SocketAddr>>();
     Ok(unioned_dest_sockets)
@@ -347,7 +344,6 @@ pub struct ShredMetrics {
     pub agg_fail_forward: AtomicU64,
     /// Number of duplicate shreds received
     pub duplicate: AtomicU64,
-    pub log_context: Option<LogContext>,
 
     // cumulative metrics (persist after reset)
     pub agg_received_cumulative: AtomicU64,
@@ -357,7 +353,7 @@ pub struct ShredMetrics {
 }
 
 impl ShredMetrics {
-    pub fn new(log_context: Option<LogContext>) -> Self {
+    pub fn new() -> Self {
         Self {
             agg_received: Default::default(),
             agg_success_forward: Default::default(),
@@ -367,21 +363,29 @@ impl ShredMetrics {
             agg_success_forward_cumulative: Default::default(),
             agg_fail_forward_cumulative: Default::default(),
             duplicate_cumulative: Default::default(),
-            log_context,
         }
     }
 
     pub fn report(&self) {
-        if let Some(log_context) = &self.log_context {
-            datapoint_info!("shredstream_proxy-connection_metrics",
-            "solana_cluster" => log_context.solana_cluster,
-            "region" => log_context.region,
-            ("agg_received", self.agg_received.load(Ordering::Relaxed), i64),
-            ("agg_success_forward", self.agg_success_forward.load(Ordering::Relaxed), i64),
-            ("agg_fail_forward", self.agg_fail_forward.load(Ordering::Relaxed), i64),
+        datapoint_info!(
+            "shredstream_proxy-connection_metrics",
+            (
+                "agg_received",
+                self.agg_received.load(Ordering::Relaxed),
+                i64
+            ),
+            (
+                "agg_success_forward",
+                self.agg_success_forward.load(Ordering::Relaxed),
+                i64
+            ),
+            (
+                "agg_fail_forward",
+                self.agg_fail_forward.load(Ordering::Relaxed),
+                i64
+            ),
             ("duplicate", self.duplicate.load(Ordering::Relaxed), i64),
-            );
-        }
+        );
     }
 
     /// resets current values, increments cumulative values
@@ -497,7 +501,8 @@ mod tests {
             ))),
             &udp_sender,
             &Arc::new(dest_socketaddrs),
-            &Arc::new(ShredMetrics::new(None)),
+            false,
+            &Arc::new(ShredMetrics::new()),
         )
         .unwrap();
 
