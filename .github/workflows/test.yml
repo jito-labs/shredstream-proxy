@@ -6,7 +6,6 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    container: ubuntu:22.04
     steps:
       - name: Install dependencies
         run: |
@@ -15,6 +14,9 @@ jobs:
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v1
+
+      - name: Check sanity
+        run: ls -l /usr/bin
 
       - name: Check Rust
         run: rustc --version

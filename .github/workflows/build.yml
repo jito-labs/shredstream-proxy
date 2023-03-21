@@ -10,7 +10,6 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    container: ubuntu:22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v3
