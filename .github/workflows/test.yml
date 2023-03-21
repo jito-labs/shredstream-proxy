@@ -9,17 +9,18 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          apt-get -qq update
-          apt-get -qq -y install libssl-dev pkg-config curl git clang
+          sudo apt-get -qq update
+          sudo apt-get -qq -y install libssl-dev pkg-config curl git clang
 
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v1
 
       - name: Check sanity
         run: ls -l /usr/bin
 
       - name: Check Rust
         run: rustc --version
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v1
 
       - name: Checkout
         uses: actions/checkout@v3
