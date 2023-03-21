@@ -12,22 +12,21 @@ jobs:
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     steps:
-
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          submodules: recursive
-
       - name: Install dependencies
         run: |
           apt-get -qq update
-          apt-get -qq -y install libssl-dev pkg-config curl
+          apt-get -qq -y install libssl-dev pkg-config curl git
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
 
       - name: Build
         run: cargo build --all-features --locked
