@@ -1,38 +1,42 @@
 name: build
 
 on:
-  push:
-    branches:
-      - master
-
+  push
+#  push:
+#    branches:
+#      - master
+#    tags:
+#      - 'v*'
 jobs:
   linux:
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     steps:
-      - name: Install tools
+      - name: Install dependencies
         run: |
-          apt-get update
-          apt-get install -y libssl-dev pkg-config gcc wget git
-
-      - uses: actions/checkout@v2
-        with:
-          submodules: recursive
+          apt-get -qq update
+          apt-get -qq -y install libssl-dev pkg-config git
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v1
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: 1.65.0
-          default: true
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions-rs/cargo@v1
+      - uses: actions/checkout@v3
         with:
-          command: build
-          args: --release --all-features
+          submodules: recursive
 
-      - uses: actions/upload-artifact@v3
+      - name: Build
+        run: cargo build --all-features --locked
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+#        if: startsWith(github.ref, 'refs/tags/')
         with:
-          name: "jito-shredstream-proxy-linux-x86_64"
-          path: target/release/jito-shredstream-proxy
+          files: target/release/jito-shredstream-proxy
+#      - name: Upload
+#      - uses: actions/upload-artifact@v3
+#        with:
+#          name: "jito-shredstream-proxy-linux-x86_64"
+#          path: target/release/jito-shredstream-proxy
