@@ -35,11 +35,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: target/release/jito-shredstream-proxy
+#      - name: Release
+#        uses: softprops/action-gh-release@v1
+#        if: startsWith(github.ref, 'refs/tags/')
+#        with:
+#          files: target/release/jito-shredstream-proxy
 #      - name: Upload
 #      - uses: actions/upload-artifact@v3
 #        with:

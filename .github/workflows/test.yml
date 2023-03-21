@@ -7,13 +7,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - name: Install dependencies
-        run: |
-          sudo apt-get -qq update
-          sudo apt-get -qq -y install libssl-dev pkg-config curl git clang
-
-
-      - name: Check sanity
+      - name: Check available tools
         run: ls -l /usr/bin
 
       - name: Check Rust
