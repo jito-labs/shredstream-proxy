@@ -15,7 +15,7 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get -qq update
-          apt-get -qq -y install libssl-dev pkg-config git
+          apt-get -qq -y install libssl-dev pkg-config curl
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v1
