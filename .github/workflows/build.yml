@@ -31,7 +31,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: user/app:latest
+          tags: jitolabs/jito-shredstream-proxy:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
