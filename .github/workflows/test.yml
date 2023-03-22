@@ -3,7 +3,7 @@ name: test
 on: push
 
 jobs:
-  linux:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Check available tools

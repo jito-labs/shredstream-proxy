@@ -1,14 +1,14 @@
 name: build
 
 on:
-  push
-#  push:
+  push:
 #    branches:
 #      - master
-#    tags:
-#      - 'v*'
+    tags:
+      - 'v*'
+
 jobs:
-  linux:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -35,11 +35,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-#      - name: Release
-#        uses: softprops/action-gh-release@v1
-#        if: startsWith(github.ref, 'refs/tags/')
-#        with:
-#          files: target/release/jito-shredstream-proxy
+      - name: Copy artifact from container
+        run: |
+          docker run --rm --entrypoint cat jitolabs/jito-shredstream-proxy /app/jito-shredstream-proxy > ./jito-shredstream-proxy
+          ls -lh .
+          file ./jito-shredstream-proxy
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        with:
+          files: ./jito-shredstream-proxy
 #      - name: Upload
 #      - uses: actions/upload-artifact@v3
 #        with:
