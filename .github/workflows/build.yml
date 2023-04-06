@@ -16,6 +16,10 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Sanity Check
+        run: |
+          cat /proc/cpuinfo
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
