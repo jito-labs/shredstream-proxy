@@ -31,7 +31,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: jitolabs/jito-shredstream-proxy:latest,jitolabs/jito-shredstream-proxy:${{github.ref_name}}"
+          tags: jitolabs/jito-shredstream-proxy:${{github.ref_name}}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
