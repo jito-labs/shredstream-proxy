@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4.0
 FROM rust:1.66-slim-bullseye as builder
 
-RUN apt-get update && apt-get install -y ca-certificates libssl-dev protobuf-compiler pkg-config
+RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl-dev protobuf-compiler pkg-config
 RUN rustup component add rustfmt && update-ca-certificates
 
 ENV HOME=/home/root
@@ -11,11 +11,11 @@ COPY . .
 RUN --mount=type=cache,mode=0777,target=/home/root/app/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
-    RUSTFLAGS="-C target-cpu=native" cargo build --release && cp target/release/jito-* ./
+    RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release && cp target/release/jito-* ./
 
 ################################################################################
 FROM debian:bullseye-slim as base_image
-RUN apt-get update && apt-get install -y ca-certificates libssl1.1 && rm -rf /var/lib/apt/lists/*
+RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl1.1 && rm -rf /var/lib/apt/lists/*
 
 ################################################################################
 FROM base_image as shredstream_proxy
