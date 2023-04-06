@@ -6,31 +6,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Check available tools
-        run: ls -l /usr/bin
-
-      - name: Check Rust
-        run: rustc --version
-
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v1
-
       - name: Checkout
         uses: actions/checkout@v3
         with:
           submodules: recursive
 
-      - name: Setup cache
-        uses: actions/cache@v3
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          caller-workflow-name: test
 
-      - name: Test
+      - name: Run tests
         run: cargo test --all-features --locked
 
