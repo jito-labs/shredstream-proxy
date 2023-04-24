@@ -29,6 +29,11 @@ use solana_streamer::{
 
 use crate::{resolve_hostname_port, ShredstreamProxyError};
 
+// values copied from https://github.com/solana-labs/solana/blob/33bde55bbdde13003acf45bb6afe6db4ab599ae4/core/src/sigverify_shreds.rs#L20
+pub const DEDUPER_FALSE_POSITIVE_RATE: f64 = 0.001;
+pub const DEDUPER_NUM_BITS: u64 = 637_534_199; // 76MB
+pub const DEDUPER_RESET_CYCLE: Duration = Duration::from_secs(5 * 60);
+
 /// Bind to ports and start forwarding shreds
 #[allow(clippy::too_many_arguments)]
 pub fn start_forwarder_threads(
@@ -36,7 +41,7 @@ pub fn start_forwarder_threads(
     src_addr: IpAddr,
     src_port: u16,
     num_threads: Option<usize>,
-    deduper: Arc<RwLock<Deduper>>,
+    deduper: Arc<RwLock<Deduper<2, [u8]>>>,
     metrics: Arc<ShredMetrics>,
     use_discovery_service: bool,
     debug_trace_shred: bool,
@@ -129,7 +134,7 @@ pub fn start_forwarder_threads(
 /// Returns Err when unable to receive packets.
 fn recv_from_channel_and_send_multiple_dest(
     maybe_packet_batch: Result<PacketBatch, RecvError>,
-    deduper: &Arc<RwLock<Deduper>>,
+    deduper: &Arc<RwLock<Deduper<2, [u8]>>>,
     send_socket: &UdpSocket,
     local_dest_sockets: &Arc<Vec<SocketAddr>>,
     debug_trace_shred: bool,
@@ -150,7 +155,8 @@ fn recv_from_channel_and_send_multiple_dest(
     );
     let mut packet_batch_vec = vec![packet_batch];
 
-    let num_deduped = deduper.read().unwrap().dedup_packets_and_count_discards(
+    let num_deduped = solana_perf::sigverify::dedup_packets_and_count_discards(
+        &deduper.read().unwrap(),
         &mut packet_batch_vec,
         |_received_packet, _is_already_marked_as_discard, _is_dup| {},
     );
@@ -187,8 +193,8 @@ fn recv_from_channel_and_send_multiple_dest(
                 if let Ok(elapsed) = trace_shred_received_time.duration_since(created_at) {
                     datapoint_info!("shredstream_proxy-trace_shred_latency",
                                     "trace_region" => region,
-                                    ("trace_seq_num", seq_num as i64, i64),
-                                    ("elapsed_micros", elapsed.as_micros() as i64, i64),
+                                    ("trace_seq_num", seq_num, i64),
+                                    ("elapsed_micros", elapsed.as_micros(), i64),
                     );
                 }
             });
@@ -286,7 +292,7 @@ fn fetch_unioned_destinations(
 
 /// Reset dedup + send metrics to influx
 pub fn start_forwarder_accessory_thread(
-    deduper: Arc<RwLock<Deduper>>,
+    deduper: Arc<RwLock<Deduper<2, [u8]>>>,
     metrics: Arc<ShredMetrics>,
     metrics_update_interval_ms: u64,
     grpc_restart_signal: Sender<()>,
@@ -298,20 +304,26 @@ pub fn start_forwarder_accessory_thread(
         .spawn(move || {
             let metrics_tick =
                 crossbeam_channel::tick(Duration::from_millis(metrics_update_interval_ms));
-            let deduper_tick = crossbeam_channel::tick(Duration::from_secs(2));
+            let deduper_reset_tick = crossbeam_channel::tick(Duration::from_secs(2));
             let stale_connection_tick = crossbeam_channel::tick(Duration::from_secs(30));
+            let mut rng = rand_07::thread_rng();
             let mut last_cumulative_received_shred_count = 0;
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
                     // reset deduper to avoid false positives
-                    recv(deduper_tick) -> _ => {
-                        deduper.write().unwrap().reset();
+                    recv(deduper_reset_tick) -> _ => {
+                        deduper
+                            .write()
+                            .unwrap()
+                            .maybe_reset(&mut rng, DEDUPER_FALSE_POSITIVE_RATE, DEDUPER_RESET_CYCLE);
                     }
+
                     // send metrics to influx
                     recv(metrics_tick) -> _ => {
                         metrics.report();
                         metrics.reset();
                     }
+
                     // handle scenario when grpc connection is open, but backend doesn't receive heartbeat
                     // possibly due to envoy losing track of the pod when backend restarts.
                     // we restart our grpc connection work around the stale connection
@@ -325,6 +337,7 @@ pub fn start_forwarder_accessory_thread(
                         }
                         last_cumulative_received_shred_count = new_received_count;
                     }
+
                     // handle SIGINT shutdown
                     recv(shutdown_receiver) -> _ => {
                         break;
@@ -418,10 +431,7 @@ mod tests {
         time::Duration,
     };
 
-    use solana_perf::{
-        packet::{Meta, Packet, PacketBatch},
-        sigverify::Deduper,
-    };
+    use solana_perf::packet::{Meta, Packet, PacketBatch};
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
 
     use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
@@ -489,16 +499,16 @@ mod tests {
                 let to_receive = to_receive.to_owned();
                 thread::spawn(move || listen_and_collect(socket, to_receive));
             });
-        const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
-        const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
 
         // send packets
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
-            &Arc::new(RwLock::new(Deduper::new(
-                MAX_DEDUPER_ITEMS,
-                MAX_DEDUPER_AGE,
-            ))),
+            &Arc::new(RwLock::new(
+                solana_perf::sigverify::Deduper::<2, [u8]>::new(
+                    &mut rand_07::thread_rng(),
+                    crate::forwarder::DEDUPER_NUM_BITS,
+                ),
+            )),
             &udp_sender,
             &Arc::new(dest_socketaddrs),
             false,

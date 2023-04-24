@@ -245,13 +245,13 @@ fn main() -> Result<(), ShredstreamProxyError> {
     ));
 
     // share deduper + metrics between forwarder <-> accessory thread
-    const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
-    const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
     // use mutex since metrics are write heavy. cheaper than rwlock
-    let deduper = Arc::new(RwLock::new(solana_perf::sigverify::Deduper::new(
-        MAX_DEDUPER_ITEMS,
-        MAX_DEDUPER_AGE,
-    )));
+    let deduper = Arc::new(RwLock::new(
+        solana_perf::sigverify::Deduper::<2, [u8]>::new(
+            &mut rand_07::thread_rng(),
+            forwarder::DEDUPER_NUM_BITS,
+        ),
+    ));
 
     let metrics = Arc::new(ShredMetrics::new());
     let use_discovery_service =
