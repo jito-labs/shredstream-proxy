@@ -5,29 +5,29 @@ description = "Fast path to receive shreds from Jito, forwarding to local consum
 authors = ["Jito Team <team@jito.wtf>"]
 homepage = "https://jito.wtf/"
 edition = "2021"
-publish = false
 
 [dependencies]
 arc-swap = "1.6"
 clap = { version = "4", features = ["derive", "env"] }
-crossbeam-channel = "0.5.6"
+crossbeam-channel = "0.5.8"
 env_logger = "0.10.0"
-histogram = "0.7.0"
+histogram = "0.7.2"
 hostname = "0.3.1"
 itertools = "0.10"
 jito-protos = { path = "./jito_protos" }
-log = "0.4.14"
+log = "0.4.17"
 prost = "0.11"
 prost-types = "0.11"
+rand_07 = { package = "rand", version = "~0.7" }
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde_json = "1"
 signal-hook = "0.3"
-solana-client = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
-solana-metrics = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
-solana-perf = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
-solana-sdk = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
-solana-net-utils = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
-solana-streamer = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.13-jito" }
-thiserror = "1.0.34"
+solana-client = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
+solana-metrics = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
+solana-perf = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
+solana-sdk = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
+solana-net-utils = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
+solana-streamer = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
+thiserror = "1.0.40"
 tokio = "1"
-tonic = { version = "0.8.3", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+tonic = { version = "0.9.2", features = ["tls", "tls-roots", "tls-webpki-roots"] }
