@@ -11,7 +11,7 @@ COPY . .
 RUN --mount=type=cache,mode=0777,target=/home/root/app/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
-    RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release && cp target/release/jito-* ./
+    cargo build --release && cp target/release/jito-* ./
 
 ################################################################################
 FROM debian:bullseye-slim as base_image
@@ -24,4 +24,3 @@ ENV APP="jito-shredstream-proxy"
 WORKDIR /app
 COPY --from=builder /home/root/app/${APP} ./
 ENTRYPOINT ["/app/jito-shredstream-proxy"]
-
