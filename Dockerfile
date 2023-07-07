@@ -11,10 +11,7 @@ COPY . .
 RUN --mount=type=cache,mode=0777,target=/home/root/app/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
-    cargo build --release && cp target/release/jito-* ./
-
-RUN ls -lh
-RUN ls -lh target/release/
+    cargo build --release && ls -lh && ls -lh target && ls -lh target/release && cp target/release/jito-* ./
 
 ################################################################################
 FROM debian:bullseye-slim as base_image
