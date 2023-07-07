@@ -31,9 +31,6 @@ jobs:
       - name: Clippy check
         run: cargo clippy --all-features --all-targets --tests -- -D warnings
 
-      - name: Fast build
-        run: cargo build --release
-
       # Add support for more platforms with QEMU (optional)
       # https://github.com/docker/setup-qemu-action
       - name: Set up QEMU
@@ -49,7 +46,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_PWD }}
 
-      # NOTE: this step is slow
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
