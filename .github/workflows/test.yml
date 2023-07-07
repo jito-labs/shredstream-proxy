@@ -4,7 +4,7 @@ on: push
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04-16c-64g
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -18,4 +18,3 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features --locked
-
