@@ -2,10 +2,10 @@ name: release
 
 on:
   push:
-  #    branches:
-  #      - master
-  tags:
-    - 'v*'
+    #    branches:
+    #      - master
+    tags:
+      - 'v*'
 
 jobs:
   test:
