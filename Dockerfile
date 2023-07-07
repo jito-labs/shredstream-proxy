@@ -13,6 +13,9 @@ RUN --mount=type=cache,mode=0777,target=/home/root/app/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
     cargo build --release && cp target/release/jito-* ./
 
+RUN ls -lh
+RUN ls -lh target/release/
+
 ################################################################################
 FROM debian:bullseye-slim as base_image
 RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl1.1 && rm -rf /var/lib/apt/lists/*
