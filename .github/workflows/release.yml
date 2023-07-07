@@ -1,0 +1,25 @@
+name: release
+
+on:
+  push:
+  #    branches:
+  #      - master
+  tags:
+    - 'v*'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          caller-workflow-name: test
+
+      - name: Run tests
+        run: cargo test --all-features --locked
