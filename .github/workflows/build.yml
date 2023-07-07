@@ -58,4 +58,4 @@ jobs:
           tags: jitolabs/jito-shredstream-proxy:${{github.sha}}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          platforms: linux/arm64,linux/amd64,linux/x86_64
+          platforms: linux/arm64,linux/x86_64
