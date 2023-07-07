@@ -16,6 +16,10 @@ jobs:
         run: |
           cat /proc/cpuinfo
 
+      - name: Install cargo sort
+        run: |
+          cargo install cargo-sort
+
       - name: Cargo sort
         run: cargo sort --workspace --check
 
