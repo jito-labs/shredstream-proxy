@@ -16,6 +16,11 @@ jobs:
         run: |
           cat /proc/cpuinfo
 
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          caller-workflow-name: test
+
       - name: Install cargo sort
         run: |
           cargo install cargo-sort
