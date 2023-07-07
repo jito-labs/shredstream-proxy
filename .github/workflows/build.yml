@@ -32,7 +32,7 @@ jobs:
         run: cargo clippy --all-features --all-targets --tests -- -D warnings
 
       - name: Fast build
-        run: cargo build --releae
+        run: cargo build --release
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
