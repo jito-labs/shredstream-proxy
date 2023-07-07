@@ -16,6 +16,12 @@ jobs:
         run: |
           cat /proc/cpuinfo
 
+      - name: Cargo sort
+        run: cargo sort --workspace --check
+
+      - name: Clippy check
+        run: cargo clippy --all-features --all-targets --tests -- -D warnings
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 

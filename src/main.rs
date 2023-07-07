@@ -141,10 +141,12 @@ pub enum ShredstreamProxyError {
 }
 
 fn resolve_hostname_port(hostname_port: &str) -> io::Result<(SocketAddr, String)> {
-    let socketaddr = hostname_port.to_socket_addrs()?.next().ok_or(Error::new(
-        ErrorKind::AddrNotAvailable,
-        format!("Could not find destination {hostname_port}"),
-    ))?;
+    let socketaddr = hostname_port.to_socket_addrs()?.next().ok_or_else(|| {
+        Error::new(
+            ErrorKind::AddrNotAvailable,
+            format!("Could not find destination {hostname_port}"),
+        )
+    })?;
 
     Ok((socketaddr, hostname_port.to_string()))
 }
