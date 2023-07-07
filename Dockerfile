@@ -8,10 +8,7 @@ ENV HOME=/home/root
 WORKDIR $HOME/app
 COPY . .
 
-RUN --mount=type=cache,mode=0777,target=/home/root/app/target \
-    --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
-    --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
-    cargo build --release && ls -lh && ls -lh target && ls -lh target/release && cp target/release/jito-* ./
+RUN cargo build --release
 
 ################################################################################
 FROM debian:bullseye-slim as base_image
@@ -22,5 +19,5 @@ FROM base_image as shredstream_proxy
 ENV APP="jito-shredstream-proxy"
 
 WORKDIR /app
-COPY --from=builder /home/root/app/${APP} ./
+COPY --from=builder /home/root/app/target/release/${APP} ./
 ENTRYPOINT ["/app/jito-shredstream-proxy"]
