@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.4.0
 # the --platform=$BUILDPLATFORM makes the build WAY faster for different platforms
-FROM --platform=$BUILDPLATFORM rust:1.66-slim-bullseye as builder
+FROM --platform=linux/amd64 rust:1.66-slim-bullseye as builder
 
 RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl-dev protobuf-compiler pkg-config
 RUN rustup component add rustfmt && update-ca-certificates
