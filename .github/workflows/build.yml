@@ -31,11 +31,6 @@ jobs:
       - name: Clippy check
         run: cargo clippy --all-features --all-targets --tests -- -D warnings
 
-      # Add support for more platforms with QEMU (optional)
-      # https://github.com/docker/setup-qemu-action
-#      - name: Set up QEMU
-#        uses: docker/setup-qemu-action@v2
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
