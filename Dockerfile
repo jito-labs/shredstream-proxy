@@ -12,7 +12,7 @@ COPY . .
 RUN cargo build --release
 
 ################################################################################
-FROM debian:bullseye-slim as base_image
+FROM --platform=linux/amd64 debian:bullseye-slim as base_image
 RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl1.1 && rm -rf /var/lib/apt/lists/*
 
 ################################################################################
