@@ -57,8 +57,8 @@ jobs:
 
       - name: Copy artifact from container
         run: |
-          docker run --rm --entrypoint cat jitolabs/jito-shredstream-proxy:${{github.ref_name}} --platform linux/x86_64 /app/jito-shredstream-proxy > ./jito-shredstream-proxy-x86_64-unknown-linux-gnu
-          docker run --rm --entrypoint cat jitolabs/jito-shredstream-proxy:${{github.ref_name}} --platform linux/arm64 /app/jito-shredstream-proxy > ./jito-shredstream-proxy-arm64
+          docker run --rm --platform linux/x86_64 --entrypoint cat jitolabs/jito-shredstream-proxy:${{github.ref_name}} /app/jito-shredstream-proxy > ./jito-shredstream-proxy-x86_64-unknown-linux-gnu
+          docker run --rm --platform linux/arm64 --entrypoint cat jitolabs/jito-shredstream-proxy:${{github.ref_name}} /app/jito-shredstream-proxy > ./jito-shredstream-proxy-arm64
           ls -lh .
           file ./jito-shredstream-proxy-x86_64-unknown-linux-gnu
           file ./jito-shredstream-proxy-arm64
