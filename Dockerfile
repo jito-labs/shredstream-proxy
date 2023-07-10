@@ -8,7 +8,12 @@ ENV HOME=/home/root
 WORKDIR $HOME/app
 COPY . .
 
-RUN cargo build --release
+# with buildkit, you need to copy the binary to the main folder
+# w/o buildkit, you can remove the cp
+RUN --mount=type=cache,mode=0777,target=/home/root/app/target \
+    --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
+    --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
+    cargo build --release && cp target/release/jito-* ./
 
 ################################################################################
 FROM --platform=linux/amd64 debian:bullseye-slim as base_image
@@ -19,5 +24,7 @@ FROM base_image as shredstream_proxy
 ENV APP="jito-shredstream-proxy"
 
 WORKDIR /app
-COPY --from=builder /home/root/app/target/release/${APP} ./
+# with buildkit, the binary is placed in the git root folder
+# w/o buildkit, the binary will be in target/release
+COPY --from=builder /home/root/app/${APP} ./
 ENTRYPOINT ["/app/jito-shredstream-proxy"]
