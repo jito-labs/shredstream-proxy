@@ -22,12 +22,12 @@ rand_07 = { package = "rand", version = "~0.7" }
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde_json = "1"
 signal-hook = "0.3"
-solana-client = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
-solana-metrics = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
-solana-perf = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
-solana-sdk = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
-solana-net-utils = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
-solana-streamer = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "v1.14.17-jito" }
+solana-client = "~1.14"
+solana-metrics = "~1.14"
+solana-net-utils = "~1.14"
+solana-perf = "~1.14"
+solana-sdk = "~1.14"
+solana-streamer = "~1.14"
 thiserror = "1.0.40"
 tokio = "1"
 tonic = { version = "0.9.2", features = ["tls", "tls-roots", "tls-webpki-roots"] }

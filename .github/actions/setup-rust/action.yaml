@@ -42,24 +42,10 @@ runs:
           target/
         key: ${{ runner.os }}-cargo-${{ steps.cache-key-generator.outputs.cache-key }}-${{ hashFiles('**/*.rs') }}
 
-    - name: Check rust version before
+    - name: Check rust version
       run: |
         rustc --version || true;
         cargo --version || true;
         cargo clippy --version || true;
         cargo fmt --version || true;
-      shell: bash
-
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly
-        override: true
-        components: clippy, rustfmt
-
-    - name: Check rust version after
-      run: |
-        rustc --version;
-        cargo --version;
-        cargo clippy --version;
-        cargo fmt --version;
       shell: bash
