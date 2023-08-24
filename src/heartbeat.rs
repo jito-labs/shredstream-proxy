@@ -28,15 +28,16 @@ use crate::{
 pub fn heartbeat_loop_thread(
     block_engine_url: String,
     auth_url: String,
-    auth_keypair: &Arc<Keypair>,
+    auth_keypair: Arc<Keypair>,
     desired_regions: Vec<String>,
     recv_socket: SocketAddr,
     runtime: Runtime,
+    service_name: String,
     grpc_restart_signal: Receiver<()>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    let auth_keypair = auth_keypair.clone();
+    let auth_keypair = auth_keypair;
     Builder::new().name("shredstream_proxy-heartbeat_loop_thread".to_string()).spawn(move || {
         let heartbeat_socket = jito_protos::shared::Socket {
             ip: recv_socket.ip().to_string(),
@@ -55,9 +56,9 @@ pub fn heartbeat_loop_thread(
 
         while !exit.load(Ordering::Relaxed) {
             info!("Starting heartbeat client");
-            let shredstream_client = runtime.block_on(get_grpc_client(&block_engine_url, &auth_url, &auth_keypair, exit.clone()));
+            let shredstream_client = runtime.block_on(get_grpc_client(block_engine_url.clone(), auth_url.clone(), auth_keypair.clone(), service_name.clone(),exit.clone()));
 
-            let mut shredstream_client = match shredstream_client {
+            let (mut shredstream_client , refresh_thread_hdl) = match shredstream_client {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("Failed to connect to block engine, retrying. Error: {e}");
@@ -128,6 +129,7 @@ pub fn heartbeat_loop_thread(
                     }
                     // restart grpc client if no shreds received
                     recv(grpc_restart_signal) -> _ => {
+                        refresh_thread_hdl.abort();
                         warn!("No shreds received recently, restarting heartbeat client.");
                         datapoint_warn!("shredstream_proxy-heartbeat_restart_signal",
                                         "block_engine_url" => block_engine_url,
@@ -150,22 +152,28 @@ pub fn heartbeat_loop_thread(
 }
 
 pub async fn get_grpc_client(
-    block_engine_url: &str,
-    auth_url: &str,
-    auth_keypair: &Arc<Keypair>,
+    block_engine_url: String,
+    auth_url: String,
+    auth_keypair: Arc<Keypair>,
+    service_name: String,
     exit: Arc<AtomicBool>,
-) -> Result<ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>, ShredstreamProxyError>
-{
+) -> Result<
+    (
+        ShredstreamClient<InterceptedService<Channel, ClientInterceptor>>,
+        tokio::task::JoinHandle<()>,
+    ),
+    ShredstreamProxyError,
+> {
     let auth_channel = create_grpc_channel(auth_url).await?;
-    let client_interceptor = ClientInterceptor::new(
+    let searcher_channel = create_grpc_channel(block_engine_url).await?;
+    let (client_interceptor, thread_handle) = ClientInterceptor::new(
         AuthServiceClient::new(auth_channel),
         auth_keypair,
         Role::ShredstreamSubscriber,
+        service_name,
         exit,
     )
     .await?;
-
-    let searcher_channel = create_grpc_channel(block_engine_url).await?;
     let searcher_client = ShredstreamClient::with_interceptor(searcher_channel, client_interceptor);
-    Ok(searcher_client)
+    Ok((searcher_client, thread_handle))
 }

@@ -333,13 +333,14 @@ fn start_heartbeat(
     heartbeat::heartbeat_loop_thread(
         args.block_engine_url.clone(),
         args.auth_url.unwrap_or(args.block_engine_url),
-        &auth_keypair,
+        auth_keypair,
         args.desired_regions,
         SocketAddr::new(
             args.common_args.public_ip.unwrap_or_else(get_public_ip),
             args.common_args.src_bind_port,
         ),
         runtime,
+        "shredstream_proxy".to_string(),
         grpc_restart_signal_r,
         shutdown_receiver.clone(),
         exit.clone(),
