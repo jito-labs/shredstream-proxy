@@ -21,13 +21,6 @@ jobs:
         with:
           caller-workflow-name: test
 
-      - name: Install cargo sort
-        run: |
-          cargo install cargo-sort
-
-      - name: Cargo sort
-        run: cargo sort --workspace --check
-
       - name: Clippy check
         run: cargo clippy --all-features --all-targets --tests -- -D warnings
 

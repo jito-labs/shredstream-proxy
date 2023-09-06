@@ -1,7 +1,7 @@
 use std::{
     io,
     io::{Error, ErrorKind},
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     panic,
     path::{Path, PathBuf},
     str::FromStr,
@@ -151,16 +151,17 @@ fn resolve_hostname_port(hostname_port: &str) -> io::Result<(SocketAddr, String)
     Ok((socketaddr, hostname_port.to_string()))
 }
 
-fn get_public_ip() -> IpAddr {
+/// Returns public-facing IPV4 address
+pub fn get_public_ip() -> reqwest::Result<IpAddr> {
     info!("Requesting public ip from ifconfig.me...");
-    let response = reqwest::blocking::get("https://ifconfig.me")
-        .expect("response from ifconfig.me")
-        .text()
-        .expect("public ip response");
+    let client = reqwest::blocking::Client::builder()
+        .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+        .build()?;
+    let response = client.get("https://ifconfig.me").send()?.text()?;
     let public_ip = IpAddr::from_str(&response).unwrap();
     info!("Retrieved public ip: {public_ip:?}");
 
-    public_ip
+    Ok(public_ip)
 }
 
 // Creates a channel that gets a message every time `SIGINT` is signalled.
@@ -336,7 +337,9 @@ fn start_heartbeat(
         auth_keypair,
         args.desired_regions,
         SocketAddr::new(
-            args.common_args.public_ip.unwrap_or_else(get_public_ip),
+            args.common_args
+                .public_ip
+                .unwrap_or_else(|| get_public_ip().unwrap()),
             args.common_args.src_bind_port,
         ),
         runtime,
