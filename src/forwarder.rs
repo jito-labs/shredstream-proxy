@@ -48,8 +48,7 @@ pub fn start_forwarder_threads(
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
-    let num_threads = num_threads
-        .unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()).max(8));
+    let num_threads = 32;
 
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
 
