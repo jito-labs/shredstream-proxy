@@ -21,6 +21,7 @@ use log::*;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use solana_client::client_error::{reqwest, ClientError};
 use solana_metrics::set_host_id;
+use solana_perf::deduper::Deduper;
 use solana_sdk::signature::read_keypair_file;
 use thiserror::Error;
 use tokio::runtime::Runtime;
@@ -249,12 +250,10 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     // share deduper + metrics between forwarder <-> accessory thread
     // use mutex since metrics are write heavy. cheaper than rwlock
-    let deduper = Arc::new(RwLock::new(
-        solana_perf::sigverify::Deduper::<2, [u8]>::new(
-            &mut rand_07::thread_rng(),
-            forwarder::DEDUPER_NUM_BITS,
-        ),
-    ));
+    let deduper = Arc::new(RwLock::new(Deduper::<2, [u8]>::new(
+        &mut rand_07::thread_rng(),
+        forwarder::DEDUPER_NUM_BITS,
+    )));
 
     let metrics = Arc::new(ShredMetrics::new());
     let use_discovery_service =

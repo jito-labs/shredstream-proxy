@@ -17,9 +17,9 @@ use log::{debug, error, info, warn};
 use prost::Message;
 use solana_metrics::{datapoint_info, datapoint_warn};
 use solana_perf::{
+    deduper::Deduper,
     packet::{PacketBatch, PacketBatchRecycler},
     recycler::Recycler,
-    sigverify::Deduper,
 };
 use solana_streamer::{
     sendmmsg::{batch_send, SendPktsError},
@@ -69,7 +69,7 @@ pub fn start_forwarder_threads(
                 packet_sender,
                 recycler.clone(),
                 Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
-                0, // do not coalesce since batching consumes more cpu cycles and adds latency.
+                Duration::default(), // do not coalesce since batching consumes more cpu cycles and adds latency.
                 true,
                 None,
             );
@@ -151,11 +151,11 @@ fn recv_from_channel_and_send_multiple_dest(
     debug!(
         "Got batch of {} packets, total size in bytes: {}",
         packet_batch.len(),
-        packet_batch.iter().map(|x| x.meta.size).sum::<usize>()
+        packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
     );
     let mut packet_batch_vec = vec![packet_batch];
 
-    let num_deduped = solana_perf::sigverify::dedup_packets_and_count_discards(
+    let num_deduped = solana_perf::deduper::dedup_packets_and_count_discards(
         &deduper.read().unwrap(),
         &mut packet_batch_vec,
         |_received_packet, _is_already_marked_as_discard, _is_dup| {},
@@ -185,18 +185,17 @@ fn recv_from_channel_and_send_multiple_dest(
         packet_batch_vec[0]
             .iter()
             .filter_map(|p| TraceShred::decode(p.data(..)?).ok())
-            .filter_map(|t| {
-                let created_at = SystemTime::try_from(t.created_at?);
-                Some((t.region, t.seq_num, created_at.ok()?))
-            })
-            .for_each(|(region, seq_num, created_at)| {
-                if let Ok(elapsed) = trace_shred_received_time.duration_since(created_at) {
-                    datapoint_info!("shredstream_proxy-trace_shred_latency",
-                                    "trace_region" => region,
-                                    ("trace_seq_num", seq_num, i64),
-                                    ("elapsed_micros", elapsed.as_micros(), i64),
-                    );
-                }
+            .filter(|t| t.created_at.is_some())
+            .for_each(|trace_shred| {
+                let elapsed = trace_shred_received_time
+                    .duration_since(SystemTime::try_from(trace_shred.created_at.unwrap()).unwrap())
+                    .unwrap_or_default();
+
+                datapoint_info!("shredstream_proxy-trace_shred_latency",
+                    "trace_region" => trace_shred.region,
+                    ("trace_seq_num", trace_shred.seq_num as i64, i64),
+                                ("elapsed_micros", elapsed.as_micros(), i64),
+                );
             });
     }
     Ok(())
@@ -431,7 +430,10 @@ mod tests {
         time::Duration,
     };
 
-    use solana_perf::packet::{Meta, Packet, PacketBatch};
+    use solana_perf::{
+        deduper::Deduper,
+        packet::{Meta, Packet, PacketBatch},
+    };
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
 
     use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
@@ -454,7 +456,6 @@ mod tests {
                     addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                     port: 48289, // received on random port
                     flags: PacketFlags::empty(),
-                    sender_stake: 0,
                 },
             ),
             Packet::new(
@@ -464,7 +465,6 @@ mod tests {
                     addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                     port: 9999,
                     flags: PacketFlags::empty(),
-                    sender_stake: 0,
                 },
             ),
         ]);
@@ -503,12 +503,10 @@ mod tests {
         // send packets
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
-            &Arc::new(RwLock::new(
-                solana_perf::sigverify::Deduper::<2, [u8]>::new(
-                    &mut rand_07::thread_rng(),
-                    crate::forwarder::DEDUPER_NUM_BITS,
-                ),
-            )),
+            &Arc::new(RwLock::new(Deduper::<2, [u8]>::new(
+                &mut rand_07::thread_rng(),
+                crate::forwarder::DEDUPER_NUM_BITS,
+            ))),
             &udp_sender,
             &Arc::new(dest_socketaddrs),
             false,
