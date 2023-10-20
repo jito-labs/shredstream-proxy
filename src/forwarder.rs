@@ -325,7 +325,7 @@ pub fn start_forwarder_accessory_thread(
 
                     // handle scenario when grpc connection is open, but backend doesn't receive heartbeat
                     // possibly due to envoy losing track of the pod when backend restarts.
-                    // we restart our grpc connection work around the stale connection
+                    // we restart our grpc connection to work around the stale connection
                     recv(stale_connection_tick) -> _ => {
                         // if no shreds received, then restart
                         let new_received_count = metrics.agg_received_cumulative.load(Ordering::Relaxed);

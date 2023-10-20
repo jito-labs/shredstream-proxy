@@ -4,10 +4,11 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::{sleep, Builder, JoinHandle},
+    thread::{Builder, JoinHandle},
     time::Duration,
 };
 
+use backon::{ExponentialBuilder, Retryable};
 use crossbeam_channel::Receiver;
 use jito_protos::{
     auth::{auth_service_client::AuthServiceClient, Role},
@@ -37,7 +38,6 @@ pub fn heartbeat_loop_thread(
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    let auth_keypair = auth_keypair;
     Builder::new().name("shredstream_proxy-heartbeat_loop_thread".to_string()).spawn(move || {
         let heartbeat_socket = jito_protos::shared::Socket {
             ip: recv_socket.ip().to_string(),
@@ -56,8 +56,11 @@ pub fn heartbeat_loop_thread(
 
         while !exit.load(Ordering::Relaxed) {
             info!("Starting heartbeat client");
-            let shredstream_client = runtime.block_on(get_grpc_client(block_engine_url.clone(), auth_url.clone(), auth_keypair.clone(), service_name.clone(),exit.clone()));
-
+            let client_fut = (|| {
+                get_grpc_client(block_engine_url.clone(), auth_url.clone(), auth_keypair.clone(), service_name.clone(), exit.clone())
+            })
+                .retry(&ExponentialBuilder::default().with_min_delay(failed_heartbeat_interval).with_max_delay(Duration::from_secs(5 * 60)));
+            let shredstream_client = runtime.block_on(client_fut);
             let (mut shredstream_client , refresh_thread_hdl) = match shredstream_client {
                 Ok(c) => c,
                 Err(e) => {
@@ -69,9 +72,7 @@ pub fn heartbeat_loop_thread(
                         ("errors", 1, i64),
                         ("error_str", e.to_string(), String),
                     );
-                    if !exit.load(Ordering::Relaxed) {
-                        sleep(failed_heartbeat_interval);
-                    }
+
                     continue; // avoid sending heartbeat, try acquiring grpc client again
                 }
             };

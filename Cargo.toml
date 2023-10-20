@@ -8,6 +8,7 @@ edition = "2021"
 
 [dependencies]
 arc-swap = "1.6"
+backon = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 crossbeam-channel = "0.5.8"
 env_logger = "0.10.0"
