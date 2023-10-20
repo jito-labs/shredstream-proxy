@@ -81,7 +81,7 @@ pub fn start_forwarder_threads(
             let exit = exit.clone();
 
             let send_thread = Builder::new()
-                .name(format!("shredstream_proxy-send_thread_{thread_id}"))
+                .name(format!("ssPxyTx_{thread_id}"))
                 .spawn(move || {
                     let send_socket =
                         UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
@@ -191,10 +191,11 @@ fn recv_from_channel_and_send_multiple_dest(
                     .duration_since(SystemTime::try_from(trace_shred.created_at.unwrap()).unwrap())
                     .unwrap_or_default();
 
-                datapoint_info!("shredstream_proxy-trace_shred_latency",
+                datapoint_info!(
+                    "shredstream_proxy-trace_shred_latency",
                     "trace_region" => trace_shred.region,
                     ("trace_seq_num", trace_shred.seq_num as i64, i64),
-                                ("elapsed_micros", elapsed.as_micros(), i64),
+                    ("elapsed_micros", elapsed.as_micros(), i64),
                 );
             });
     }
@@ -210,7 +211,7 @@ pub fn start_destination_refresh_thread(
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    Builder::new().name("shredstream_proxy-destination_refresh_thread".to_string()).spawn(move || {
+    Builder::new().name("ssPxyDstRefresh".to_string()).spawn(move || {
         let fetch_socket_tick = crossbeam_channel::tick(Duration::from_secs(30));
         let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
         let mut socket_count = static_dest_sockets.len();
@@ -299,7 +300,7 @@ pub fn start_forwarder_accessory_thread(
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     Builder::new()
-        .name("shredstream_proxy-accessory_thread".to_string())
+        .name("ssPxyAccessory".to_string())
         .spawn(move || {
             let metrics_tick =
                 crossbeam_channel::tick(Duration::from_millis(metrics_update_interval_ms));

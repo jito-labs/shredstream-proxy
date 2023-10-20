@@ -38,7 +38,7 @@ pub fn heartbeat_loop_thread(
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    Builder::new().name("shredstream_proxy-heartbeat_loop_thread".to_string()).spawn(move || {
+    Builder::new().name("ssPxyHbeatLoop".to_string()).spawn(move || {
         let heartbeat_socket = jito_protos::shared::Socket {
             ip: recv_socket.ip().to_string(),
             port: recv_socket.port() as i64,
