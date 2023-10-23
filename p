@@ -2,7 +2,7 @@
 set -eux
 
 # Some container vars
-TAG=${USER}-dev
+TAG=${TAG:-${USER}-dev} # READ tag in from env var, defaulting to ${USER}-dev
 ORG="jitolabs"
 
 DOCKER_BUILDKIT=1 docker build -t "$ORG/jito-shredstream-proxy:${TAG}" .

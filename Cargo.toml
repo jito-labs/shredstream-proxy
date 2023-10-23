@@ -1,6 +1,6 @@
 [package]
 name = "jito-shredstream-proxy"
-version = "0.1.4"
+version = "0.1.5"
 description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://jito-labs.gitbook.io/mev/searcher-services/shredstream for details."
 authors = ["Jito Team <team@jito.wtf>"]
 homepage = "https://jito.wtf/"
@@ -8,6 +8,7 @@ edition = "2021"
 
 [dependencies]
 arc-swap = "1.6"
+backon = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 crossbeam-channel = "0.5.8"
 env_logger = "0.10.0"
@@ -22,12 +23,12 @@ rand_07 = { package = "rand", version = "~0.7" }
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde_json = "1"
 signal-hook = "0.3"
-solana-client = "~1.14"
-solana-metrics = "~1.14"
-solana-net-utils = "~1.14"
-solana-perf = "~1.14"
-solana-sdk = "~1.14"
-solana-streamer = "~1.14"
+solana-client = "~1.16"
+solana-metrics = "~1.16"
+solana-net-utils = "~1.16"
+solana-perf = "~1.16"
+solana-sdk = "~1.16"
+solana-streamer = "~1.16"
 thiserror = "1.0.40"
 tokio = "1"
-tonic = { version = "0.9.2", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+tonic = { version = "0.9", features = ["tls", "tls-roots", "tls-webpki-roots"] }

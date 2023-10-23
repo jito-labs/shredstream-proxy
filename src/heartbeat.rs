@@ -4,10 +4,11 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::{sleep, Builder, JoinHandle},
+    thread::{Builder, JoinHandle},
     time::Duration,
 };
 
+use backon::{ExponentialBuilder, Retryable};
 use crossbeam_channel::Receiver;
 use jito_protos::{
     auth::{auth_service_client::AuthServiceClient, Role},
@@ -37,8 +38,7 @@ pub fn heartbeat_loop_thread(
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    let auth_keypair = auth_keypair;
-    Builder::new().name("shredstream_proxy-heartbeat_loop_thread".to_string()).spawn(move || {
+    Builder::new().name("ssPxyHbeatLoop".to_string()).spawn(move || {
         let heartbeat_socket = jito_protos::shared::Socket {
             ip: recv_socket.ip().to_string(),
             port: recv_socket.port() as i64,
@@ -56,9 +56,24 @@ pub fn heartbeat_loop_thread(
 
         while !exit.load(Ordering::Relaxed) {
             info!("Starting heartbeat client");
-            let shredstream_client = runtime.block_on(get_grpc_client(block_engine_url.clone(), auth_url.clone(), auth_keypair.clone(), service_name.clone(),exit.clone()));
-
-            let (mut shredstream_client , refresh_thread_hdl) = match shredstream_client {
+            let shredstream_client_res = runtime.block_on(
+                (|| {
+                    get_grpc_client(
+                        block_engine_url.clone(),
+                        auth_url.clone(),
+                        auth_keypair.clone(),
+                        service_name.clone(),
+                        exit.clone()
+                    )
+                })
+                .retry(
+                    &ExponentialBuilder::default()
+                        .with_max_times(100)
+                        .with_min_delay(failed_heartbeat_interval)
+                        .with_max_delay(Duration::from_secs(5 * 60))
+                )
+            );
+            let (mut shredstream_client , refresh_thread_hdl) = match shredstream_client_res {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("Failed to connect to block engine, retrying. Error: {e}");
@@ -69,9 +84,7 @@ pub fn heartbeat_loop_thread(
                         ("errors", 1, i64),
                         ("error_str", e.to_string(), String),
                     );
-                    if !exit.load(Ordering::Relaxed) {
-                        sleep(failed_heartbeat_interval);
-                    }
+
                     continue; // avoid sending heartbeat, try acquiring grpc client again
                 }
             };
@@ -103,10 +116,11 @@ pub fn heartbeat_loop_thread(
                                     panic!("Invalid arguments: {err}.");
                                 };
                                 warn!("Error sending heartbeat: {err}");
-                                datapoint_warn!("shredstream_proxy-heartbeat_send_error",
-                                                "block_engine_url" => block_engine_url,
-                                                ("errors", 1, i64),
-                                                ("error_str", err.to_string(), String),
+                                datapoint_warn!(
+                                    "shredstream_proxy-heartbeat_send_error",
+                                    "block_engine_url" => block_engine_url,
+                                    ("errors", 1, i64),
+                                    ("error_str", err.to_string(), String),
                                 );
                                 failed_heartbeat_count += 1;
                             }
@@ -114,11 +128,12 @@ pub fn heartbeat_loop_thread(
                     }
                     // send metrics
                     recv(metrics_tick) -> _ => {
-                        datapoint_info!("shredstream_proxy-heartbeat_stats",
-                                        "block_engine_url" => block_engine_url,
-                                        ("successful_heartbeat_count", successful_heartbeat_count, i64),
-                                        ("failed_heartbeat_count", failed_heartbeat_count, i64),
-                                        ("client_restart_count", client_restart_count, i64),
+                        datapoint_info!(
+                            "shredstream_proxy-heartbeat_stats",
+                            "block_engine_url" => block_engine_url,
+                            ("successful_heartbeat_count", successful_heartbeat_count, i64),
+                            ("failed_heartbeat_count", failed_heartbeat_count, i64),
+                            ("client_restart_count", client_restart_count, i64),
                         );
                         successful_heartbeat_count_cumulative += successful_heartbeat_count;
                         failed_heartbeat_count_cumulative += failed_heartbeat_count;
@@ -131,10 +146,11 @@ pub fn heartbeat_loop_thread(
                     recv(grpc_restart_signal) -> _ => {
                         refresh_thread_hdl.abort();
                         warn!("No shreds received recently, restarting heartbeat client.");
-                        datapoint_warn!("shredstream_proxy-heartbeat_restart_signal",
-                                        "block_engine_url" => block_engine_url,
-                                        ("desired_regions", format!("{desired_regions:?}"), String),
-                                        ("client_restart_count", client_restart_count, i64),
+                        datapoint_warn!(
+                            "shredstream_proxy-heartbeat_restart_signal",
+                            "block_engine_url" => block_engine_url,
+                            ("desired_regions", format!("{desired_regions:?}"), String),
+                            ("client_restart_count", client_restart_count, i64),
                         );
                         // exit should be false
                         break;
