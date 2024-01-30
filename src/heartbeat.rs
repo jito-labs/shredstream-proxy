@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::{Builder, JoinHandle},
+    thread::{sleep, Builder, JoinHandle},
     time::Duration,
 };
 
@@ -56,21 +56,14 @@ pub fn heartbeat_loop_thread(
 
         while !exit.load(Ordering::Relaxed) {
             info!("Starting heartbeat client");
+
             let shredstream_client_res = runtime.block_on(
-                (|| {
-                    get_grpc_client(
-                        block_engine_url.clone(),
-                        auth_url.clone(),
-                        auth_keypair.clone(),
-                        service_name.clone(),
-                        exit.clone()
-                    )
-                })
-                .retry(
-                    &ExponentialBuilder::default()
-                        .with_max_times(100)
-                        .with_min_delay(failed_heartbeat_interval)
-                        .with_max_delay(Duration::from_secs(5 * 60))
+                get_grpc_client(
+                    block_engine_url.clone(),
+                    auth_url.clone(),
+                    auth_keypair.clone(),
+                    service_name.clone(),
+                    exit.clone()
                 )
             );
             let (mut shredstream_client , refresh_thread_hdl) = match shredstream_client_res {
@@ -84,7 +77,7 @@ pub fn heartbeat_loop_thread(
                         ("errors", 1, i64),
                         ("error_str", e.to_string(), String),
                     );
-
+                    sleep(Duration::from_secs(5));
                     continue; // avoid sending heartbeat, try acquiring grpc client again
                 }
             };
