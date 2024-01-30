@@ -4,11 +4,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::{Builder, JoinHandle},
+    thread::{sleep, Builder, JoinHandle},
     time::Duration,
 };
 
-use backon::{ExponentialBuilder, Retryable};
 use crossbeam_channel::Receiver;
 use jito_protos::{
     auth::{auth_service_client::AuthServiceClient, Role},
@@ -43,7 +42,7 @@ pub fn heartbeat_loop_thread(
             ip: recv_socket.ip().to_string(),
             port: recv_socket.port() as i64,
         };
-        let (mut heartbeat_interval, mut failed_heartbeat_interval) = (Duration::from_secs(1), Duration::from_secs(1)); //start with 1s, change based on server suggestion
+        let mut heartbeat_interval = Duration::from_secs(1); //start with 1s, change based on server suggestion
         // use tick() since we want to avoid thread::sleep(), as it's not interruptable. want to be interruptable for exiting quickly
         let mut heartbeat_tick = crossbeam_channel::tick(heartbeat_interval);
         let metrics_tick = crossbeam_channel::tick(Duration::from_secs(30));
@@ -57,20 +56,12 @@ pub fn heartbeat_loop_thread(
         while !exit.load(Ordering::Relaxed) {
             info!("Starting heartbeat client");
             let shredstream_client_res = runtime.block_on(
-                (|| {
-                    get_grpc_client(
-                        block_engine_url.clone(),
-                        auth_url.clone(),
-                        auth_keypair.clone(),
-                        service_name.clone(),
-                        exit.clone()
-                    )
-                })
-                .retry(
-                    &ExponentialBuilder::default()
-                        .with_max_times(100)
-                        .with_min_delay(failed_heartbeat_interval)
-                        .with_max_delay(Duration::from_secs(5 * 60))
+                get_grpc_client(
+                    block_engine_url.clone(),
+                    auth_url.clone(),
+                    auth_keypair.clone(),
+                    service_name.clone(),
+                    exit.clone()
                 )
             );
             let (mut shredstream_client , refresh_thread_hdl) = match shredstream_client_res {
@@ -84,7 +75,7 @@ pub fn heartbeat_loop_thread(
                         ("errors", 1, i64),
                         ("error_str", e.to_string(), String),
                     );
-
+                    sleep(Duration::from_secs(5));
                     continue; // avoid sending heartbeat, try acquiring grpc client again
                 }
             };
@@ -100,14 +91,13 @@ pub fn heartbeat_loop_thread(
                             }));
 
                         match heartbeat_result {
-                            Ok(x) => {
-                                let new_ttl = x.get_ref().ttl_ms as u64;
-                                let new_interval = Duration::from_millis(new_ttl.checked_div(2).unwrap());
+                            Ok(hb) => {
+                                // retry sooner in case a heartbeat fails
+                                let new_interval = Duration::from_millis((hb.get_ref().ttl_ms / 3) as u64);
                                 if heartbeat_interval != new_interval {
                                     info!("Sending heartbeat every {new_interval:?}.");
                                     heartbeat_interval = new_interval;
                                     heartbeat_tick = crossbeam_channel::tick(new_interval);
-                                    failed_heartbeat_interval = Duration::from_millis(new_ttl / 4);
                                 }
                                 successful_heartbeat_count += 1;
                             }
