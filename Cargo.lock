@@ -2034,7 +2034,7 @@ dependencies = [
 
 [[package]]
 name = "jito-shredstream-proxy"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "arc-swap",
  "backon",
