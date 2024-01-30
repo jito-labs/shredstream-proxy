@@ -251,7 +251,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
     // share deduper + metrics between forwarder <-> accessory thread
     // use mutex since metrics are write heavy. cheaper than rwlock
     let deduper = Arc::new(RwLock::new(Deduper::<2, [u8]>::new(
-        &mut rand_07::thread_rng(),
+        &mut rand::thread_rng(),
         forwarder::DEDUPER_NUM_BITS,
     )));
 

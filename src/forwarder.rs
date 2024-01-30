@@ -306,7 +306,7 @@ pub fn start_forwarder_accessory_thread(
                 crossbeam_channel::tick(Duration::from_millis(metrics_update_interval_ms));
             let deduper_reset_tick = crossbeam_channel::tick(Duration::from_secs(2));
             let stale_connection_tick = crossbeam_channel::tick(Duration::from_secs(30));
-            let mut rng = rand_07::thread_rng();
+            let mut rng = rand::thread_rng();
             let mut last_cumulative_received_shred_count = 0;
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
@@ -505,7 +505,7 @@ mod tests {
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
             &Arc::new(RwLock::new(Deduper::<2, [u8]>::new(
-                &mut rand_07::thread_rng(),
+                &mut rand::thread_rng(),
                 crate::forwarder::DEDUPER_NUM_BITS,
             ))),
             &udp_sender,
