@@ -101,11 +101,11 @@ struct CommonArgs {
     #[arg(long, env)]
     discovered_endpoints_port: Option<u16>,
 
-    /// Interval between logging stats to CLI and influx
+    /// Interval between logging stats to stdout and influx
     #[arg(long, env, default_value_t = 15_000)]
     metrics_report_interval_ms: u64,
 
-    /// Logs trace shreds cli and influx
+    /// Logs trace shreds to stdout and influx
     #[arg(long, env, default_value_t = false)]
     debug_trace_shred: bool,
 

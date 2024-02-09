@@ -11,6 +11,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError, Sender, TrySendError};
+use dashmap::DashMap;
 use itertools::Itertools;
 use jito_protos::trace_shred::TraceShred;
 use log::{debug, error, info, warn};
@@ -140,10 +141,7 @@ fn recv_from_channel_and_send_multiple_dest(
     debug_trace_shred: bool,
     metrics: &Arc<ShredMetrics>,
 ) -> Result<(), ShredstreamProxyError> {
-    let packet_batch = match maybe_packet_batch {
-        Ok(x) => Ok(x),
-        Err(e) => Err(ShredstreamProxyError::RecvError(e)),
-    }?;
+    let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
     metrics
         .agg_received
@@ -153,6 +151,22 @@ fn recv_from_channel_and_send_multiple_dest(
         packet_batch.len(),
         packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
     );
+    packet_batch.iter().for_each(|packet| {
+        metrics
+            .packets_received
+            .entry(packet.meta().addr)
+            .and_modify(|(discarded, not_discarded)| {
+                *discarded += packet.meta().discard() as u64;
+                *not_discarded += !packet.meta().discard() as u64;
+            })
+            .or_insert_with(|| {
+                (
+                    packet.meta().discard() as u64,
+                    !packet.meta().discard() as u64,
+                )
+            });
+    });
+
     let mut packet_batch_vec = vec![packet_batch];
 
     let num_deduped = solana_perf::deduper::dedup_packets_and_count_discards(
@@ -357,6 +371,8 @@ pub struct ShredMetrics {
     pub agg_fail_forward: AtomicU64,
     /// Number of duplicate shreds received
     pub duplicate: AtomicU64,
+    /// (discarded, not discarded, from other shredstream instances)
+    pub packets_received: DashMap<IpAddr, (u64, u64)>,
 
     // cumulative metrics (persist after reset)
     pub agg_received_cumulative: AtomicU64,
@@ -372,6 +388,7 @@ impl ShredMetrics {
             agg_success_forward: Default::default(),
             agg_fail_forward: Default::default(),
             duplicate: Default::default(),
+            packets_received: DashMap::with_capacity(10),
             agg_received_cumulative: Default::default(),
             agg_success_forward_cumulative: Default::default(),
             agg_fail_forward_cumulative: Default::default(),
@@ -399,6 +416,14 @@ impl ShredMetrics {
             ),
             ("duplicate", self.duplicate.load(Ordering::Relaxed), i64),
         );
+        self.packets_received.iter().for_each(|kv| {
+            let (addr, (discarded_packets, not_discarded_packets)) = kv.pair();
+            datapoint_info!("shredstream_proxy-receiver_stats",
+                "addr" => addr.to_string(),
+                ("discarded_packets", *discarded_packets, i64),
+                ("not_discarded_packets", *not_discarded_packets, i64),
+            );
+        });
     }
 
     /// resets current values, increments cumulative values
@@ -417,6 +442,7 @@ impl ShredMetrics {
         );
         self.duplicate_cumulative
             .fetch_add(self.duplicate.swap(0, Ordering::Relaxed), Ordering::Relaxed);
+        self.packets_received.alter_all(|_ip, _metrics| (0, 0))
     }
 }
 
