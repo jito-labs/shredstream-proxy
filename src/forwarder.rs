@@ -141,7 +141,7 @@ fn recv_from_channel_and_send_multiple_dest(
     debug_trace_shred: bool,
     metrics: &Arc<ShredMetrics>,
 ) -> Result<(), ShredstreamProxyError> {
-    let packet_batch = maybe_packet_batch.map_err(|e| ShredstreamProxyError::RecvError(e))?;
+    let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
     metrics
         .agg_received
