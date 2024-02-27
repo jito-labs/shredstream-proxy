@@ -8,6 +8,7 @@ use std::{
     thread::{Builder, JoinHandle},
     time::{Duration, SystemTime},
 };
+use std::thread::{sleep, spawn};
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError, Sender, TrySendError};
@@ -55,6 +56,7 @@ pub fn start_forwarder_threads(
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
+    info!("binding to {:?} src_port: {:?} num_threads: {:?}", src_addr, src_port, num_threads);
     solana_net_utils::multi_bind_in_range(src_addr, (src_port, src_port + 1), num_threads)
         .unwrap_or_else(|_| {
             panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
@@ -64,16 +66,27 @@ pub fn start_forwarder_threads(
         .enumerate()
         .flat_map(|(thread_id, incoming_shred_socket)| {
             let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
+            let stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
             let listen_thread = streamer::receiver(
                 Arc::new(incoming_shred_socket),
                 exit.clone(),
                 packet_sender,
                 recycler.clone(),
-                Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
+                stats.clone(),
                 Duration::default(), // do not coalesce since batching consumes more cpu cycles and adds latency.
                 true,
                 None,
             );
+
+            let report_metrics_thread = {
+                let exit = exit.clone();
+                spawn(move || {
+                    while !exit.load(Ordering::Relaxed) {
+                        sleep(Duration::from_secs(1));
+                        stats.report();
+                    }
+                })
+            };
 
             let deduper = deduper.clone();
             let unioned_dest_sockets = unioned_dest_sockets.clone();
@@ -126,7 +139,7 @@ pub fn start_forwarder_threads(
                 })
                 .unwrap();
 
-            [listen_thread, send_thread]
+            [listen_thread, send_thread, report_metrics_thread]
         })
         .collect::<Vec<JoinHandle<()>>>()
 }
@@ -151,6 +164,15 @@ fn recv_from_channel_and_send_multiple_dest(
         packet_batch.len(),
         packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
     );
+
+    let mut packet_batch_vec = vec![packet_batch];
+
+    let num_deduped = solana_perf::deduper::dedup_packets_and_count_discards(
+        &deduper.read().unwrap(),
+        &mut packet_batch_vec,
+        |_received_packet, _is_already_marked_as_discard, _is_dup| {},
+    );
+
     packet_batch.iter().for_each(|packet| {
         metrics
             .packets_received
@@ -166,14 +188,6 @@ fn recv_from_channel_and_send_multiple_dest(
                 )
             });
     });
-
-    let mut packet_batch_vec = vec![packet_batch];
-
-    let num_deduped = solana_perf::deduper::dedup_packets_and_count_discards(
-        &deduper.read().unwrap(),
-        &mut packet_batch_vec,
-        |_received_packet, _is_already_marked_as_discard, _is_dup| {},
-    );
 
     local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
         let packets_with_dest = packet_batch_vec[0].iter().filter_map(|pkt| {

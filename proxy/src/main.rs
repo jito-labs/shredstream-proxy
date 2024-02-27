@@ -191,6 +191,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder().init();
     let all_args: Args = Args::parse();
 
+    info!("all_args: {:?}", all_args);
+
     let shredstream_args = all_args.shredstream_args.clone();
     // common args
     let args = match all_args.shredstream_args {
