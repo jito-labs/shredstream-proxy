@@ -190,7 +190,7 @@ fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<
 fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder().init();
     let all_args: Args = Args::parse();
-    
+
     let shredstream_args = all_args.shredstream_args.clone();
     // common args
     let args = match all_args.shredstream_args {
