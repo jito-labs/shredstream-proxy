@@ -8,6 +8,7 @@ use std::{
     thread::{Builder, JoinHandle},
     time::{Duration, SystemTime},
 };
+use std::thread::{sleep, spawn};
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError, Sender, TrySendError};
@@ -64,16 +65,27 @@ pub fn start_forwarder_threads(
         .enumerate()
         .flat_map(|(thread_id, incoming_shred_socket)| {
             let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
+            let stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
             let listen_thread = streamer::receiver(
                 Arc::new(incoming_shred_socket),
                 exit.clone(),
                 packet_sender,
                 recycler.clone(),
-                Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread")),
+                stats.clone(),
                 Duration::default(), // do not coalesce since batching consumes more cpu cycles and adds latency.
                 true,
                 None,
             );
+
+            let report_metrics_thread = {
+                let exit = exit.clone();
+                spawn(move || {
+                    while !exit.load(Ordering::Relaxed) {
+                        sleep(Duration::from_secs(1));
+                        stats.report();
+                    }
+                })
+            };
 
             let deduper = deduper.clone();
             let unioned_dest_sockets = unioned_dest_sockets.clone();
@@ -126,7 +138,7 @@ pub fn start_forwarder_threads(
                 })
                 .unwrap();
 
-            [listen_thread, send_thread]
+            [listen_thread, send_thread, report_metrics_thread]
         })
         .collect::<Vec<JoinHandle<()>>>()
 }
@@ -151,21 +163,6 @@ fn recv_from_channel_and_send_multiple_dest(
         packet_batch.len(),
         packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
     );
-    packet_batch.iter().for_each(|packet| {
-        metrics
-            .packets_received
-            .entry(packet.meta().addr)
-            .and_modify(|(discarded, not_discarded)| {
-                *discarded += packet.meta().discard() as u64;
-                *not_discarded += !packet.meta().discard() as u64;
-            })
-            .or_insert_with(|| {
-                (
-                    packet.meta().discard() as u64,
-                    !packet.meta().discard() as u64,
-                )
-            });
-    });
 
     let mut packet_batch_vec = vec![packet_batch];
 
@@ -174,6 +171,24 @@ fn recv_from_channel_and_send_multiple_dest(
         &mut packet_batch_vec,
         |_received_packet, _is_already_marked_as_discard, _is_dup| {},
     );
+
+    packet_batch_vec.iter().for_each(|batch| {
+        batch.iter().for_each(|packet| {
+            metrics
+                .packets_received
+                .entry(packet.meta().addr)
+                .and_modify(|(discarded, not_discarded)| {
+                    *discarded += packet.meta().discard() as u64;
+                    *not_discarded += !packet.meta().discard() as u64;
+                })
+                .or_insert_with(|| {
+                    (
+                        packet.meta().discard() as u64,
+                        !packet.meta().discard() as u64,
+                    )
+                });
+        });
+    });
 
     local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
         let packets_with_dest = packet_batch_vec[0].iter().filter_map(|pkt| {

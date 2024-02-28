@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4.0
 FROM --platform=linux/amd64 rust:1.73-slim-bullseye as builder
 
-RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl-dev protobuf-compiler pkg-config
+RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl-dev protobuf-compiler pkg-config libudev-dev zlib1g-dev llvm clang cmake make libprotobuf-dev g++
 RUN rustup component add rustfmt && update-ca-certificates
 
 ENV HOME=/home/root

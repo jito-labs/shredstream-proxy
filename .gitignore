@@ -6,3 +6,5 @@
 **/*.rs.bk
 
 .idea/
+
+.env
