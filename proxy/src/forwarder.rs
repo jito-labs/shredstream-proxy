@@ -172,20 +172,22 @@ fn recv_from_channel_and_send_multiple_dest(
         |_received_packet, _is_already_marked_as_discard, _is_dup| {},
     );
 
-    packet_batch.iter().for_each(|packet| {
-        metrics
-            .packets_received
-            .entry(packet.meta().addr)
-            .and_modify(|(discarded, not_discarded)| {
-                *discarded += packet.meta().discard() as u64;
-                *not_discarded += !packet.meta().discard() as u64;
-            })
-            .or_insert_with(|| {
-                (
-                    packet.meta().discard() as u64,
-                    !packet.meta().discard() as u64,
-                )
-            });
+    packet_batch_vec.iter().for_each(|batch| {
+        batch.iter().for_each(|packet| {
+            metrics
+                .packets_received
+                .entry(packet.meta().addr)
+                .and_modify(|(discarded, not_discarded)| {
+                    *discarded += packet.meta().discard() as u64;
+                    *not_discarded += !packet.meta().discard() as u64;
+                })
+                .or_insert_with(|| {
+                    (
+                        packet.meta().discard() as u64,
+                        !packet.meta().discard() as u64,
+                    )
+                });
+        });
     });
 
     local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
