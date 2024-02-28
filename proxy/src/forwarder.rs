@@ -56,7 +56,6 @@ pub fn start_forwarder_threads(
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
-    info!("binding to {:?} src_port: {:?} num_threads: {:?}", src_addr, src_port, num_threads);
     solana_net_utils::multi_bind_in_range(src_addr, (src_port, src_port + 1), num_threads)
         .unwrap_or_else(|_| {
             panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
