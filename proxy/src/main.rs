@@ -85,8 +85,8 @@ struct CommonArgs {
     src_bind_port: u16,
 
     /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated.
-    /// Eg. `127.0.0.1:8002,10.0.0.1:8002`.
-    // Note: store the original string so we can do hostname resolution when refreshing destinations
+    /// Eg. `127.0.0.1:8001,10.0.0.1:8001`.
+    // Note: store the original string, so we can do hostname resolution when refreshing destinations
     #[arg(long, env, value_delimiter = ',', value_parser = resolve_hostname_port)]
     dest_ip_ports: Vec<(SocketAddr, String)>,
 

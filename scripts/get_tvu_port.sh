@@ -6,7 +6,7 @@ LEDGER_DIR=${LEDGER_DIR:-"/solana/ledger"}
 # fetch and print port using solana tooling
 get_tvu_solana() {
   echo "Getting shred listen port using solana cli with \$LEDGER_DIR=$LEDGER_DIR"
-  solana-validator --ledger "$LEDGER_DIR" contact-info | grep "TVU Forwards" | cut -d ':' -f 3
+  solana-validator --ledger "$LEDGER_DIR" contact-info | grep "TVU:" | cut -d ':' -f 3
 }
 
 # fetch port using curl. not guaranteed to be accurate as we assume it uses the default port allocation order
@@ -18,7 +18,7 @@ get_tvu_curl() {
   GOSSIP_PORT=$(echo "$GOSSIP_SOCKETADDR" | cut -d ':' -f 2)
 
   # offset by 2: https://github.com/jito-foundation/jito-solana/blob/efc5f1af5442fbd6645b2debcacd555c7c4b955b/gossip/src/cluster_info.rs#L2942
-  echo $(("$GOSSIP_PORT" + 2))
+  echo $(("$GOSSIP_PORT" + 1))
 }
 
 # check solana cli and ledger directory exists

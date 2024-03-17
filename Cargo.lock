@@ -2025,7 +2025,7 @@ checksum = "b1a46d1a171d865aa5f83f92695765caa047a9b4cbae2cbf37dbd613a793fd4c"
 
 [[package]]
 name = "jito-protos"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "prost",
  "prost-types",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "jito-shredstream-proxy"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "arc-swap",
  "clap 4.4.18",
