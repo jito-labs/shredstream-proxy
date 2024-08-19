@@ -3,6 +3,7 @@ members = [
     "jito_protos",
     "proxy"
 ]
+resolver = "2"
 
 [workspace.package]
 version = "0.1.8"
@@ -11,7 +12,9 @@ authors = ["Jito Team <team@jito.wtf>"]
 homepage = "https://jito.wtf/"
 edition = "2021"
 
-resolver = "2"
+[profile.release]
+# thin has minimal overhead vs none (default): https://blog.llvm.org/2016/06/thinlto-scalable-and-incremental-lto.html
+lto = "thin"
 
 [workspace.dependencies]
 arc-swap = "1.6"
