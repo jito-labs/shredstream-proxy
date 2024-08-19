@@ -5,10 +5,9 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock,
     },
-    thread::{Builder, JoinHandle},
+    thread::{sleep, spawn, Builder, JoinHandle},
     time::{Duration, SystemTime},
 };
-use std::thread::{sleep, spawn};
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError, Sender, TrySendError};
@@ -75,6 +74,7 @@ pub fn start_forwarder_threads(
                 Duration::default(), // do not coalesce since batching consumes more cpu cycles and adds latency.
                 true,
                 None,
+                true,
             );
 
             let report_metrics_thread = {

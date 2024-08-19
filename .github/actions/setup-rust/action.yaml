@@ -20,7 +20,7 @@ runs:
 
     - name: Install Protobuf
       run: |
-        export PROTOC_VERSION=21.12 && \
+        export PROTOC_VERSION=23.4 && \
         export PROTOC_ZIP=protoc-$PROTOC_VERSION-linux-x86_64.zip && \
         curl -Ss -OL https://github.com/google/protobuf/releases/download/v$PROTOC_VERSION/$PROTOC_ZIP \
         && sudo unzip -o $PROTOC_ZIP -d /usr/local bin/protoc \
@@ -29,14 +29,14 @@ runs:
       shell: bash
 
     - name: cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo
         key: ${{ runner.os }}-cargo-${{ steps.cache-key-generator.outputs.cache-key }}-${{ hashFiles('**/Cargo.lock') }}
 
     - name: cache rust files
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           target/
