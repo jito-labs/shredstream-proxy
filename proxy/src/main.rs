@@ -197,7 +197,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         ProxySubcommands::Shredstream(x) => x.common_args,
         ProxySubcommands::ForwardOnly(x) => x,
     };
-    set_host_id(hostname::get().unwrap().into_string().unwrap());
+    set_host_id(hostname::get()?.into_string().unwrap());
     if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
         || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
     {
@@ -226,7 +226,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         }));
     }
 
-    let runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new()?;
     let (grpc_restart_signal_s, grpc_restart_signal_r) = crossbeam_channel::bounded(1);
     let mut thread_handles = vec![];
     if let ProxySubcommands::Shredstream(args) = shredstream_args {
