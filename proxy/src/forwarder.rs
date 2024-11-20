@@ -66,6 +66,7 @@ pub fn start_forwarder_threads(
             let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
             let stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
             let listen_thread = streamer::receiver(
+                format!("ssListen{thread_id}"),
                 Arc::new(incoming_shred_socket),
                 exit.clone(),
                 packet_sender,
