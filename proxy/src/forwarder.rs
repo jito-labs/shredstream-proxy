@@ -73,9 +73,9 @@ pub fn start_forwarder_threads(
                 recycler.clone(),
                 stats.clone(),
                 Duration::default(), // do not coalesce since batching consumes more cpu cycles and adds latency.
-                true,
+                false,
                 None,
-                true,
+                false,
             );
 
             let report_metrics_thread = {
@@ -148,11 +148,11 @@ pub fn start_forwarder_threads(
 /// Returns Err when unable to receive packets.
 fn recv_from_channel_and_send_multiple_dest(
     maybe_packet_batch: Result<PacketBatch, RecvError>,
-    deduper: &Arc<RwLock<Deduper<2, [u8]>>>,
+    deduper: &RwLock<Deduper<2, [u8]>>,
     send_socket: &UdpSocket,
-    local_dest_sockets: &Arc<Vec<SocketAddr>>,
+    local_dest_sockets: &[SocketAddr],
     debug_trace_shred: bool,
-    metrics: &Arc<ShredMetrics>,
+    metrics: &ShredMetrics,
 ) -> Result<(), ShredstreamProxyError> {
     let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
