@@ -114,7 +114,7 @@ struct CommonArgs {
     #[arg(long, env)]
     public_ip: Option<IpAddr>,
 
-    /// Number of threads to use. Defaults to use all cores.
+    /// Number of threads to use. Defaults to use up to 4.
     #[arg(long, env)]
     num_threads: Option<usize>,
 }
