@@ -26,8 +26,8 @@ hostname = "0.4.0"
 itertools = "0.13.0"
 jito-protos = { path = "jito_protos" }
 log = "0.4"
-prost = "0.13"
-prost-types = "0.13"
+prost = "0.12"
+prost-types = "0.12"
 protobuf-src = "2"
 rand = "0.8"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
@@ -41,5 +41,5 @@ solana-sdk = "2.0.16"
 solana-streamer = "2.0.16"
 thiserror = "1"
 tokio = "1"
-tonic = { version = "0.12", features = ["tls", "tls-roots", "tls-webpki-roots"] }
-tonic-build = "0.12"
+tonic = { version = "0.10", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+tonic-build = "0.10"

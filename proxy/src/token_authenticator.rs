@@ -133,7 +133,7 @@ impl ClientInterceptor {
                 let now = SystemTime::now();
 
                 let refresh_token_ttl =
-                    SystemTime::try_from(*refresh_token.expires_at_utc.as_ref().unwrap())
+                    SystemTime::try_from(refresh_token.expires_at_utc.as_ref().unwrap().clone())
                         .unwrap()
                         .duration_since(now)
                         .unwrap_or_default();
@@ -162,7 +162,7 @@ impl ClientInterceptor {
                     continue;
                 }
 
-                let access_token_ttl = SystemTime::try_from(access_token_expiration)
+                let access_token_ttl = SystemTime::try_from(access_token_expiration.clone())
                     .unwrap()
                     .duration_since(now)
                     .unwrap_or_default();
