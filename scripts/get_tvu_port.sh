@@ -6,7 +6,23 @@ LEDGER_DIR=${LEDGER_DIR:-"/solana/ledger"}
 # fetch and print port using solana tooling
 get_tvu_solana() {
   echo "Getting shred listen port using solana cli with \$LEDGER_DIR=$LEDGER_DIR"
-  solana-validator --ledger "$LEDGER_DIR" contact-info | grep "TVU:" | cut -d ':' -f 3
+  
+  # get solana cli version
+  SOLANA_VERSION=$(solana --version)
+
+  # check the solana cli version
+  if [[ $SOLANA_VERSION == solana-cli\ 2.* ]]; then
+    # use agave-validator for solana cli version 2.x
+    echo "Using agave-validator for solana cli version 2.x"
+    agave-validator --ledger "$LEDGER_DIR" contact-info | grep "TVU:" | cut -d ':' -f 3
+  elif [[ $SOLANA_VERSION == solana-cli\ 1.* ]]; then
+    # use solana-validator for solana cli version 1.x
+    echo "Using solana-validator for solana cli version 1.x"
+    solana-validator --ledger "$LEDGER_DIR" contact-info | grep "TVU:" | cut -d ':' -f 3
+  else
+    # unsupported solana cli version
+    echo "Unsupported solana cli version: $SOLANA_VERSION"
+  fi
 }
 
 # fetch port using curl. not guaranteed to be accurate as we assume it uses the default port allocation order
