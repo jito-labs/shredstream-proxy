@@ -6,11 +6,11 @@ use std::{
         Arc, RwLock,
     },
     thread::{sleep, spawn, Builder, JoinHandle},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use arc_swap::ArcSwap;
-use crossbeam_channel::{Receiver, RecvError, Sender, TrySendError};
+use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, Sender, TrySendError};
 use dashmap::DashMap;
 use itertools::Itertools;
 use jito_protos::trace_shred::TraceShred;
@@ -52,7 +52,7 @@ pub fn start_forwarder_threads(
     let num_threads = num_threads
         .unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()).max(4));
 
-    let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
+    let recycler: PacketBatchRecycler = Recycler::warmed(1000, 1024);
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
     solana_net_utils::multi_bind_in_range(src_addr, (src_port, src_port + 1), num_threads)
@@ -63,7 +63,7 @@ pub fn start_forwarder_threads(
         .into_iter()
         .enumerate()
         .flat_map(|(thread_id, incoming_shred_socket)| {
-            let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
+            let (packet_sender, packet_receiver) = crossbeam_channel::bounded(100_000);
             let stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
             let listen_thread = streamer::receiver(
                 format!("ssListen{thread_id}"),
@@ -101,38 +101,43 @@ pub fn start_forwarder_threads(
                         UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
                             .expect("to bind to udp port for forwarding");
                     let mut local_dest_sockets = unioned_dest_sockets.load();
-
-                    let refresh_subscribers_tick = if use_discovery_service {
-                        crossbeam_channel::tick(Duration::from_secs(30))
+                    let last_refresh_subscribers = Instant::now();
+                    let refresh_subscribers_interval = if use_discovery_service {
+                        Duration::from_secs(30)
                     } else {
-                        crossbeam_channel::tick(Duration::MAX)
+                        Duration::MAX
                     };
                     while !exit.load(Ordering::Relaxed) {
-                        crossbeam_channel::select! {
-                            // forward packets
-                            recv(packet_receiver) -> maybe_packet_batch => {
-                               let res = recv_from_channel_and_send_multiple_dest(
-                                   maybe_packet_batch,
-                                   &deduper,
-                                   &send_socket,
-                                   &local_dest_sockets,
-                                   debug_trace_shred,
-                                   &metrics,
-                               );
+                        let start = Instant::now();
+                        let packet_batch =
+                            match packet_receiver.recv_timeout(Duration::from_millis(100)) {
+                                Ok(pb) => pb,
+                                Err(RecvTimeoutError::Timeout) => continue,
+                                Err(RecvTimeoutError::Disconnected) => return,
+                            };
+                        if packet_batch.is_empty() {
+                            continue;
+                        }
+                        let res = recv_from_channel_and_send_multiple_dest(
+                            packet_batch,
+                            &deduper,
+                            &send_socket,
+                            &local_dest_sockets,
+                            debug_trace_shred,
+                            &metrics,
+                        );
+                        if res.is_err() {
+                            break;
+                        }
 
-                                // avoid unwrap to prevent log spam from panic handler in each thread
-                                if res.is_err(){
-                                    break;
-                                }
-                            }
-                            // refresh thread-local subscribers
-                            recv(refresh_subscribers_tick) -> _ => {
-                                local_dest_sockets = unioned_dest_sockets.load();
-                            }
-                            // handle shutdown (avoid using sleep since it will hang under SIGINT)
-                            recv(shutdown_receiver) -> _ => {
-                                break;
-                            }
+                        if start.duration_since(last_refresh_subscribers)
+                            > refresh_subscribers_interval
+                        {
+                            local_dest_sockets = unioned_dest_sockets.load();
+                        }
+
+                        if shutdown_receiver.try_recv().is_ok() {
+                            break;
                         }
                     }
                     info!("Exiting forwarder thread {thread_id}.");
@@ -147,23 +152,17 @@ pub fn start_forwarder_threads(
 /// Broadcasts same packet to multiple recipients
 /// Returns Err when unable to receive packets.
 fn recv_from_channel_and_send_multiple_dest(
-    maybe_packet_batch: Result<PacketBatch, RecvError>,
+    packet_batch: PacketBatch,
     deduper: &RwLock<Deduper<2, [u8]>>,
     send_socket: &UdpSocket,
     local_dest_sockets: &[SocketAddr],
     debug_trace_shred: bool,
     metrics: &ShredMetrics,
 ) -> Result<(), ShredstreamProxyError> {
-    let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
     metrics
         .agg_received
         .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
-    debug!(
-        "Got batch of {} packets, total size in bytes: {}",
-        packet_batch.len(),
-        packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
-    );
 
     let mut packet_batch_vec = vec![packet_batch];
 
@@ -172,7 +171,44 @@ fn recv_from_channel_and_send_multiple_dest(
         &mut packet_batch_vec,
         |_received_packet, _is_already_marked_as_discard, _is_dup| {},
     );
+    packet_batch.iter().filter_map(|p| {
+        let Some(shred) = p.data(..) else {
+            p.meta_mut().set_discard(true);
+            return None;
+        };
+        if deduper.dedup(shred)
+        {
+            p.meta_mut().set_discard(true);
+            return None;
+        }
 
+    })
+    packet_batch
+        .iter()
+        .flatten()
+        .filter(|packet| !packet.meta().discard())
+        .filter_map(|p| {
+            let Some(shred) = p.data(..) else {
+                p.meta_mut().set_discard(true);
+                return None;
+            };
+            let Some(shred_slot) = shred::layout::get_slot(shred) else {
+                p.meta_mut().set_discard(true);
+                return None;
+            };
+            if deduper.dedup(shred)
+            {
+                p.meta_mut().set_discard(true);
+                return None;
+            }
+            Some((shred_slot, 1))
+        })
+        .reduce(
+            || (0, 0),
+            |(acc_max_slot, acc_count), (elem_max_slot, elem_count)| {
+                (acc_max_slot.max(elem_max_slot), acc_count + elem_count)
+            },
+        )
     packet_batch_vec.iter().for_each(|batch| {
         batch.iter().for_each(|packet| {
             metrics
@@ -295,10 +331,7 @@ fn fetch_unioned_destinations(
     let sockets_json = match serde_json::from_slice::<Vec<IpAddr>>(&bytes) {
         Ok(s) => s,
         Err(e) => {
-            warn!(
-                "Failed to parse json from: {:?}",
-                std::str::from_utf8(&bytes)
-            );
+            warn!("Failed to parse json from: {bytes:?}",);
             return Err(ShredstreamProxyError::from(e));
         }
     };
@@ -351,7 +384,6 @@ pub fn start_forwarder_accessory_thread(
                     // send metrics to influx
                     recv(metrics_tick) -> _ => {
                         metrics.report();
-                        metrics.reset();
                     }
 
                     // handle scenario when grpc connection is open, but backend doesn't receive heartbeat
@@ -417,48 +449,30 @@ impl ShredMetrics {
             "shredstream_proxy-connection_metrics",
             (
                 "agg_received",
-                self.agg_received.load(Ordering::Relaxed),
+                self.agg_received.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "agg_success_forward",
-                self.agg_success_forward.load(Ordering::Relaxed),
+                self.agg_success_forward.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "agg_fail_forward",
-                self.agg_fail_forward.load(Ordering::Relaxed),
+                self.agg_fail_forward.swap(0, Ordering::Relaxed),
                 i64
             ),
-            ("duplicate", self.duplicate.load(Ordering::Relaxed), i64),
+            ("duplicate", self.duplicate.swap(0, Ordering::Relaxed), i64),
         );
-        self.packets_received.iter().for_each(|kv| {
-            let (addr, (discarded_packets, not_discarded_packets)) = kv.pair();
-            datapoint_info!("shredstream_proxy-receiver_stats",
-                "addr" => addr.to_string(),
-                ("discarded_packets", *discarded_packets, i64),
-                ("not_discarded_packets", *not_discarded_packets, i64),
-            );
-        });
-    }
-
-    /// resets current values, increments cumulative values
-    pub fn reset(&self) {
-        self.agg_received_cumulative.fetch_add(
-            self.agg_received.swap(0, Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
-        self.agg_success_forward_cumulative.fetch_add(
-            self.agg_success_forward.swap(0, Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
-        self.agg_fail_forward_cumulative.fetch_add(
-            self.agg_fail_forward.swap(0, Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
-        self.duplicate_cumulative
-            .fetch_add(self.duplicate.swap(0, Ordering::Relaxed), Ordering::Relaxed);
-        self.packets_received.alter_all(|_ip, _metrics| (0, 0))
+        self.packets_received
+            .alter_all(|ip_addr, (discarded_packets, not_discarded_packets)| {
+                datapoint_info!("shredstream_proxy-receiver_stats",
+                    "addr" => ip_addr.to_string(),
+                    ("discarded_packets", discarded_packets, i64),
+                    ("not_discarded_packets", not_discarded_packets, i64),
+                );
+                (0, 0)
+            })
     }
 }
 
