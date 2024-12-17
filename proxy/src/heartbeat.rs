@@ -86,7 +86,7 @@ pub fn heartbeat_loop_thread(
         let mut failed_heartbeat_count_cumulative = 0u64;
 
         while !exit.load(Ordering::Relaxed) {
-            /* We want to scope the grpc shredstream client to the heartbeat loop. This way shredstream client exits when the heartbeat loop exits */
+            // We want to scope the grpc shredstream client to the heartbeat loop. This way shredstream client exits when the heartbeat loop exits
             let per_con_exit = ScopedAtomicBool::default();
             info!("Starting heartbeat client");
             let shredstream_client_res = runtime.block_on(
@@ -98,7 +98,7 @@ pub fn heartbeat_loop_thread(
                     per_con_exit.get_inner_clone(),
                 )
             );
-            //Shredstream client lives here -- so it has the same scope as per_con_exit
+            // Shredstream client lives here -- so it has the same scope as per_con_exit
             let (mut shredstream_client , refresh_thread_hdl) = match shredstream_client_res {
                 Ok(c) => c,
                 Err(e) => {
