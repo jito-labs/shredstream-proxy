@@ -24,6 +24,36 @@ use crate::{
     ShredstreamProxyError,
 };
 
+/*
+    This is a wrapper around AtomicBool that allows us to scope the lifetime of the AtomicBool to the heartbeat loop.
+    This is useful because we want to ensure that the AtomicBool is set to true when the heartbeat loop exits.
+*/
+struct ScopedAtomicBool {
+    inner: Arc<AtomicBool>,
+}
+
+impl ScopedAtomicBool {
+    fn new(inner: Arc<AtomicBool>) -> Self {
+        Self { inner }
+    }
+
+    fn get_inner_clone(&self) -> Arc<AtomicBool> {
+        self.inner.clone()
+    }
+}
+
+impl Default for ScopedAtomicBool {
+    fn default() -> Self {
+        Self { inner: Arc::new(AtomicBool::new(false)) }
+    }
+}
+
+impl Drop for ScopedAtomicBool {
+    fn drop(&mut self) {
+        self.inner.store(true, Ordering::Relaxed);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn heartbeat_loop_thread(
     block_engine_url: String,
@@ -54,6 +84,8 @@ pub fn heartbeat_loop_thread(
         let mut failed_heartbeat_count_cumulative = 0u64;
 
         while !exit.load(Ordering::Relaxed) {
+            /* We want to scope the grpc shredstream client to the heartbeat loop so that it's scoped to the heartbeat loop */
+            let per_con_exit = ScopedAtomicBool::default();
             info!("Starting heartbeat client");
             let shredstream_client_res = runtime.block_on(
                 get_grpc_client(
@@ -61,9 +93,10 @@ pub fn heartbeat_loop_thread(
                     auth_url.clone(),
                     auth_keypair.clone(),
                     service_name.clone(),
-                    exit.clone()
+                    per_con_exit.get_inner_clone(),
                 )
             );
+            //Shredstream client lives here -- so it has the same scope as per_con_exit
             let (mut shredstream_client , refresh_thread_hdl) = match shredstream_client_res {
                 Ok(c) => c,
                 Err(e) => {
