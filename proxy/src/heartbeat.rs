@@ -33,10 +33,6 @@ struct ScopedAtomicBool {
 }
 
 impl ScopedAtomicBool {
-    fn new(inner: Arc<AtomicBool>) -> Self {
-        Self { inner }
-    }
-
     fn get_inner_clone(&self) -> Arc<AtomicBool> {
         self.inner.clone()
     }
