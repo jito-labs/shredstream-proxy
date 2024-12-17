@@ -44,7 +44,9 @@ impl ScopedAtomicBool {
 
 impl Default for ScopedAtomicBool {
     fn default() -> Self {
-        Self { inner: Arc::new(AtomicBool::new(false)) }
+        Self {
+            inner: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
