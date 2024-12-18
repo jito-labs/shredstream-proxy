@@ -5,12 +5,12 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock,
     },
-    thread::{sleep, spawn, Builder, JoinHandle},
+    thread::{Builder, JoinHandle},
     time::{Duration, SystemTime},
 };
 
 use arc_swap::ArcSwap;
-use crossbeam_channel::{Receiver, RecvError, Sender, TrySendError};
+use crossbeam_channel::{Receiver, RecvError};
 use dashmap::DashMap;
 use itertools::Itertools;
 use jito_protos::trace_shred::TraceShred;
@@ -44,6 +44,7 @@ pub fn start_forwarder_threads(
     num_threads: Option<usize>,
     deduper: Arc<RwLock<Deduper<2, [u8]>>>,
     metrics: Arc<ShredMetrics>,
+    forward_stats: Arc<StreamerReceiveStats>,
     use_discovery_service: bool,
     debug_trace_shred: bool,
     shutdown_receiver: Receiver<()>,
@@ -64,29 +65,18 @@ pub fn start_forwarder_threads(
         .enumerate()
         .flat_map(|(thread_id, incoming_shred_socket)| {
             let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
-            let stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
             let listen_thread = streamer::receiver(
                 format!("ssListen{thread_id}"),
                 Arc::new(incoming_shred_socket),
                 exit.clone(),
                 packet_sender,
                 recycler.clone(),
-                stats.clone(),
+                forward_stats.clone(),
                 Duration::default(), // do not coalesce since batching consumes more cpu cycles and adds latency.
                 false,
                 None,
                 false,
             );
-
-            let report_metrics_thread = {
-                let exit = exit.clone();
-                spawn(move || {
-                    while !exit.load(Ordering::Relaxed) {
-                        sleep(Duration::from_secs(1));
-                        stats.report();
-                    }
-                })
-            };
 
             let deduper = deduper.clone();
             let unioned_dest_sockets = unioned_dest_sockets.clone();
@@ -139,7 +129,7 @@ pub fn start_forwarder_threads(
                 })
                 .unwrap();
 
-            [listen_thread, send_thread, report_metrics_thread]
+            [listen_thread, send_thread]
         })
         .collect::<Vec<JoinHandle<()>>>()
 }
@@ -325,7 +315,6 @@ pub fn start_forwarder_accessory_thread(
     deduper: Arc<RwLock<Deduper<2, [u8]>>>,
     metrics: Arc<ShredMetrics>,
     metrics_update_interval_ms: u64,
-    grpc_restart_signal: Sender<()>,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
@@ -335,9 +324,7 @@ pub fn start_forwarder_accessory_thread(
             let metrics_tick =
                 crossbeam_channel::tick(Duration::from_millis(metrics_update_interval_ms));
             let deduper_reset_tick = crossbeam_channel::tick(Duration::from_secs(2));
-            let stale_connection_tick = crossbeam_channel::tick(Duration::from_secs(30));
             let mut rng = rand::thread_rng();
-            let mut last_cumulative_received_shred_count = 0;
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
                     // reset deduper to avoid false positives
@@ -352,20 +339,6 @@ pub fn start_forwarder_accessory_thread(
                     recv(metrics_tick) -> _ => {
                         metrics.report();
                         metrics.reset();
-                    }
-
-                    // handle scenario when grpc connection is open, but backend doesn't receive heartbeat
-                    // possibly due to envoy losing track of the pod when backend restarts.
-                    // we restart our grpc connection to work around the stale connection
-                    recv(stale_connection_tick) -> _ => {
-                        // if no shreds received, then restart
-                        let new_received_count = metrics.agg_received_cumulative.load(Ordering::Relaxed);
-                        if new_received_count == last_cumulative_received_shred_count {
-                            if let Err(TrySendError::Disconnected(())) = grpc_restart_signal.try_send(()) {
-                                panic!("Failed to send grpc restart signal, channel disconnected");
-                            }
-                        }
-                        last_cumulative_received_shred_count = new_received_count;
                     }
 
                     // handle SIGINT shutdown
