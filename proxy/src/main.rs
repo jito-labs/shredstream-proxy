@@ -10,7 +10,7 @@ use std::{
         Arc, RwLock,
     },
     thread,
-    thread::{sleep, JoinHandle},
+    thread::{sleep, spawn, JoinHandle},
     time::Duration,
 };
 
@@ -23,6 +23,7 @@ use solana_client::client_error::{reqwest, ClientError};
 use solana_metrics::set_host_id;
 use solana_perf::deduper::Deduper;
 use solana_sdk::signature::read_keypair_file;
+use solana_streamer::streamer::StreamerReceiveStats;
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tonic::Status;
@@ -226,17 +227,13 @@ fn main() -> Result<(), ShredstreamProxyError> {
         }));
     }
 
+    let metrics = Arc::new(ShredMetrics::new());
+
     let runtime = Runtime::new()?;
-    let (grpc_restart_signal_s, grpc_restart_signal_r) = crossbeam_channel::bounded(1);
     let mut thread_handles = vec![];
     if let ProxySubcommands::Shredstream(args) = shredstream_args {
-        let heartbeat_hdl = start_heartbeat(
-            args,
-            &exit,
-            &shutdown_receiver,
-            runtime,
-            grpc_restart_signal_r,
-        );
+        let heartbeat_hdl =
+            start_heartbeat(args, &exit, &shutdown_receiver, runtime, metrics.clone());
         thread_handles.push(heartbeat_hdl);
     }
 
@@ -255,7 +252,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         forwarder::DEDUPER_NUM_BITS,
     )));
 
-    let metrics = Arc::new(ShredMetrics::new());
+    let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
     let forwarder_hdls = forwarder::start_forwarder_threads(
@@ -265,6 +262,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.num_threads,
         deduper.clone(),
         metrics.clone(),
+        forward_stats.clone(),
         use_discovery_service,
         args.debug_trace_shred,
         shutdown_receiver.clone(),
@@ -272,11 +270,21 @@ fn main() -> Result<(), ShredstreamProxyError> {
     );
     thread_handles.extend(forwarder_hdls);
 
+    let report_metrics_thread = {
+        let exit = exit.clone();
+        spawn(move || {
+            while !exit.load(Ordering::Relaxed) {
+                sleep(Duration::from_secs(1));
+                forward_stats.report();
+            }
+        })
+    };
+    thread_handles.push(report_metrics_thread);
+
     let metrics_hdl = forwarder::start_forwarder_accessory_thread(
         deduper,
         metrics.clone(),
         args.metrics_report_interval_ms,
-        grpc_restart_signal_s,
         shutdown_receiver.clone(),
         exit.clone(),
     );
@@ -319,7 +327,7 @@ fn start_heartbeat(
     exit: &Arc<AtomicBool>,
     shutdown_receiver: &Receiver<()>,
     runtime: Runtime,
-    grpc_restart_signal_r: Receiver<()>,
+    metrics: Arc<ShredMetrics>,
 ) -> JoinHandle<()> {
     let auth_keypair = Arc::new(
         read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
@@ -343,7 +351,7 @@ fn start_heartbeat(
         ),
         runtime,
         "shredstream_proxy".to_string(),
-        grpc_restart_signal_r,
+        metrics,
         shutdown_receiver.clone(),
         exit.clone(),
     )
