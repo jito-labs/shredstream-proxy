@@ -111,7 +111,6 @@ pub fn heartbeat_loop_thread(
                     continue; // avoid sending heartbeat, try acquiring grpc client again
                 }
             };
-
             while !exit.load(Ordering::Relaxed) {
                 crossbeam_channel::select! {
                     // send heartbeat
