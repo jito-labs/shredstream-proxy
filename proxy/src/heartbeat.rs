@@ -52,34 +52,6 @@ impl Drop for ScopedAtomicBool {
     }
 }
 
-/*
-    This is a wrapper around AtomicBool that allows us to scope the lifetime of the AtomicBool to the heartbeat loop.
-    This is useful because we want to ensure that the AtomicBool is set to true when the heartbeat loop exits.
-*/
-struct ScopedAtomicBool {
-    inner: Arc<AtomicBool>,
-}
-
-impl ScopedAtomicBool {
-    fn get_inner_clone(&self) -> Arc<AtomicBool> {
-        self.inner.clone()
-    }
-}
-
-impl Default for ScopedAtomicBool {
-    fn default() -> Self {
-        Self {
-            inner: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
-impl Drop for ScopedAtomicBool {
-    fn drop(&mut self) {
-        self.inner.store(true, Ordering::Relaxed);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn heartbeat_loop_thread(
     block_engine_url: String,
