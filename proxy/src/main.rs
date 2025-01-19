@@ -30,6 +30,7 @@ use tonic::Status;
 
 use crate::{forwarder::ShredMetrics, token_authenticator::BlockEngineConnectionError};
 
+mod deshred;
 mod forwarder;
 mod heartbeat;
 mod token_authenticator;
@@ -90,6 +91,12 @@ struct CommonArgs {
     // Note: store the original string, so we can do hostname resolution when refreshing destinations
     #[arg(long, env, value_delimiter = ',', value_parser = resolve_hostname_port)]
     dest_ip_ports: Vec<(SocketAddr, String)>,
+
+    /// Static set of IP:Port where Shredstream proxy forwards deshredded entries to, comma separated.
+    /// Eg. `127.0.0.1:8001,10.0.0.1:8001`.
+    // Note: store the original string, so we can do hostname resolution when refreshing destinations
+    #[arg(long, env, value_delimiter = ',', value_parser = resolve_hostname_port)]
+    dest_deshredded_ip_ports: Vec<(SocketAddr, String)>,
 
     /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds.
     /// Endpoints are then set-union with `dest-ip-ports`.
@@ -194,7 +201,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let shredstream_args = all_args.shredstream_args.clone();
     // common args
-    let args = match all_args.shredstream_args {
+    let args: CommonArgs = match all_args.shredstream_args {
         ProxySubcommands::Shredstream(x) => x.common_args,
         ProxySubcommands::ForwardOnly(x) => x,
     };
@@ -245,6 +252,13 @@ fn main() -> Result<(), ShredstreamProxyError> {
             .collect::<Vec<SocketAddr>>(),
     ));
 
+    let deshredded_dest_sockets = Arc::new(ArcSwap::from_pointee(
+        args.dest_deshredded_ip_ports
+            .iter()
+            .map(|x| x.0)
+            .collect::<Vec<SocketAddr>>(),
+    ));
+
     // share deduper + metrics between forwarder <-> accessory thread
     // use mutex since metrics are write heavy. cheaper than rwlock
     let deduper = Arc::new(RwLock::new(Deduper::<2, [u8]>::new(
@@ -257,6 +271,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
+        deshredded_dest_sockets.clone(),
         args.src_bind_addr,
         args.src_bind_port,
         args.num_threads,
