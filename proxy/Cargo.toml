@@ -28,6 +28,10 @@ solana-net-utils = { workspace = true }
 solana-perf = { workspace = true }
 solana-sdk = { workspace = true }
 solana-streamer = { workspace = true }
+solana-ledger = { workspace = true }
+solana-packet = { workspace = true }
+solana-entry = { workspace = true }
+bincode = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

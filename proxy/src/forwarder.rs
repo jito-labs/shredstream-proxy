@@ -9,6 +9,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use solana_sdk::clock::Slot;
+
+
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError};
 use dashmap::DashMap;
@@ -28,6 +31,12 @@ use solana_streamer::{
     streamer::StreamerReceiveStats,
 };
 
+use solana_ledger::blockstore::Blockstore;
+use std::path::Path;
+use crate::deshred::{WrappedShred};
+
+use std::collections::{HashMap, BTreeSet};
+
 use crate::{resolve_hostname_port, ShredstreamProxyError};
 
 // values copied from https://github.com/solana-labs/solana/blob/33bde55bbdde13003acf45bb6afe6db4ab599ae4/core/src/sigverify_shreds.rs#L20
@@ -39,6 +48,7 @@ pub const DEDUPER_RESET_CYCLE: Duration = Duration::from_secs(5 * 60);
 #[allow(clippy::too_many_arguments)]
 pub fn start_forwarder_threads(
     unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
+    deshredded_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, 
     src_addr: IpAddr,
     src_port: u16,
     num_threads: Option<usize>,
@@ -54,6 +64,8 @@ pub fn start_forwarder_threads(
         .unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()).max(4));
 
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
+
+    let shred_bucket_by_slot  : Arc<RwLock<HashMap<Slot, BTreeSet<WrappedShred>>>> = Arc::new(RwLock::new(HashMap::new()));
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
     solana_net_utils::multi_bind_in_range(src_addr, (src_port, src_port + 1), num_threads)
@@ -79,7 +91,9 @@ pub fn start_forwarder_threads(
             );
 
             let deduper = deduper.clone();
+            let shred_bucket_by_slot = shred_bucket_by_slot.clone();
             let unioned_dest_sockets = unioned_dest_sockets.clone();
+            let deshredded_dest_sockets = deshredded_dest_sockets.clone(); 
             let metrics = metrics.clone();
             let shutdown_receiver = shutdown_receiver.clone();
             let exit = exit.clone();
@@ -91,7 +105,7 @@ pub fn start_forwarder_threads(
                         UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
                             .expect("to bind to udp port for forwarding");
                     let mut local_dest_sockets = unioned_dest_sockets.load();
-
+                    let deshredded_dest_sockets = deshredded_dest_sockets.load();                   
                     let refresh_subscribers_tick = if use_discovery_service {
                         crossbeam_channel::tick(Duration::from_secs(30))
                     } else {
@@ -106,8 +120,10 @@ pub fn start_forwarder_threads(
                                    &deduper,
                                    &send_socket,
                                    &local_dest_sockets,
-                                   debug_trace_shred,
+                                   &deshredded_dest_sockets,
+                                   debug_trace_shred, 
                                    &metrics,
+                                   &shred_bucket_by_slot,
                                );
 
                                 // avoid unwrap to prevent log spam from panic handler in each thread
@@ -141,8 +157,10 @@ fn recv_from_channel_and_send_multiple_dest(
     deduper: &RwLock<Deduper<2, [u8]>>,
     send_socket: &UdpSocket,
     local_dest_sockets: &[SocketAddr],
+    deshredded_dest_sockets: &[SocketAddr],
     debug_trace_shred: bool,
     metrics: &ShredMetrics,
+    shred_bucket_by_slot: &Arc<RwLock<HashMap<Slot, BTreeSet<WrappedShred>>>>
 ) -> Result<(), ShredstreamProxyError> {
     let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
@@ -200,6 +218,12 @@ fn recv_from_channel_and_send_multiple_dest(
             }
         }
     });
+
+    if !deshredded_dest_sockets.is_empty() {
+        packet_batch_vec[0].iter().for_each(|p| {
+            crate::deshred::insert_packet(p, shred_bucket_by_slot);
+        });
+    }
 
     if debug_trace_shred {
         packet_batch_vec[0]
@@ -524,6 +548,7 @@ mod tests {
                 crate::forwarder::DEDUPER_NUM_BITS,
             ))),
             &udp_sender,
+            &Arc::new(dest_socketaddrs),
             &Arc::new(dest_socketaddrs),
             false,
             &Arc::new(ShredMetrics::new()),
