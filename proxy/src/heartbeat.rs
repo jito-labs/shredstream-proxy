@@ -209,8 +209,14 @@ pub async fn get_grpc_client(
     ),
     ShredstreamProxyError,
 > {
+    info!("Creating grpc client for auth url: {}", auth_url);
+
+    info!("auth channel creating for auth url: {}", auth_url);
     let auth_channel = create_grpc_channel(auth_url).await?;
+
+    info!("searcher channel creating for block engine url: {}", block_engine_url);
     let searcher_channel = create_grpc_channel(block_engine_url).await?;
+
     let (client_interceptor, thread_handle) = ClientInterceptor::new(
         AuthServiceClient::new(auth_channel),
         auth_keypair,

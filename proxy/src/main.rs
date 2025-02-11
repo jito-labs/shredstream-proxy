@@ -24,6 +24,7 @@ use solana_metrics::set_host_id;
 use solana_perf::deduper::Deduper;
 use solana_sdk::signature::read_keypair_file;
 use solana_streamer::streamer::StreamerReceiveStats;
+use tokio::sync::broadcast::Sender as TokioBroadcastSender;
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tonic::Status;
@@ -92,11 +93,9 @@ struct CommonArgs {
     #[arg(long, env, value_delimiter = ',', value_parser = resolve_hostname_port)]
     dest_ip_ports: Vec<(SocketAddr, String)>,
 
-    /// Static set of IP:Port where Shredstream proxy forwards deshredded entries to, comma separated.
-    /// Eg. `127.0.0.1:8001,10.0.0.1:8001`.
-    // Note: store the original string, so we can do hostname resolution when refreshing destinations
-    #[arg(long, env, value_delimiter = ',', value_parser = resolve_hostname_port)]
-    dest_deshredded_ip_ports: Vec<(SocketAddr, String)>,
+    /// IP:Port for deshred server to listen
+    #[arg(long, env, value_parser = resolve_hostname_port)]
+    deshred_listen_address: Option<(SocketAddr, String)>,
 
     /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds.
     /// Endpoints are then set-union with `dest-ip-ports`.
@@ -234,9 +233,10 @@ fn main() -> Result<(), ShredstreamProxyError> {
         }));
     }
 
-    let metrics = Arc::new(ShredMetrics::new());
+    let metrics: Arc<ShredMetrics> = Arc::new(ShredMetrics::new());
 
     let runtime = Runtime::new()?;
+
     let mut thread_handles = vec![];
     if let ProxySubcommands::Shredstream(args) = shredstream_args {
         let heartbeat_hdl =
@@ -252,13 +252,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
             .collect::<Vec<SocketAddr>>(),
     ));
 
-    let deshredded_dest_sockets = Arc::new(ArcSwap::from_pointee(
-        args.dest_deshredded_ip_ports
-            .iter()
-            .map(|x| x.0)
-            .collect::<Vec<SocketAddr>>(),
-    ));
-
+    let deshred = args.deshred_listen_address.is_some();
+    let entry_sender = Arc::new(TokioBroadcastSender::new(1000));
     // share deduper + metrics between forwarder <-> accessory thread
     // use mutex since metrics are write heavy. cheaper than rwlock
     let deduper = Arc::new(RwLock::new(Deduper::<2, [u8]>::new(
@@ -271,7 +266,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
-        deshredded_dest_sockets.clone(),
         args.src_bind_addr,
         args.src_bind_port,
         args.num_threads,
@@ -282,6 +276,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.debug_trace_shred,
         shutdown_receiver.clone(),
         exit.clone(),
+        deshred,
+        &entry_sender.clone(),
     );
     thread_handles.extend(forwarder_hdls);
 
@@ -310,10 +306,20 @@ fn main() -> Result<(), ShredstreamProxyError> {
             args.discovered_endpoints_port.unwrap(),
             args.dest_ip_ports,
             unioned_dest_sockets,
-            shutdown_receiver,
-            exit,
+            shutdown_receiver.clone(),
+            exit.clone(),
         );
         thread_handles.push(refresh_handle);
+    }
+
+    if deshred {
+        let deshred_server_hdl = deshred::start_deshred_server_thread(
+            args.deshred_listen_address.unwrap().0,
+            entry_sender.clone(),
+            exit.clone(),
+            shutdown_receiver.clone(),
+        );
+        thread_handles.push(deshred_server_hdl);
     }
 
     info!(
