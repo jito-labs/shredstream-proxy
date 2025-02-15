@@ -2,7 +2,6 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
     },
     thread::{sleep, Builder, JoinHandle},
     time::Duration,
@@ -209,8 +208,6 @@ pub async fn get_grpc_client(
     ),
     ShredstreamProxyError,
 > {
-    info!("Creating grpc client for auth url: {}", auth_url);
-
     info!("auth channel creating for auth url: {}", auth_url);
     let auth_channel = create_grpc_channel(auth_url).await?;
 
