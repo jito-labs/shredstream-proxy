@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeSet, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     panic,
     sync::{
@@ -9,16 +10,11 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use solana_sdk::clock::Slot;
-use tokio::sync::broadcast::Sender;
-
-use jito_protos::deshred::Entry as DeshredEntry;
-
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError};
 use dashmap::DashMap;
 use itertools::Itertools;
-use jito_protos::trace_shred::TraceShred;
+use jito_protos::{deshred::Entry as DeshredEntry, trace_shred::TraceShred};
 use log::{debug, error, info, warn};
 use prost::Message;
 use solana_metrics::{datapoint_info, datapoint_warn};
@@ -27,17 +23,15 @@ use solana_perf::{
     packet::{PacketBatch, PacketBatchRecycler},
     recycler::Recycler,
 };
+use solana_sdk::clock::Slot;
 use solana_streamer::{
     sendmmsg::{batch_send, SendPktsError},
     streamer,
     streamer::StreamerReceiveStats,
 };
+use tokio::sync::broadcast::Sender;
 
-use crate::deshred::WrappedShred;
-
-use std::collections::{HashMap, BTreeSet};
-
-use crate::{resolve_hostname_port, ShredstreamProxyError};
+use crate::{deshred::WrappedShred, resolve_hostname_port, ShredstreamProxyError};
 
 // values copied from https://github.com/solana-labs/solana/blob/33bde55bbdde13003acf45bb6afe6db4ab599ae4/core/src/sigverify_shreds.rs#L20
 pub const DEDUPER_FALSE_POSITIVE_RATE: f64 = 0.001;
@@ -66,8 +60,8 @@ pub fn start_forwarder_threads(
 
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
 
-    let shred_bucket_by_slot  : Arc<RwLock<HashMap<Slot, BTreeSet<WrappedShred>>>> = Arc::new(RwLock::new(HashMap::new()));
-
+    let shred_bucket_by_slot: Arc<RwLock<HashMap<Slot, BTreeSet<WrappedShred>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
     solana_net_utils::multi_bind_in_range(src_addr, (src_port, src_port + 1), num_threads)
@@ -121,7 +115,7 @@ pub fn start_forwarder_threads(
                                     &deduper,
                                     &send_socket,
                                     &local_dest_sockets,
-                                    debug_trace_shred, 
+                                    debug_trace_shred,
                                     &metrics,
                                     &shred_bucket_by_slot,
                                     &entry_sender,
@@ -163,7 +157,7 @@ fn recv_from_channel_and_send_multiple_dest(
     metrics: &ShredMetrics,
     shred_bucket_by_slot: &Arc<RwLock<HashMap<Slot, BTreeSet<WrappedShred>>>>,
     entry_sender: &Arc<Sender<DeshredEntry>>,
-    deshred: bool
+    deshred: bool,
 ) -> Result<(), ShredstreamProxyError> {
     let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
@@ -465,6 +459,7 @@ impl ShredMetrics {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         str::FromStr,
         sync::{Arc, Mutex, RwLock},
@@ -478,10 +473,9 @@ mod tests {
         packet::{Meta, Packet, PacketBatch},
     };
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
+    use tokio::sync::broadcast::Sender;
 
     use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
-    use std::collections::HashMap;
-    use tokio::sync::broadcast::Sender;
 
     fn listen_and_collect(listen_socket: UdpSocket, received_packets: Arc<Mutex<Vec<Vec<u8>>>>) {
         let mut buf = [0u8; PACKET_DATA_SIZE];

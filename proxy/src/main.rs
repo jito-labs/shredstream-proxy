@@ -24,9 +24,8 @@ use solana_metrics::set_host_id;
 use solana_perf::deduper::Deduper;
 use solana_sdk::signature::read_keypair_file;
 use solana_streamer::streamer::StreamerReceiveStats;
-use tokio::sync::broadcast::Sender as TokioBroadcastSender;
 use thiserror::Error;
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, sync::broadcast::Sender as TokioBroadcastSender};
 use tonic::Status;
 
 use crate::{forwarder::ShredMetrics, token_authenticator::BlockEngineConnectionError};
