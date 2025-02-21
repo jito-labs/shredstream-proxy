@@ -159,7 +159,7 @@ pub fn get_public_ip() -> reqwest::Result<IpAddr> {
     let client = reqwest::blocking::Client::builder()
         .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
         .build()?;
-    let response = client.get("https://ifconfig.me").send()?.text()?;
+    let response = client.get("https://ifconfig.me/ip").send()?.text()?;
     let public_ip = IpAddr::from_str(&response).unwrap();
     info!("Retrieved public ip: {public_ip:?}");
 
