@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeSet, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     panic,
     sync::{
@@ -13,7 +14,7 @@ use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError};
 use dashmap::DashMap;
 use itertools::Itertools;
-use jito_protos::trace_shred::TraceShred;
+use jito_protos::{deshred::Entry as DeshredEntry, trace_shred::TraceShred};
 use log::{debug, error, info, warn};
 use prost::Message;
 use solana_metrics::{datapoint_info, datapoint_warn};
@@ -22,13 +23,15 @@ use solana_perf::{
     packet::{PacketBatch, PacketBatchRecycler},
     recycler::Recycler,
 };
+use solana_sdk::clock::Slot;
 use solana_streamer::{
     sendmmsg::{batch_send, SendPktsError},
     streamer,
     streamer::StreamerReceiveStats,
 };
+use tokio::sync::broadcast::Sender;
 
-use crate::{resolve_hostname_port, ShredstreamProxyError};
+use crate::{deshred::WrappedShred, resolve_hostname_port, ShredstreamProxyError};
 
 // values copied from https://github.com/solana-labs/solana/blob/33bde55bbdde13003acf45bb6afe6db4ab599ae4/core/src/sigverify_shreds.rs#L20
 pub const DEDUPER_FALSE_POSITIVE_RATE: f64 = 0.001;
@@ -49,11 +52,16 @@ pub fn start_forwarder_threads(
     debug_trace_shred: bool,
     shutdown_receiver: Receiver<()>,
     exit: Arc<AtomicBool>,
+    deshred: bool,
+    entry_sender: &Arc<Sender<DeshredEntry>>,
 ) -> Vec<JoinHandle<()>> {
     let num_threads = num_threads
         .unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()).max(4));
 
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
+
+    let shred_bucket_by_slot: Arc<RwLock<HashMap<Slot, BTreeSet<WrappedShred>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     // spawn a thread for each listen socket. linux kernel will load balance amongst shared sockets
     solana_net_utils::multi_bind_in_range(src_addr, (src_port, src_port + 1), num_threads)
@@ -79,10 +87,12 @@ pub fn start_forwarder_threads(
             );
 
             let deduper = deduper.clone();
+            let shred_bucket_by_slot = shred_bucket_by_slot.clone();
             let unioned_dest_sockets = unioned_dest_sockets.clone();
             let metrics = metrics.clone();
             let shutdown_receiver = shutdown_receiver.clone();
             let exit = exit.clone();
+            let entry_sender = entry_sender.clone();
 
             let send_thread = Builder::new()
                 .name(format!("ssPxyTx_{thread_id}"))
@@ -91,7 +101,6 @@ pub fn start_forwarder_threads(
                         UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
                             .expect("to bind to udp port for forwarding");
                     let mut local_dest_sockets = unioned_dest_sockets.load();
-
                     let refresh_subscribers_tick = if use_discovery_service {
                         crossbeam_channel::tick(Duration::from_secs(30))
                     } else {
@@ -101,14 +110,17 @@ pub fn start_forwarder_threads(
                         crossbeam_channel::select! {
                             // forward packets
                             recv(packet_receiver) -> maybe_packet_batch => {
-                               let res = recv_from_channel_and_send_multiple_dest(
-                                   maybe_packet_batch,
-                                   &deduper,
-                                   &send_socket,
-                                   &local_dest_sockets,
-                                   debug_trace_shred,
-                                   &metrics,
-                               );
+                                let res = recv_from_channel_and_send_multiple_dest(
+                                    maybe_packet_batch,
+                                    &deduper,
+                                    &send_socket,
+                                    &local_dest_sockets,
+                                    debug_trace_shred,
+                                    &metrics,
+                                    &shred_bucket_by_slot,
+                                    &entry_sender,
+                                    deshred
+                                );
 
                                 // avoid unwrap to prevent log spam from panic handler in each thread
                                 if res.is_err(){
@@ -143,6 +155,9 @@ fn recv_from_channel_and_send_multiple_dest(
     local_dest_sockets: &[SocketAddr],
     debug_trace_shred: bool,
     metrics: &ShredMetrics,
+    shred_bucket_by_slot: &Arc<RwLock<HashMap<Slot, BTreeSet<WrappedShred>>>>,
+    entry_sender: &Arc<Sender<DeshredEntry>>,
+    deshred: bool,
 ) -> Result<(), ShredstreamProxyError> {
     let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
@@ -200,6 +215,12 @@ fn recv_from_channel_and_send_multiple_dest(
             }
         }
     });
+
+    if deshred {
+        packet_batch_vec[0].iter().for_each(|p| {
+            crate::deshred::insert_packet_into_shred_bucket(p, shred_bucket_by_slot, entry_sender);
+        });
+    }
 
     if debug_trace_shred {
         packet_batch_vec[0]
@@ -438,6 +459,7 @@ impl ShredMetrics {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         str::FromStr,
         sync::{Arc, Mutex, RwLock},
@@ -451,6 +473,7 @@ mod tests {
         packet::{Meta, Packet, PacketBatch},
     };
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
+    use tokio::sync::broadcast::Sender;
 
     use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
 
@@ -516,6 +539,9 @@ mod tests {
                 thread::spawn(move || listen_and_collect(socket, to_receive));
             });
 
+        // Create a dummy shred_bucket_by_slot for testing
+        let shred_bucket_by_slot = Arc::new(RwLock::new(HashMap::new()));
+
         // send packets
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
@@ -524,9 +550,12 @@ mod tests {
                 crate::forwarder::DEDUPER_NUM_BITS,
             ))),
             &udp_sender,
-            &Arc::new(dest_socketaddrs),
+            &dest_socketaddrs,
             false,
             &Arc::new(ShredMetrics::new()),
+            &shred_bucket_by_slot,
+            &Arc::new(Sender::new(100)),
+            false,
         )
         .unwrap();
 

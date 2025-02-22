@@ -14,6 +14,7 @@ fn main() {
                 "protos/shared.proto",
                 "protos/shredstream.proto",
                 "protos/trace_shred.proto",
+                "protos/deshred.proto",
             ],
             &["protos"],
         )

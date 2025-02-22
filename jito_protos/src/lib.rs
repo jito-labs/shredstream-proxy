@@ -13,3 +13,7 @@ pub mod shredstream {
 pub mod trace_shred {
     tonic::include_proto!("trace_shred");
 }
+
+pub mod deshred {
+    tonic::include_proto!("deshred");
+}

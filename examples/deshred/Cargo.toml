@@ -1,0 +1,11 @@
+[package]
+name = "deshred"
+edition = "2021"
+
+[workspace]
+
+
+
+[dependencies]
+jito-protos = { path = "../../jito_protos" }
+tokio = { version = "1", features = ["full"] }
