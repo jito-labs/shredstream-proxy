@@ -575,9 +575,6 @@ mod tests {
         time::Duration,
     };
 
-    
-    
-    
     use solana_ledger::shred::ReedSolomonCache;
     use solana_perf::{
         deduper::Deduper,
