@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io,
     io::{Error, ErrorKind},
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
@@ -20,18 +21,20 @@ use crossbeam_channel::{Receiver, RecvError, Sender};
 use log::*;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use solana_client::client_error::{reqwest, ClientError};
+use solana_ledger::shred::Shred;
 use solana_metrics::set_host_id;
 use solana_perf::deduper::Deduper;
-use solana_sdk::signature::read_keypair_file;
+use solana_sdk::{clock::Slot, signature::read_keypair_file};
 use solana_streamer::streamer::StreamerReceiveStats;
 use thiserror::Error;
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, sync::broadcast::Sender as BroadcastSender};
 use tonic::Status;
 
 use crate::{forwarder::ShredMetrics, token_authenticator::BlockEngineConnectionError};
-
-mod forwarder;
+mod deshred;
+pub mod forwarder;
 mod heartbeat;
+mod server;
 mod token_authenticator;
 
 #[derive(Clone, Debug, Parser)]
@@ -109,6 +112,10 @@ struct CommonArgs {
     /// Logs trace shreds to stdout and influx
     #[arg(long, env, default_value_t = false)]
     debug_trace_shred: bool,
+
+    /// GRPC port for serving decoded shreds as Solana entries
+    #[arg(long, env)]
+    service_port: Option<u16>,
 
     /// Public IP address to use.
     /// Overrides value fetched from `ifconfig.me`.
@@ -188,8 +195,11 @@ fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<
     Ok((s, r))
 }
 
+pub type ReconstructedShredsMap = HashMap<Slot, HashMap<u32 /* fec_set_index */, Vec<Shred>>>;
 fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder().init();
+    // main2().unwrap();
+    // return Ok(());
     let all_args: Args = Args::parse();
 
     let shredstream_args = all_args.shredstream_args.clone();
@@ -227,7 +237,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         }));
     }
 
-    let metrics = Arc::new(ShredMetrics::new());
+    let metrics = Arc::new(ShredMetrics::new(args.service_port.is_some()));
 
     let runtime = Runtime::new()?;
     let mut thread_handles = vec![];
@@ -252,6 +262,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         forwarder::DEDUPER_NUM_BITS,
     )));
 
+    let entry_sender = Arc::new(BroadcastSender::new(100));
     let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
@@ -261,10 +272,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.src_bind_port,
         args.num_threads,
         deduper.clone(),
-        metrics.clone(),
-        forward_stats.clone(),
-        use_discovery_service,
+        args.service_port.is_some(),
+        entry_sender.clone(),
         args.debug_trace_shred,
+        use_discovery_service,
+        forward_stats.clone(),
+        metrics.clone(),
         shutdown_receiver.clone(),
         exit.clone(),
     );
@@ -295,10 +308,20 @@ fn main() -> Result<(), ShredstreamProxyError> {
             args.discovered_endpoints_port.unwrap(),
             args.dest_ip_ports,
             unioned_dest_sockets,
-            shutdown_receiver,
-            exit,
+            shutdown_receiver.clone(),
+            exit.clone(),
         );
         thread_handles.push(refresh_handle);
+    }
+
+    if let Some(port) = args.service_port {
+        let server_hdl = server::start_server_thread(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
+            entry_sender.clone(),
+            exit.clone(),
+            shutdown_receiver.clone(),
+        );
+        thread_handles.push(server_hdl);
     }
 
     info!(

@@ -1,13 +1,15 @@
 [package]
 name = "jito-shredstream-proxy"
 version = { workspace = true }
-description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://jito-labs.gitbook.io/mev/searcher-services/shredstream for details."
+description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://docs.jito.wtf/lowlatencytxnfeed/ for details."
 authors = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 
 [dependencies]
 arc-swap = { workspace = true }
+bincode = { workspace = true }
+borsh = { workspace = true }
 clap = { workspace = true }
 crossbeam-channel = { workspace = true }
 dashmap = { workspace = true }
@@ -23,6 +25,8 @@ reqwest = { workspace = true }
 serde_json = { workspace = true }
 signal-hook = { workspace = true }
 solana-client = { workspace = true }
+solana-entry = { workspace = true }
+solana-ledger = { workspace = true }
 solana-metrics = { workspace = true }
 solana-net-utils = { workspace = true }
 solana-perf = { workspace = true }

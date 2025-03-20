@@ -1,12 +1,13 @@
 [workspace]
 members = [
+    "examples",
     "jito_protos",
-    "proxy"
+    "proxy",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.4"
 description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://jito-labs.gitbook.io/mev/searcher-services/shredstream for details."
 authors = ["Jito Team <team@jito.wtf>"]
 homepage = "https://jito.wtf/"
@@ -28,17 +29,20 @@ jito-protos = { path = "jito_protos" }
 log = "0.4"
 prost = "0.12"
 prost-types = "0.12"
-protobuf-src = "2"
 rand = "0.8"
+borsh = "1.5.3"
+bincode = "1.3.3"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde_json = "1"
 signal-hook = "0.3"
-solana-client = "2.0.16"
-solana-metrics = "2.0.16"
-solana-net-utils = "2.0.16"
-solana-perf = "2.0.16"
-solana-sdk = "2.0.16"
-solana-streamer = "2.0.16"
+solana-client = "2.2.0"
+solana-metrics = "2.2.0"
+solana-net-utils = "2.2.0"
+solana-perf = "2.2.0"
+solana-sdk = "2.2.0"
+solana-streamer = "2.2.0"
+solana-ledger = { git = "https://github.com/jito-foundation/jito-solana.git", branch = "eric/v2.2-merkle-recovery", package = "solana-ledger" }
+solana-entry = "2.2.0"
 thiserror = "1"
 tokio = "1"
 tonic = { version = "0.10", features = ["tls", "tls-roots", "tls-webpki-roots"] }

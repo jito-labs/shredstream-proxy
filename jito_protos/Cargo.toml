@@ -13,5 +13,5 @@ prost-types = { workspace = true }
 tonic = { workspace = true }
 
 [build-dependencies]
-protobuf-src = { workspace = true }
+protobuf-src = "1"
 tonic-build = { workspace = true }
