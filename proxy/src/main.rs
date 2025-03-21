@@ -115,7 +115,7 @@ struct CommonArgs {
 
     /// GRPC port for serving decoded shreds as Solana entries
     #[arg(long, env)]
-    service_port: Option<u16>,
+    grpc_service_port: Option<u16>,
 
     /// Public IP address to use.
     /// Overrides value fetched from `ifconfig.me`.
@@ -198,8 +198,7 @@ fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<
 pub type ReconstructedShredsMap = HashMap<Slot, HashMap<u32 /* fec_set_index */, Vec<Shred>>>;
 fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder().init();
-    // main2().unwrap();
-    // return Ok(());
+
     let all_args: Args = Args::parse();
 
     let shredstream_args = all_args.shredstream_args.clone();
@@ -237,7 +236,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         }));
     }
 
-    let metrics = Arc::new(ShredMetrics::new(args.service_port.is_some()));
+    let metrics = Arc::new(ShredMetrics::new(args.grpc_service_port.is_some()));
 
     let runtime = Runtime::new()?;
     let mut thread_handles = vec![];
@@ -272,7 +271,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.src_bind_port,
         args.num_threads,
         deduper.clone(),
-        args.service_port.is_some(),
+        args.grpc_service_port.is_some(),
         entry_sender.clone(),
         args.debug_trace_shred,
         use_discovery_service,
@@ -314,7 +313,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         thread_handles.push(refresh_handle);
     }
 
-    if let Some(port) = args.service_port {
+    if let Some(port) = args.grpc_service_port {
         let server_hdl = server::start_server_thread(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
             entry_sender.clone(),

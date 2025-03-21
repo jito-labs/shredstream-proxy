@@ -444,7 +444,7 @@ pub struct ShredMetrics {
     pub packets_received: DashMap<IpAddr, (u64, u64)>,
 
     // service metrics
-    pub enable_service: bool,
+    pub enabled_grpc_service: bool,
     /// Number of data shreds recovered using coding shreds
     pub recovered_count: AtomicU64,
     /// Number of Solana entries decoded from shreds
@@ -470,9 +470,9 @@ impl Default for ShredMetrics {
 }
 
 impl ShredMetrics {
-    pub fn new(enable_service: bool) -> Self {
+    pub fn new(enabled_grpc_service: bool) -> Self {
         Self {
-            enable_service,
+            enabled_grpc_service,
             received: Default::default(),
             success_forward: Default::default(),
             fail_forward: Default::default(),
@@ -507,7 +507,7 @@ impl ShredMetrics {
             ("duplicate", self.duplicate.load(Ordering::Relaxed), i64),
         );
 
-        if self.enable_service {
+        if self.enabled_grpc_service {
             datapoint_info!(
                 "shredstream_proxy-service_metrics",
                 (
