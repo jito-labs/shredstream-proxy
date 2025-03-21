@@ -317,12 +317,7 @@ mod tests {
         shred::{merkle::Shred, ProcessShredsStats, ReedSolomonCache, ShredCommonHeader, Shredder},
     };
     use solana_perf::packet::Packet;
-    use solana_sdk::{
-        clock::Slot,
-        hash::Hash,
-        signature::Keypair,
-    };
-    
+    use solana_sdk::{clock::Slot, hash::Hash, signature::Keypair};
 
     use crate::{
         deshred::{reconstruct_shreds, ComparableShred},
