@@ -66,7 +66,7 @@ dependencies = [
 [[package]]
 name = "agave-transaction-view"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -80,9 +80,9 @@ dependencies = [
 
 [[package]]
 name = "agave-transaction-view"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d099c1ded4cf79631c29e110946ff4ffdb7d2006e97364d4b058958590864d9"
+checksum = "aba2aec0682aa448f93db9b93df8fb331c119cb4d66fe9ba61d6b42dd3a91105"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -91,7 +91,7 @@ dependencies = [
  "solana-sdk-ids",
  "solana-short-vec",
  "solana-signature",
- "solana-svm-transaction 2.2.3",
+ "solana-svm-transaction 2.2.1",
 ]
 
 [[package]]
@@ -682,9 +682,9 @@ dependencies = [
 
 [[package]]
 name = "blake3"
-version = "1.6.1"
+version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "675f87afced0413c9bb02843499dbbd3882a237645883f71a2b59644a6d2f753"
+checksum = "b17679a8d69b6d7fd9cd9801a536cec9fa5e5970b69f9d4747f70b39b031f5e7"
 dependencies = [
  "arrayref",
  "arrayvec",
@@ -724,11 +724,11 @@ dependencies = [
 
 [[package]]
 name = "borsh"
-version = "1.5.5"
+version = "1.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5430e3be710b68d984d1391c854eb431a9d548640711faa54eecb1df93db91cc"
+checksum = "b2b74d67a0fc0af8e9823b79fd1c43a0900e5a8f0e0f4cc9210796bf3a820126"
 dependencies = [
- "borsh-derive 1.5.5",
+ "borsh-derive 1.5.6",
  "cfg_aliases",
 ]
 
@@ -747,9 +747,9 @@ dependencies = [
 
 [[package]]
 name = "borsh-derive"
-version = "1.5.5"
+version = "1.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8b668d39970baad5356d7c83a86fee3a539e6f93bf6764c97368243e17a0487"
+checksum = "2d37ed1b2c9b78421218a0b4f6d8349132d6ec2cfeba1cfb0118b0a8e268df9e"
 dependencies = [
  "once_cell",
  "proc-macro-crate 3.3.0",
@@ -837,9 +837,9 @@ dependencies = [
 
 [[package]]
 name = "bytemuck_derive"
-version = "1.8.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fa76293b4f7bb636ab88fd78228235b5248b4d05cc589aed610f954af5d7c7a"
+checksum = "2ff22c2722516255d1823ce3cc4bc0b154dbc9364be5c905d6baa6eccbbc8774"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -890,9 +890,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.16"
+version = "1.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be714c154be609ec7f5dad223a33bf1482fff90472de28f7362806e6d4832b8c"
+checksum = "1fcb57c740ae1daf453ae85f16e37396f672b039e00d9d866e07ddb24e328e3a"
 dependencies = [
  "jobserver",
  "libc",
@@ -1110,6 +1110,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-foundation"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b55271e5c8c478ad3f38ad24ef34923091e0548492a266d19b3c0b4d82574c63"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1316,9 +1326,9 @@ dependencies = [
 
 [[package]]
 name = "deranged"
-version = "0.3.11"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b42b6fa04a440b495c8b04d0e71b707c585f83cb9cb28cf8cd0d976c315e31b4"
+checksum = "9c9e6a11ca8224451684bc0d7d5a7adbf8f2fd6887261a1cfc3c0432f9d4068e"
 dependencies = [
  "powerfmt",
 ]
@@ -1582,7 +1592,7 @@ version = "0.0.0"
 dependencies = [
  "bincode",
  "jito-protos",
- "solana-entry 2.2.3",
+ "solana-entry 2.2.1",
  "tokio",
 ]
 
@@ -1627,18 +1637,18 @@ dependencies = [
 
 [[package]]
 name = "five8_const"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b4f62f0f8ca357f93ae90c8c2dd1041a1f665fde2f889ea9b1787903829015"
+checksum = "26dec3da8bc3ef08f2c04f61eab298c3ab334523e55f076354d6d6f613799a7b"
 dependencies = [
  "five8_core",
 ]
 
 [[package]]
 name = "five8_core"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94474d15a76982be62ca8a39570dccce148d98c238ebb7408b0a21b2c4bdddc4"
+checksum = "2551bf44bc5f776c15044b9b94153a00198be06743e262afaaa61f11ac7523a5"
 
 [[package]]
 name = "fixedbitset"
@@ -1856,14 +1866,16 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43a49c392881ce6d5c3b8cb70f98717b7c07aabbdff06687b9030dbfbe2725f8"
+checksum = "73fea8450eea4bac3940448fb7ae50d91f034f941199fcd9d909a5a07aa455f0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
- "wasi 0.13.3+wasi-0.2.2",
- "windows-targets 0.52.6",
+ "r-efi",
+ "wasi 0.14.2+wasi-0.2.4",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2560,7 +2572,7 @@ version = "0.2.4"
 dependencies = [
  "arc-swap",
  "bincode",
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "clap",
  "crossbeam-channel",
  "dashmap",
@@ -2576,11 +2588,11 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "solana-client",
- "solana-entry 2.2.3",
+ "solana-entry 2.2.1",
  "solana-ledger",
- "solana-metrics 2.2.3",
+ "solana-metrics 2.2.1",
  "solana-net-utils",
- "solana-perf 2.2.3",
+ "solana-perf 2.2.1",
  "solana-sdk",
  "solana-streamer",
  "thiserror 1.0.69",
@@ -2590,16 +2602,18 @@ dependencies = [
 
 [[package]]
 name = "jni"
-version = "0.19.0"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6df18c2e3db7e453d3c6ac5b3e9d5182664d28788126d39b91f2d1e22b017ec"
+checksum = "1a87aa2bb7d2af34197c04845522473242e1aa17c12f4935d5856491a7fb8c97"
 dependencies = [
  "cesu8",
+ "cfg-if",
  "combine 4.6.7",
  "jni-sys",
  "log",
  "thiserror 1.0.69",
  "walkdir",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -3009,7 +3023,7 @@ dependencies = [
  "openssl-probe",
  "openssl-sys",
  "schannel",
- "security-framework",
+ "security-framework 2.11.1",
  "security-framework-sys",
  "tempfile",
 ]
@@ -3739,34 +3753,36 @@ checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quinn"
-version = "0.11.6"
+version = "0.11.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62e96808277ec6f97351a2380e6c25114bc9e67037775464979f3037c92d05ef"
+checksum = "c3bd15a6f2967aef83887dcb9fec0014580467e33720d073560cf015a5683012"
 dependencies = [
  "bytes",
+ "cfg_aliases",
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
  "rustc-hash 2.1.1",
- "rustls 0.23.23",
+ "rustls 0.23.25",
  "socket2",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.9"
+version = "0.11.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2fe5ef3495d7d2e377ff17b1a8ce2ee2ec2a18cde8b6ad6619d65d0701c135d"
+checksum = "b820744eb4dc9b57a3398183639c511b5a26d2ed702cedd3febaa1393caa22cc"
 dependencies = [
  "bytes",
- "getrandom 0.2.15",
- "rand 0.8.5",
+ "getrandom 0.3.2",
+ "rand 0.9.0",
  "ring",
  "rustc-hash 2.1.1",
- "rustls 0.23.23",
+ "rustls 0.23.25",
  "rustls-pki-types",
  "rustls-platform-verifier",
  "slab",
@@ -3800,6 +3816,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "r-efi"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74765f6d916ee2faa39bc8e68e4f3ed8949b48cccdac59983d287a7cb71ce9c5"
+
+[[package]]
 name = "rand"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3824,6 +3846,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3779b94aeb87e8bd4e834cee3650289ee9e0d5677f976ecdb6d219e5f4f6cd94"
+dependencies = [
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.3",
+ "zerocopy 0.8.23",
+]
+
+[[package]]
 name = "rand_chacha"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3844,6 +3877,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_chacha"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.9.3",
+]
+
+[[package]]
 name = "rand_core"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3859,6 +3902,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom 0.2.15",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
+dependencies = [
+ "getrandom 0.3.2",
 ]
 
 [[package]]
@@ -4007,7 +4059,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "rustls 0.21.12",
- "rustls-pemfile 1.0.4",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -4116,9 +4168,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7178faa4b75a30e269c71e61c353ce2748cf3d76f0c44c393f4e60abf49b825"
+checksum = "e56a18552996ac8d29ecc3b190b4fdbb2d91ca4ec396de7bbffaf43f3d637e96"
 dependencies = [
  "bitflags 2.9.0",
  "errno",
@@ -4141,14 +4193,14 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.23"
+version = "0.23.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47796c98c480fce5406ef69d1c76378375492c3b0a0de587be0c1d9feb12f395"
+checksum = "822ee9188ac4ec04a2f0531e55d035fb2de73f18b41a63c70c2712503b6fb13c"
 dependencies = [
  "once_cell",
  "ring",
  "rustls-pki-types",
- "rustls-webpki 0.102.8",
+ "rustls-webpki 0.103.0",
  "subtle",
  "zeroize",
 ]
@@ -4160,22 +4212,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9aace74cb666635c918e9c12bc0d348266037aa8eb599b5cba565709a8dff00"
 dependencies = [
  "openssl-probe",
- "rustls-pemfile 1.0.4",
+ "rustls-pemfile",
  "schannel",
- "security-framework",
+ "security-framework 2.11.1",
 ]
 
 [[package]]
 name = "rustls-native-certs"
-version = "0.7.3"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5bfb394eeed242e909609f56089eecfe5fda225042e8b171791b9c95f5931e5"
+checksum = "7fcff2dd52b58a8d98a70243663a0d234c4e2b79235637849d15913394a247d3"
 dependencies = [
  "openssl-probe",
- "rustls-pemfile 2.2.0",
  "rustls-pki-types",
  "schannel",
- "security-framework",
+ "security-framework 3.2.0",
 ]
 
 [[package]]
@@ -4185,15 +4236,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c74cae0a4cf6ccbbf5f359f08efdf8ee7e1dc532573bf0db71968cb56b1448c"
 dependencies = [
  "base64 0.21.7",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]
@@ -4207,23 +4249,23 @@ dependencies = [
 
 [[package]]
 name = "rustls-platform-verifier"
-version = "0.4.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4c7dc240fec5517e6c4eab3310438636cfe6391dfc345ba013109909a90d136"
+checksum = "4a5467026f437b4cb2a533865eaa73eb840019a0916f4b9ec563c6e617e086c9"
 dependencies = [
- "core-foundation",
+ "core-foundation 0.10.0",
  "core-foundation-sys",
  "jni",
  "log",
  "once_cell",
- "rustls 0.23.23",
- "rustls-native-certs 0.7.3",
+ "rustls 0.23.25",
+ "rustls-native-certs 0.8.1",
  "rustls-platform-verifier-android",
- "rustls-webpki 0.102.8",
- "security-framework",
+ "rustls-webpki 0.103.0",
+ "security-framework 3.2.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4244,9 +4286,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.102.8"
+version = "0.103.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64ca1bc8749bd4cf37b5ce386cc146580777b4e8572c7b97baf22c83f444bee9"
+checksum = "0aa4eeac2588ffff23e9d7a7e9b3f971c5fb5b7ebc9452745e0c232c64f83b2f"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -4318,10 +4360,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
 dependencies = [
  "bitflags 2.9.0",
- "core-foundation",
+ "core-foundation 0.9.4",
  "core-foundation-sys",
  "libc",
- "num-bigint 0.4.6",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "271720403f46ca04f7ba6f55d438f8bd878d6b8ca0a1046e8228c4145bcbb316"
+dependencies = [
+ "bitflags 2.9.0",
+ "core-foundation 0.10.0",
+ "core-foundation-sys",
+ "libc",
  "security-framework-sys",
 ]
 
@@ -4595,7 +4649,7 @@ dependencies = [
 [[package]]
 name = "solana-account-decoder"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "Inflector",
  "base64 0.22.1",
@@ -4633,7 +4687,7 @@ dependencies = [
 [[package]]
 name = "solana-account-decoder-client-types"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -4647,9 +4701,9 @@ dependencies = [
 
 [[package]]
 name = "solana-account-decoder-client-types"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a95f3292a49f45f1985dd91aaf1372b38eb3a37ee24334c451b97c6af26c208b"
+checksum = "9b3485b583fcc58b5fa121fa0b4acb90061671fb1a9769493e8b4ad586581f47"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -4677,7 +4731,7 @@ dependencies = [
 [[package]]
 name = "solana-accounts-db"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "ahash 0.8.11",
  "bincode",
@@ -4742,7 +4796,7 @@ dependencies = [
 [[package]]
 name = "solana-address-lookup-table-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bincode",
  "bytemuck",
@@ -4765,9 +4819,9 @@ dependencies = [
 
 [[package]]
 name = "solana-address-lookup-table-program"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f4cc6e48a8bc2c7888e3a78eb9a87da7d088d48d76d9b06fc29723d41defdde"
+checksum = "c758a82a60e5fcc93b3ee00615b0e244295aa8b2308475ea2b48f4900862a2e0"
 dependencies = [
  "bincode",
  "bytemuck",
@@ -4779,9 +4833,9 @@ dependencies = [
  "solana-clock",
  "solana-feature-set",
  "solana-instruction",
- "solana-log-collector 2.2.3",
+ "solana-log-collector 2.2.1",
  "solana-packet",
- "solana-program-runtime 2.2.3",
+ "solana-program-runtime 2.2.1",
  "solana-pubkey",
  "solana-system-interface",
  "solana-transaction-context",
@@ -4853,13 +4907,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "718333bcd0a1a7aed6655aa66bef8d7fb047944922b2d3a18f49cbc13e73d004"
 dependencies = [
  "borsh 0.10.4",
- "borsh 1.5.5",
+ "borsh 1.5.6",
 ]
 
 [[package]]
 name = "solana-bpf-loader-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bincode",
  "libsecp256k1",
@@ -4906,9 +4960,9 @@ dependencies = [
 
 [[package]]
 name = "solana-bpf-loader-program"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b99bd19f4f917defdbe1e7092474c603416ee8543217a458223ae2baeb94dee0"
+checksum = "0cbc2581d0f39cd7698e46baa06fc5e8928b323a85ed3a4fdbdfe0d7ea9fc152"
 dependencies = [
  "bincode",
  "libsecp256k1",
@@ -4921,23 +4975,23 @@ dependencies = [
  "solana-blake3-hasher",
  "solana-bn254",
  "solana-clock",
- "solana-compute-budget 2.2.3",
+ "solana-compute-budget 2.2.1",
  "solana-cpi",
- "solana-curve25519 2.2.3",
+ "solana-curve25519 2.2.1",
  "solana-feature-set",
  "solana-hash",
  "solana-instruction",
  "solana-keccak-hasher",
  "solana-loader-v3-interface",
  "solana-loader-v4-interface",
- "solana-log-collector 2.2.3",
- "solana-measure 2.2.3",
+ "solana-log-collector 2.2.1",
+ "solana-measure 2.2.1",
  "solana-packet",
- "solana-poseidon 2.2.3",
+ "solana-poseidon 2.2.1",
  "solana-precompiles",
  "solana-program-entrypoint",
  "solana-program-memory",
- "solana-program-runtime 2.2.3",
+ "solana-program-runtime 2.2.1",
  "solana-pubkey",
  "solana-sbpf",
  "solana-sdk-ids",
@@ -4947,16 +5001,16 @@ dependencies = [
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
- "solana-timings 2.2.3",
+ "solana-timings 2.2.1",
  "solana-transaction-context",
- "solana-type-overrides 2.2.3",
+ "solana-type-overrides 2.2.1",
  "thiserror 2.0.12",
 ]
 
 [[package]]
 name = "solana-bucket-map"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bv",
  "bytemuck",
@@ -4975,7 +5029,7 @@ dependencies = [
 [[package]]
 name = "solana-builtins"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "solana-address-lookup-table-program 2.2.0",
  "solana-bpf-loader-program 2.2.0",
@@ -4996,7 +5050,7 @@ dependencies = [
 [[package]]
 name = "solana-builtins-default-costs"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "ahash 0.8.11",
  "lazy_static",
@@ -5017,32 +5071,32 @@ dependencies = [
 
 [[package]]
 name = "solana-builtins-default-costs"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9cb5b680e2126f5348466e930efa7bcd390b29f37d75e4adc61b857295d8482"
+checksum = "c4ee734c35b736e632aa3b1367f933d93ee7b4129dd1e20ca942205d4834054e"
 dependencies = [
  "ahash 0.8.11",
  "lazy_static",
  "log",
  "qualifier_attr",
- "solana-address-lookup-table-program 2.2.3",
- "solana-bpf-loader-program 2.2.3",
- "solana-compute-budget-program 2.2.3",
- "solana-config-program 2.2.3",
+ "solana-address-lookup-table-program 2.2.1",
+ "solana-bpf-loader-program 2.2.1",
+ "solana-compute-budget-program 2.2.1",
+ "solana-config-program 2.2.1",
  "solana-feature-set",
- "solana-loader-v4-program 2.2.3",
+ "solana-loader-v4-program 2.2.1",
  "solana-pubkey",
  "solana-sdk-ids",
- "solana-stake-program 2.2.3",
- "solana-system-program 2.2.3",
- "solana-vote-program 2.2.3",
+ "solana-stake-program 2.2.1",
+ "solana-system-program 2.2.1",
+ "solana-vote-program 2.2.1",
 ]
 
 [[package]]
 name = "solana-client"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b4b4ec7c79d9b98df930df46d4fa1a4b31086badb5ac21326d83af16f066f4a"
+checksum = "1e25b7073890561a6b7875a921572fc4a9a2c78b3e60fb8e0a7ee4911961f8bd"
 dependencies = [
  "async-trait",
  "bincode",
@@ -5062,7 +5116,7 @@ dependencies = [
  "solana-hash",
  "solana-instruction",
  "solana-keypair",
- "solana-measure 2.2.3",
+ "solana-measure 2.2.1",
  "solana-message",
  "solana-pubkey",
  "solana-pubsub-client",
@@ -5142,7 +5196,7 @@ dependencies = [
 [[package]]
 name = "solana-compute-budget"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "solana-fee-structure",
  "solana-program-entrypoint",
@@ -5150,9 +5204,9 @@ dependencies = [
 
 [[package]]
 name = "solana-compute-budget"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d285e00c769548acafa0ae5f688e237929f9e59969901456b6fefd3b236aad79"
+checksum = "eab40b24943ca51f1214fcf7979807640ea82a8387745f864cf3cd93d1337b01"
 dependencies = [
  "solana-fee-structure",
  "solana-program-entrypoint",
@@ -5161,7 +5215,7 @@ dependencies = [
 [[package]]
 name = "solana-compute-budget-instruction"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "log",
  "solana-borsh",
@@ -5180,21 +5234,21 @@ dependencies = [
 
 [[package]]
 name = "solana-compute-budget-instruction"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f5c3aa86e03d9b304c416819eb5f14ffa20344eeb2865d9ad29f50567accbd3"
+checksum = "0a6ef2a514cde8dce77495aefd23671dc46f638f504765910424436bc745dc04"
 dependencies = [
  "log",
  "solana-borsh",
- "solana-builtins-default-costs 2.2.3",
- "solana-compute-budget 2.2.3",
+ "solana-builtins-default-costs 2.2.1",
+ "solana-compute-budget 2.2.1",
  "solana-compute-budget-interface",
  "solana-feature-set",
  "solana-instruction",
  "solana-packet",
  "solana-pubkey",
  "solana-sdk-ids",
- "solana-svm-transaction 2.2.3",
+ "solana-svm-transaction 2.2.1",
  "solana-transaction-error",
  "thiserror 2.0.12",
 ]
@@ -5205,7 +5259,7 @@ version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a5df17b195d312b66dccdde9beec6709766d8230cb4718c4c08854f780d0309"
 dependencies = [
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "serde",
  "serde_derive",
  "solana-instruction",
@@ -5215,7 +5269,7 @@ dependencies = [
 [[package]]
 name = "solana-compute-budget-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "qualifier_attr",
  "solana-program-runtime 2.2.0",
@@ -5223,18 +5277,18 @@ dependencies = [
 
 [[package]]
 name = "solana-compute-budget-program"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04fd1ceabebc3703ef728bd73c861a17734c6d09b6acefeef7fe6883d2f6866e"
+checksum = "5ba922073c64647fe62f032787d34d50a8152533b5a5c85608ae1b2afb00ab63"
 dependencies = [
  "qualifier_attr",
- "solana-program-runtime 2.2.3",
+ "solana-program-runtime 2.2.1",
 ]
 
 [[package]]
 name = "solana-config-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bincode",
  "chrono",
@@ -5256,9 +5310,9 @@ dependencies = [
 
 [[package]]
 name = "solana-config-program"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "390a90335a88581a1ab657ab8d9ccbd73711bbe55c91f51a6d40caca17c15d90"
+checksum = "0ab5647203179631940e0659a635e5d3f514ba60f6457251f8f8fbf3830e56b0"
 dependencies = [
  "bincode",
  "chrono",
@@ -5267,9 +5321,9 @@ dependencies = [
  "solana-account",
  "solana-bincode",
  "solana-instruction",
- "solana-log-collector 2.2.3",
+ "solana-log-collector 2.2.1",
  "solana-packet",
- "solana-program-runtime 2.2.3",
+ "solana-program-runtime 2.2.1",
  "solana-pubkey",
  "solana-sdk-ids",
  "solana-short-vec",
@@ -5280,9 +5334,9 @@ dependencies = [
 
 [[package]]
 name = "solana-connection-cache"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c0c042119ff710a1b5010e1025df5eeb8a98e32f0e97c2e07472cdcff2749b"
+checksum = "0392439ea05772166cbce3bebf7816bdcc3088967039c7ce050cea66873b1c50"
 dependencies = [
  "async-trait",
  "bincode",
@@ -5293,8 +5347,8 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "solana-keypair",
- "solana-measure 2.2.3",
- "solana-metrics 2.2.3",
+ "solana-measure 2.2.1",
+ "solana-metrics 2.2.1",
  "solana-net-utils",
  "solana-time-utils",
  "solana-transaction-error",
@@ -5305,7 +5359,7 @@ dependencies = [
 [[package]]
 name = "solana-cost-model"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "ahash 0.8.11",
  "lazy_static",
@@ -5347,7 +5401,7 @@ dependencies = [
 [[package]]
 name = "solana-curve25519"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bytemuck",
  "bytemuck_derive",
@@ -5359,9 +5413,9 @@ dependencies = [
 
 [[package]]
 name = "solana-curve25519"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa1f28fdc4acdf6d1e47eec6fea58e88a650ca08f6a779d34730a616a2a82801"
+checksum = "f213e3a853a23814dee39d730cd3a5583b7b1e6b37b2cd4d940bbe62df7acc16"
 dependencies = [
  "bytemuck",
  "bytemuck_derive",
@@ -5415,7 +5469,7 @@ dependencies = [
 [[package]]
 name = "solana-entry"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bincode",
  "crossbeam-channel",
@@ -5440,9 +5494,9 @@ dependencies = [
 
 [[package]]
 name = "solana-entry"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "403e4c55602f973d6be8c49979ad8f395771a89b59324ec55ceaa0914d1a678a"
+checksum = "17eeec2852ad402887e80aa59506eee7d530d27b8c321f4824f8e2e7fe3e8cb2"
 dependencies = [
  "bincode",
  "crossbeam-channel",
@@ -5453,13 +5507,13 @@ dependencies = [
  "rayon",
  "serde",
  "solana-hash",
- "solana-measure 2.2.3",
- "solana-merkle-tree 2.2.3",
- "solana-metrics 2.2.3",
+ "solana-measure 2.2.1",
+ "solana-merkle-tree 2.2.1",
+ "solana-metrics 2.2.1",
  "solana-packet",
- "solana-perf 2.2.3",
- "solana-rayon-threadlimit 2.2.3",
- "solana-runtime-transaction 2.2.3",
+ "solana-perf 2.2.1",
+ "solana-rayon-threadlimit 2.2.1",
+ "solana-runtime-transaction 2.2.1",
  "solana-sha256-hasher",
  "solana-transaction",
  "solana-transaction-error",
@@ -5570,7 +5624,7 @@ dependencies = [
 [[package]]
 name = "solana-fee"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "solana-feature-set",
  "solana-fee-structure",
@@ -5647,7 +5701,7 @@ version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf7bcb14392900fe02e4e34e90234fbf0c673d4e327888410ba99fa2ba0f4e99"
 dependencies = [
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "bs58",
  "bytemuck",
  "bytemuck_derive",
@@ -5672,7 +5726,7 @@ dependencies = [
 [[package]]
 name = "solana-inline-spl"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bytemuck",
  "solana-pubkey",
@@ -5680,9 +5734,9 @@ dependencies = [
 
 [[package]]
 name = "solana-inline-spl"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca7380970873fec6e10cc9bf58cf4d4e1b9c1f1169152a8904dd2ee33472d820"
+checksum = "951545bd7d0ab4a878cfc7375ac9f1a475cb6936626677b2ba1d25e7b9f3910b"
 dependencies = [
  "bytemuck",
  "solana-pubkey",
@@ -5695,7 +5749,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce496a475e5062ba5de97215ab39d9c358f9c9df4bb7f3a45a1f1a8bd9065ed"
 dependencies = [
  "bincode",
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "getrandom 0.2.15",
  "js-sys",
  "num-traits",
@@ -5770,7 +5824,7 @@ dependencies = [
 [[package]]
 name = "solana-lattice-hash"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -5781,12 +5835,12 @@ dependencies = [
 [[package]]
 name = "solana-ledger"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "assert_matches",
  "bincode",
  "bitflags 2.9.0",
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "bzip2",
  "chrono",
  "chrono-humanize",
@@ -5900,7 +5954,7 @@ dependencies = [
 [[package]]
 name = "solana-loader-v4-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "log",
  "qualifier_attr",
@@ -5924,43 +5978,43 @@ dependencies = [
 
 [[package]]
 name = "solana-loader-v4-program"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "042733043c926b17b93a8503fdb3b7bb0aea57d8a218f5ab92a898d82c7e1cfc"
+checksum = "81b24999844b09096c79567c1298617efe084860149d875b702ef76e2faa2462"
 dependencies = [
  "log",
  "qualifier_attr",
  "solana-account",
  "solana-bincode",
- "solana-bpf-loader-program 2.2.3",
- "solana-compute-budget 2.2.3",
+ "solana-bpf-loader-program 2.2.1",
+ "solana-compute-budget 2.2.1",
  "solana-instruction",
  "solana-loader-v3-interface",
  "solana-loader-v4-interface",
- "solana-log-collector 2.2.3",
- "solana-measure 2.2.3",
+ "solana-log-collector 2.2.1",
+ "solana-measure 2.2.1",
  "solana-packet",
- "solana-program-runtime 2.2.3",
+ "solana-program-runtime 2.2.1",
  "solana-pubkey",
  "solana-sbpf",
  "solana-sdk-ids",
  "solana-transaction-context",
- "solana-type-overrides 2.2.3",
+ "solana-type-overrides 2.2.1",
 ]
 
 [[package]]
 name = "solana-log-collector"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "solana-log-collector"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b79bfaade94a50a098b3187edfa3334d8bb343f9d6e4a8051ef052523b7578b4"
+checksum = "4aa28cd428e0af919d2fafd31c646835622abfd7ed4dba4df68e3c00f461bc66"
 dependencies = [
  "log",
 ]
@@ -5981,18 +6035,18 @@ dependencies = [
 [[package]]
 name = "solana-measure"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 
 [[package]]
 name = "solana-measure"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02ebaa281e5ddc309de21c1106fcf1a92018add0918e6723b4e20a142b701462"
+checksum = "8f1fced2cfeff80f0214af86bc27bc6e798465a45b70329c3b468bb75957c082"
 
 [[package]]
 name = "solana-merkle-tree"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "fast-math",
  "solana-hash",
@@ -6001,9 +6055,9 @@ dependencies = [
 
 [[package]]
 name = "solana-merkle-tree"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26fabad96c0a0a8ea72eef9e2b2064096d616d63e6ca0653f8fc47553797bb3d"
+checksum = "fd38db9705b15ff57ddbd9d172c48202dcba078cfc867fe87f01c01d8633fd55"
 dependencies = [
  "fast-math",
  "solana-hash",
@@ -6036,7 +6090,7 @@ dependencies = [
 [[package]]
 name = "solana-metrics"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "crossbeam-channel",
  "gethostname",
@@ -6052,9 +6106,9 @@ dependencies = [
 
 [[package]]
 name = "solana-metrics"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59da5069defa6ec045985205c71d3836b98b36a6af84bf85b0184dbaff2f4fbc"
+checksum = "89db46736ae1929db9629d779485052647117f3fcc190755519853b705f6dba5"
 dependencies = [
  "crossbeam-channel",
  "gethostname",
@@ -6085,9 +6139,9 @@ checksum = "33e9de00960197412e4be3902a6cd35e60817c511137aca6c34c66cd5d4017ec"
 
 [[package]]
 name = "solana-net-utils"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d8adc3316874b579b34b3eaf2b5e032bc46343de6f6024c3d1c7de5654892a8"
+checksum = "0752a7103c1a5bdbda04aa5abc78281232f2eda286be6edf8e44e27db0cca2a1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -6170,7 +6224,7 @@ dependencies = [
 [[package]]
 name = "solana-perf"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "ahash 0.8.11",
  "bincode",
@@ -6200,9 +6254,9 @@ dependencies = [
 
 [[package]]
 name = "solana-perf"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "651d58540df390cfc4bc203adee53737aa112ddf789560d07fdfd99fbc71a3fd"
+checksum = "3f0962d3818fc942a888f7c2d530896aeaf6f2da2187592a67bbdc8cf8a54192"
 dependencies = [
  "ahash 0.8.11",
  "bincode",
@@ -6220,10 +6274,10 @@ dependencies = [
  "serde",
  "solana-hash",
  "solana-message",
- "solana-metrics 2.2.3",
+ "solana-metrics 2.2.1",
  "solana-packet",
  "solana-pubkey",
- "solana-rayon-threadlimit 2.2.3",
+ "solana-rayon-threadlimit 2.2.1",
  "solana-sdk-ids",
  "solana-short-vec",
  "solana-signature",
@@ -6243,7 +6297,7 @@ dependencies = [
 [[package]]
 name = "solana-poseidon"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "ark-bn254",
  "light-poseidon",
@@ -6253,9 +6307,9 @@ dependencies = [
 
 [[package]]
 name = "solana-poseidon"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8288f8645228ebb2989e32c35b67aabdbfafe7d33580a794b8ab044c02173dd9"
+checksum = "8ad1ea160d08dc423c35021fa3e437a5783eb256f5ab8bc3024e27db913acf42"
 dependencies = [
  "ark-bn254",
  "light-poseidon",
@@ -6310,7 +6364,7 @@ dependencies = [
  "bincode",
  "blake3",
  "borsh 0.10.4",
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "bs58",
  "bytemuck",
  "console_error_panic_hook",
@@ -6399,7 +6453,7 @@ version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8ae2c1a8d0d4ae865882d5770a7ebca92bab9c685e43f0461682c6c05a35bfa"
 dependencies = [
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "num-traits",
  "serde",
  "serde_derive",
@@ -6437,7 +6491,7 @@ dependencies = [
 [[package]]
 name = "solana-program-runtime"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -6476,9 +6530,9 @@ dependencies = [
 
 [[package]]
 name = "solana-program-runtime"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5f8c3106bb131b9c51085661c13cd7d42eace59228db3607c37924a90e3849a"
+checksum = "6c3d36fed5548b1a8625eb071df6031a95aa69f884e29bf244821e53c49372bc"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -6490,16 +6544,16 @@ dependencies = [
  "serde",
  "solana-account",
  "solana-clock",
- "solana-compute-budget 2.2.3",
+ "solana-compute-budget 2.2.1",
  "solana-epoch-rewards",
  "solana-epoch-schedule",
  "solana-feature-set",
  "solana-hash",
  "solana-instruction",
  "solana-last-restart-slot",
- "solana-log-collector 2.2.3",
- "solana-measure 2.2.3",
- "solana-metrics 2.2.3",
+ "solana-log-collector 2.2.1",
+ "solana-measure 2.2.1",
+ "solana-metrics 2.2.1",
  "solana-precompiles",
  "solana-pubkey",
  "solana-rent",
@@ -6509,9 +6563,9 @@ dependencies = [
  "solana-stable-layout",
  "solana-sysvar",
  "solana-sysvar-id",
- "solana-timings 2.2.3",
+ "solana-timings 2.2.1",
  "solana-transaction-context",
- "solana-type-overrides 2.2.3",
+ "solana-type-overrides 2.2.1",
  "thiserror 2.0.12",
 ]
 
@@ -6522,7 +6576,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40db1ff5a0f8aea2c158d78ab5f2cf897848964251d1df42fef78efd3c85b863"
 dependencies = [
  "borsh 0.10.4",
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "bs58",
  "bytemuck",
  "bytemuck_derive",
@@ -6544,9 +6598,9 @@ dependencies = [
 
 [[package]]
 name = "solana-pubsub-client"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cac157a6fb507a94cc22e17215a36455505ef34207e6b8664e7c1292d7940a1d"
+checksum = "0bd251d37c932105a684415db44bee52e75ad818dfecbf963a605289b5aaecc5"
 dependencies = [
  "crossbeam-channel",
  "futures-util",
@@ -6556,7 +6610,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder-client-types 2.2.3",
+ "solana-account-decoder-client-types 2.2.1",
  "solana-clock",
  "solana-pubkey",
  "solana-rpc-client-api",
@@ -6571,9 +6625,9 @@ dependencies = [
 
 [[package]]
 name = "solana-quic-client"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4d7daddf90c9760b91bf1c8622f2b6398a54c019e76167e368327fac82c8a09"
+checksum = "0d072e6787b6fa9da86591bcf870823b0d6f87670df3c92628505db7a9131e44"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -6583,11 +6637,11 @@ dependencies = [
  "log",
  "quinn",
  "quinn-proto",
- "rustls 0.23.23",
+ "rustls 0.23.25",
  "solana-connection-cache",
  "solana-keypair",
- "solana-measure 2.2.3",
- "solana-metrics 2.2.3",
+ "solana-measure 2.2.1",
+ "solana-metrics 2.2.1",
  "solana-net-utils",
  "solana-pubkey",
  "solana-quic-definitions",
@@ -6612,7 +6666,7 @@ dependencies = [
 [[package]]
 name = "solana-rayon-threadlimit"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "lazy_static",
  "num_cpus",
@@ -6620,9 +6674,9 @@ dependencies = [
 
 [[package]]
 name = "solana-rayon-threadlimit"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ab717ca176d3e28a8c86dc68d9a54680042966a6acc20b696c6f91e189d1bb4"
+checksum = "17f7b65ddd8ac75efcc31b627d4f161046312994313a4520b65a8b14202ab5d6"
 dependencies = [
  "lazy_static",
  "num_cpus",
@@ -6692,9 +6746,9 @@ dependencies = [
 
 [[package]]
 name = "solana-rpc-client"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9d50223f3770315b8a09ad877589a4d6a93b65b2306573c3d64479d6f6a4866"
+checksum = "7cb874b757d9d3c646f031132b20d43538309060a32d02b4aebb0f8fc2cd159a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6709,7 +6763,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "solana-account",
- "solana-account-decoder-client-types 2.2.3",
+ "solana-account-decoder-client-types 2.2.1",
  "solana-clock",
  "solana-commitment-config",
  "solana-epoch-info",
@@ -6723,16 +6777,16 @@ dependencies = [
  "solana-signature",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status-client-types 2.2.3",
- "solana-version 2.2.3",
+ "solana-transaction-status-client-types 2.2.1",
+ "solana-version 2.2.1",
  "tokio",
 ]
 
 [[package]]
 name = "solana-rpc-client-api"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72fbadd71bfa0fc4f5ad57045f83a0b159116c25e9e610dbc5fbc16c8d5b76a8"
+checksum = "f7105452c4f039fd2c07e6fda811ff23bd270c99f91ac160308f02701eb19043"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6745,25 +6799,25 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "solana-account",
- "solana-account-decoder-client-types 2.2.3",
+ "solana-account-decoder-client-types 2.2.1",
  "solana-clock",
  "solana-commitment-config",
  "solana-fee-calculator",
  "solana-inflation",
- "solana-inline-spl 2.2.3",
+ "solana-inline-spl 2.2.1",
  "solana-pubkey",
  "solana-signer",
  "solana-transaction-error",
- "solana-transaction-status-client-types 2.2.3",
- "solana-version 2.2.3",
+ "solana-transaction-status-client-types 2.2.1",
+ "solana-version 2.2.1",
  "thiserror 2.0.12",
 ]
 
 [[package]]
 name = "solana-rpc-client-nonce-utils"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d63b0329e4ce70854d7f18148cfb61399e9de6033dbf0e27ca546b4523243210"
+checksum = "0244e2bf439ec424179414173cdc8b43e34371608752799c5610bf17430eee18"
 dependencies = [
  "solana-account",
  "solana-commitment-config",
@@ -6779,7 +6833,7 @@ dependencies = [
 [[package]]
 name = "solana-runtime"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "ahash 0.8.11",
  "aquamarine",
@@ -6864,7 +6918,7 @@ dependencies = [
 [[package]]
 name = "solana-runtime-transaction"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "agave-transaction-view 2.2.0",
  "log",
@@ -6883,20 +6937,20 @@ dependencies = [
 
 [[package]]
 name = "solana-runtime-transaction"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1451e5ad4b37b979c51c388a6f20c4bbc8e32465f94df78e3cc7b1b708824dc1"
+checksum = "92ffec9b80cf744d36696b28ca089bef8058475a79a11b1cee9322a5aab1fa00"
 dependencies = [
- "agave-transaction-view 2.2.3",
+ "agave-transaction-view 2.2.1",
  "log",
- "solana-compute-budget 2.2.3",
- "solana-compute-budget-instruction 2.2.3",
+ "solana-compute-budget 2.2.1",
+ "solana-compute-budget-instruction 2.2.1",
  "solana-hash",
  "solana-message",
  "solana-pubkey",
  "solana-sdk-ids",
  "solana-signature",
- "solana-svm-transaction 2.2.3",
+ "solana-svm-transaction 2.2.1",
  "solana-transaction",
  "solana-transaction-error",
  "thiserror 2.0.12",
@@ -7041,7 +7095,7 @@ version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baa3120b6cdaa270f39444f5093a90a7b03d296d362878f7a6991d6de3bbe496"
 dependencies = [
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "libsecp256k1",
  "solana-define-syscall",
  "thiserror 2.0.12",
@@ -7216,7 +7270,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5269e89fde216b4d7e1d1739cf5303f8398a1ff372a81232abbee80e554a838c"
 dependencies = [
  "borsh 0.10.4",
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "num-traits",
  "serde",
  "serde_derive",
@@ -7233,7 +7287,7 @@ dependencies = [
 [[package]]
 name = "solana-stake-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bincode",
  "log",
@@ -7260,37 +7314,37 @@ dependencies = [
 
 [[package]]
 name = "solana-stake-program"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ad371d5f7b5ccf406266ad7e8858266ad72b3c991c5ee4260388302b079bbc0"
+checksum = "dabc713c25ff999424ec68ac4572f2ff6bfd6317922c7864435ccaf9c76504a8"
 dependencies = [
  "bincode",
  "log",
  "solana-account",
  "solana-bincode",
  "solana-clock",
- "solana-config-program 2.2.3",
+ "solana-config-program 2.2.1",
  "solana-feature-set",
  "solana-genesis-config",
  "solana-instruction",
- "solana-log-collector 2.2.3",
+ "solana-log-collector 2.2.1",
  "solana-native-token",
  "solana-packet",
- "solana-program-runtime 2.2.3",
+ "solana-program-runtime 2.2.1",
  "solana-pubkey",
  "solana-rent",
  "solana-sdk-ids",
  "solana-stake-interface",
  "solana-sysvar",
  "solana-transaction-context",
- "solana-type-overrides 2.2.3",
+ "solana-type-overrides 2.2.1",
  "solana-vote-interface",
 ]
 
 [[package]]
 name = "solana-storage-bigtable"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "backoff",
  "bincode",
@@ -7331,7 +7385,7 @@ dependencies = [
 [[package]]
 name = "solana-storage-proto"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bincode",
  "bs58",
@@ -7354,9 +7408,9 @@ dependencies = [
 
 [[package]]
 name = "solana-streamer"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a881ecc123d91fb4bdf537a37b1d85b9cb43a649e5cc4c74e0409b3f3e3f9f80"
+checksum = "68441234b1235afb242e7482cabf3e32eb29554e4c4159d5d58e19e54ccfd424"
 dependencies = [
  "async-channel",
  "bytes",
@@ -7376,15 +7430,15 @@ dependencies = [
  "quinn",
  "quinn-proto",
  "rand 0.8.5",
- "rustls 0.23.23",
+ "rustls 0.23.25",
  "smallvec",
  "socket2",
  "solana-keypair",
- "solana-measure 2.2.3",
- "solana-metrics 2.2.3",
+ "solana-measure 2.2.1",
+ "solana-metrics 2.2.1",
  "solana-net-utils",
  "solana-packet",
- "solana-perf 2.2.3",
+ "solana-perf 2.2.1",
  "solana-pubkey",
  "solana-quic-definitions",
  "solana-signature",
@@ -7402,7 +7456,7 @@ dependencies = [
 [[package]]
 name = "solana-svm"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "ahash 0.8.11",
  "itertools 0.12.1",
@@ -7446,7 +7500,7 @@ dependencies = [
 [[package]]
 name = "solana-svm-rent-collector"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "solana-sdk",
 ]
@@ -7454,7 +7508,7 @@ dependencies = [
 [[package]]
 name = "solana-svm-transaction"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -7466,9 +7520,9 @@ dependencies = [
 
 [[package]]
 name = "solana-svm-transaction"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3cd0ff933a08a6ba9bc0131f15e26854ce4ea05210ce62e163b13a2187ed880"
+checksum = "4fc4392f0eed412141a376e99dfb052069b96f13697a9abb335504babe29387a"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -7497,7 +7551,7 @@ dependencies = [
 [[package]]
 name = "solana-system-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bincode",
  "log",
@@ -7521,9 +7575,9 @@ dependencies = [
 
 [[package]]
 name = "solana-system-program"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1c6e246a78f633fdea23f7a7161eedbe78391835fc371c1bd8165032e1f0b90"
+checksum = "43c8f684977e4439031b3a27b954ab05a6bdf697d581692aaf8888cf92b73b9e"
 dependencies = [
  "bincode",
  "log",
@@ -7532,17 +7586,17 @@ dependencies = [
  "solana-account",
  "solana-bincode",
  "solana-instruction",
- "solana-log-collector 2.2.3",
+ "solana-log-collector 2.2.1",
  "solana-nonce",
  "solana-nonce-account",
  "solana-packet",
- "solana-program-runtime 2.2.3",
+ "solana-program-runtime 2.2.1",
  "solana-pubkey",
  "solana-sdk-ids",
  "solana-system-interface",
  "solana-sysvar",
  "solana-transaction-context",
- "solana-type-overrides 2.2.3",
+ "solana-type-overrides 2.2.1",
 ]
 
 [[package]]
@@ -7609,9 +7663,9 @@ dependencies = [
 
 [[package]]
 name = "solana-thin-client"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "162303763c04def8cd49a002a35ed05df2a64deeb570b9cc4e74c6a2cf811d0d"
+checksum = "721a034e94fcfaf8bde1ae4980e7eb58bfeb0c9a243b032b0761fdd19018afbf"
 dependencies = [
  "bincode",
  "log",
@@ -7645,7 +7699,7 @@ checksum = "6af261afb0e8c39252a04d026e3ea9c405342b08c871a2ad8aa5448e068c784c"
 [[package]]
 name = "solana-timings"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "eager",
  "enum-iterator",
@@ -7654,9 +7708,9 @@ dependencies = [
 
 [[package]]
 name = "solana-timings"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43d395d4d467ce253958905ac4f23c07ff2627aa95b0b33cb1bee5b7f1ce7d96"
+checksum = "49d9eabdce318cb07c60a23f1cc367b43e177c79225b5c2a081869ad182172ad"
 dependencies = [
  "eager",
  "enum-iterator",
@@ -7665,11 +7719,11 @@ dependencies = [
 
 [[package]]
 name = "solana-tls-utils"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7433997257fbb779f44ba9be94d1f09cb69f4a4e40d813bd9b87c7c9cbbcf494"
+checksum = "a228df037e560a02aac132193f492bdd761e2f90188cd16a440f149882f589b1"
 dependencies = [
- "rustls 0.23.23",
+ "rustls 0.23.25",
  "solana-keypair",
  "solana-pubkey",
  "solana-signer",
@@ -7678,9 +7732,9 @@ dependencies = [
 
 [[package]]
 name = "solana-tpu-client"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae76061856d51e2acaae0d73a9be5881fe95b46531f3f263fbf5eb34333dd164"
+checksum = "aaceb9e9349de58740021f826ae72319513eca84ebb6d30326e2604fdad4cefb"
 dependencies = [
  "async-trait",
  "bincode",
@@ -7694,7 +7748,7 @@ dependencies = [
  "solana-commitment-config",
  "solana-connection-cache",
  "solana-epoch-info",
- "solana-measure 2.2.3",
+ "solana-measure 2.2.1",
  "solana-message",
  "solana-net-utils",
  "solana-pubkey",
@@ -7768,9 +7822,9 @@ dependencies = [
 
 [[package]]
 name = "solana-transaction-metrics-tracker"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "053d1674e5718efe8acf8cfd0099847865bd011512339b8b2e9ac0905797ca54"
+checksum = "e9256ea8a6cead9e03060fd8fdc24d400a57a719364db48a3e4d1776b09c2365"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -7778,7 +7832,7 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "solana-packet",
- "solana-perf 2.2.3",
+ "solana-perf 2.2.1",
  "solana-short-vec",
  "solana-signature",
 ]
@@ -7786,12 +7840,12 @@ dependencies = [
 [[package]]
 name = "solana-transaction-status"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "Inflector",
  "base64 0.22.1",
  "bincode",
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "bs58",
  "lazy_static",
  "log",
@@ -7826,7 +7880,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-status-client-types"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -7847,9 +7901,9 @@ dependencies = [
 
 [[package]]
 name = "solana-transaction-status-client-types"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bfa5dc60ad564689b7b608102d4390fec18664a9359146b7372b7a762ce7526"
+checksum = "d5ac91c8f0465c566164044ad7b3d18d15dfabab1b8b4a4a01cb83c047efdaae"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -7857,7 +7911,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder-client-types 2.2.3",
+ "solana-account-decoder-client-types 2.2.1",
  "solana-commitment-config",
  "solana-message",
  "solana-reward-info",
@@ -7871,7 +7925,7 @@ dependencies = [
 [[package]]
 name = "solana-type-overrides"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "lazy_static",
  "rand 0.8.5",
@@ -7879,9 +7933,9 @@ dependencies = [
 
 [[package]]
 name = "solana-type-overrides"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c11bea3be0a97b312da47bf49d84698f9176302da2ad156cd5776464f45f638f"
+checksum = "d39dc2e501edfea7ce1cec2fe2a2428aedfea1cc9c31747931e0d90d5c57b020"
 dependencies = [
  "lazy_static",
  "rand 0.8.5",
@@ -7889,9 +7943,9 @@ dependencies = [
 
 [[package]]
 name = "solana-udp-client"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e2e34f738fa2b6f9ea661937707a667ce7316aa91fc3ea6f471cd0dec0601a7"
+checksum = "85085c0aa14ebb8e26219386fb7f4348d159f5a67858c2fdefef3cc5f4ce090c"
 dependencies = [
  "async-trait",
  "solana-connection-cache",
@@ -7906,7 +7960,7 @@ dependencies = [
 [[package]]
 name = "solana-unified-scheduler-logic"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "assert_matches",
  "solana-pubkey",
@@ -7924,7 +7978,7 @@ checksum = "7bbf6d7a3c0b28dd5335c52c0e9eae49d0ae489a8f324917faf0ded65a812c1d"
 [[package]]
 name = "solana-version"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "semver",
  "serde",
@@ -7936,9 +7990,9 @@ dependencies = [
 
 [[package]]
 name = "solana-version"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "328666bc19351169f0f2e1c032639de7d9f4fa365fcfa5d7f58cefab32796043"
+checksum = "4f60a01e2721bfd2e094b465440ae461d75acd363e9653565a73d2c586becb3b"
 dependencies = [
  "semver",
  "serde",
@@ -7951,7 +8005,7 @@ dependencies = [
 [[package]]
 name = "solana-vote"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "itertools 0.12.1",
  "log",
@@ -7999,7 +8053,7 @@ dependencies = [
 [[package]]
 name = "solana-vote-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bincode",
  "log",
@@ -8030,9 +8084,9 @@ dependencies = [
 
 [[package]]
 name = "solana-vote-program"
-version = "2.2.3"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bb314569ad3088ccc926772276335559a67cdd6c087b6bfa015b1402e19ca14"
+checksum = "ab654bb2622d85b2ca0c36cb89c99fa1286268e0d784efec03a3d42e9c6a55f4"
 dependencies = [
  "bincode",
  "log",
@@ -8049,7 +8103,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair",
  "solana-packet",
- "solana-program-runtime 2.2.3",
+ "solana-program-runtime 2.2.1",
  "solana-pubkey",
  "solana-rent",
  "solana-sdk-ids",
@@ -8064,7 +8118,7 @@ dependencies = [
 [[package]]
 name = "solana-zk-elgamal-proof-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bytemuck",
  "num-derive",
@@ -8079,7 +8133,7 @@ dependencies = [
 [[package]]
 name = "solana-zk-sdk"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "aes-gcm-siv",
  "base64 0.22.1",
@@ -8152,7 +8206,7 @@ dependencies = [
 [[package]]
 name = "solana-zk-token-proof-program"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "bytemuck",
  "num-derive",
@@ -8168,7 +8222,7 @@ dependencies = [
 [[package]]
 name = "solana-zk-token-sdk"
 version = "2.2.0"
-source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#c3e861dbdbad6a50b00a11193a7fc72311d83f25"
+source = "git+https://github.com/jito-foundation/jito-solana.git?branch=eric%2Fv2.2-merkle-recovery#cafa3ba4d4c6c3702d13545d9b434861ebc06036"
 dependencies = [
  "aes-gcm-siv",
  "base64 0.22.1",
@@ -8221,7 +8275,7 @@ version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76fee7d65013667032d499adc3c895e286197a35a0d3a4643c80e7fd3e9969e3"
 dependencies = [
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "num-derive",
  "num-traits",
  "solana-program",
@@ -8310,7 +8364,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d994afaf86b779104b4a95ba9ca75b8ced3fdb17ee934e38cb69e72afbe17799"
 dependencies = [
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "bytemuck",
  "bytemuck_derive",
  "num-derive",
@@ -8450,7 +8504,7 @@ checksum = "170378693c5516090f6d37ae9bad2b9b6125069be68d9acd4865bbe9fc8499fd"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
- "solana-curve25519 2.2.3",
+ "solana-curve25519 2.2.1",
  "solana-zk-sdk 2.2.3",
 ]
 
@@ -8461,7 +8515,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eff2d6a445a147c9d6dd77b8301b1e116c8299601794b558eafa409b342faf96"
 dependencies = [
  "bytemuck",
- "solana-curve25519 2.2.3",
+ "solana-curve25519 2.2.1",
  "solana-program",
  "solana-zk-sdk 2.2.3",
  "spl-pod",
@@ -8515,7 +8569,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfb9c89dbc877abd735f05547dcf9e6e12c00c11d6d74d8817506cab4c99fdbb"
 dependencies = [
- "borsh 1.5.5",
+ "borsh 1.5.6",
  "num-derive",
  "num-traits",
  "solana-borsh",
@@ -8683,7 +8737,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba3a3adc5c275d719af8cb4272ea1c4a6d668a777f37e115f6d11ddbc1c8e0e7"
 dependencies = [
  "bitflags 1.3.2",
- "core-foundation",
+ "core-foundation 0.9.4",
  "system-configuration-sys",
 ]
 
@@ -8719,14 +8773,14 @@ dependencies = [
 
 [[package]]
 name = "tempfile"
-version = "3.19.0"
+version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "488960f40a3fd53d72c2a29a58722561dee8afdd175bd88e3db4677d7b2ba600"
+checksum = "7437ac7763b9b123ccf33c338a5cc1bac6f69b45a136c19bdd8a65e3916435bf"
 dependencies = [
  "fastrand",
- "getrandom 0.3.1",
+ "getrandom 0.3.2",
  "once_cell",
- "rustix 1.0.2",
+ "rustix 1.0.3",
  "windows-sys 0.59.0",
 ]
 
@@ -8787,9 +8841,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.39"
+version = "0.3.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dad298b01a40a23aac4580b67e3dbedb7cc8402f3592d7f49469de2ea4aecdd8"
+checksum = "9d9c75b47bdff86fa3334a3db91356b8d7d86a9b839dab7d0bdc5c3d3a077618"
 dependencies = [
  "deranged",
  "itoa",
@@ -8802,15 +8856,15 @@ dependencies = [
 
 [[package]]
 name = "time-core"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "765c97a5b985b7c11d7bc27fa927dc4fe6af3a6dfb021d28deb60d3bf51e76ef"
+checksum = "c9e9a38711f559d9e3ce1cdb06dd7c5b8ea546bc90052da6d06bb76da74bb07c"
 
 [[package]]
 name = "time-macros"
-version = "0.2.20"
+version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8093bc3e81c3bc5f7879de09619d06c9a5a5e45ca44dfeeb7225bae38005c5c"
+checksum = "29aa485584182073ed57fd5004aa09c371f021325014694e432313345865fd04"
 dependencies = [
  "num-conv",
  "time-core",
@@ -8986,7 +9040,7 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "prost 0.11.9",
- "rustls-pemfile 1.0.4",
+ "rustls-pemfile",
  "tokio",
  "tokio-rustls",
  "tokio-stream",
@@ -9017,7 +9071,7 @@ dependencies = [
  "prost 0.12.6",
  "rustls 0.21.12",
  "rustls-native-certs 0.6.3",
- "rustls-pemfile 1.0.4",
+ "rustls-pemfile",
  "tokio",
  "tokio-rustls",
  "tokio-stream",
@@ -9317,9 +9371,9 @@ checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
 
 [[package]]
 name = "wasi"
-version = "0.13.3+wasi-0.2.2"
+version = "0.14.2+wasi-0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26816d2e1a4a36a2940b96c5296ce403917633dff8f3440e9b236ed6f6bacad2"
+checksum = "9683f9a5a998d873c0d21fcbe3c083009670149a8fab228644b8bd36b2c48cb3"
 dependencies = [
  "wit-bindgen-rt",
 ]
@@ -9503,9 +9557,18 @@ dependencies = [
 
 [[package]]
 name = "windows-link"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6dccfd733ce2b1753b03b6d3c65edf020262ea35e20ccdf3e288043e6dd620e3"
+checksum = "76840935b766e1b0a05c0066835fb9ec80071d4c09a16f6bd5f7e655e3c14c38"
+
+[[package]]
+name = "windows-sys"
+version = "0.45.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75283be5efb2831d37ea142365f009c02ec203cd29a3ebecbc093d52315b66d0"
+dependencies = [
+ "windows-targets 0.42.2",
+]
 
 [[package]]
 name = "windows-sys"
@@ -9532,6 +9595,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-targets"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e5180c00cd44c9b1c88adb3693291f1cd93605ded80c250a75d472756b4d071"
+dependencies = [
+ "windows_aarch64_gnullvm 0.42.2",
+ "windows_aarch64_msvc 0.42.2",
+ "windows_i686_gnu 0.42.2",
+ "windows_i686_msvc 0.42.2",
+ "windows_x86_64_gnu 0.42.2",
+ "windows_x86_64_gnullvm 0.42.2",
+ "windows_x86_64_msvc 0.42.2",
 ]
 
 [[package]]
@@ -9567,6 +9645,12 @@ dependencies = [
 
 [[package]]
 name = "windows_aarch64_gnullvm"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "597a5118570b68bc08d8d59125332c54f1ba9d9adeedeef5b99b02ba2b0698f8"
+
+[[package]]
+name = "windows_aarch64_gnullvm"
 version = "0.48.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b38e32f0abccf9987a4e3079dfb67dcd799fb61361e53e2882c3cbaf0d905d8"
@@ -9579,6 +9663,12 @@ checksum = "32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3"
 
 [[package]]
 name = "windows_aarch64_msvc"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e08e8864a60f06ef0d0ff4ba04124db8b0fb3be5776a5cd47641e942e58c4d43"
+
+[[package]]
+name = "windows_aarch64_msvc"
 version = "0.48.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc35310971f3b2dbbf3f0690a219f40e2d9afcf64f9ab7cc1be722937c26b4bc"
@@ -9588,6 +9678,12 @@ name = "windows_aarch64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469"
+
+[[package]]
+name = "windows_i686_gnu"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c61d927d8da41da96a81f029489353e68739737d3beca43145c8afec9a31a84f"
 
 [[package]]
 name = "windows_i686_gnu"
@@ -9609,6 +9705,12 @@ checksum = "0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66"
 
 [[package]]
 name = "windows_i686_msvc"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44d840b6ec649f480a41c8d80f9c65108b92d89345dd94027bfe06ac444d1060"
+
+[[package]]
+name = "windows_i686_msvc"
 version = "0.48.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f55c233f70c4b27f66c523580f78f1004e8b5a8b659e05a4eb49d4166cca406"
@@ -9618,6 +9720,12 @@ name = "windows_i686_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
+
+[[package]]
+name = "windows_x86_64_gnu"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8de912b8b8feb55c064867cf047dda097f92d51efad5b491dfb98f6bbb70cb36"
 
 [[package]]
 name = "windows_x86_64_gnu"
@@ -9633,6 +9741,12 @@ checksum = "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78"
 
 [[package]]
 name = "windows_x86_64_gnullvm"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26d41b46a36d453748aedef1486d5c7a85db22e56aff34643984ea85514e94a3"
+
+[[package]]
+name = "windows_x86_64_gnullvm"
 version = "0.48.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b7b52767868a23d5bab768e390dc5f5c55825b6d30b86c844ff2dc7414044cc"
@@ -9642,6 +9756,12 @@ name = "windows_x86_64_gnullvm"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d"
+
+[[package]]
+name = "windows_x86_64_msvc"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9aec5da331524158c6d1a4ac0ab1541149c0b9505fde06423b02f5ef0106b9f0"
 
 [[package]]
 name = "windows_x86_64_msvc"
@@ -9676,9 +9796,9 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rt"
-version = "0.33.0"
+version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3268f3d866458b787f390cf61f4bbb563b922d091359f9608842999eaee3943c"
+checksum = "6f42320e61fe2cfd34354ecb597f86f413484a798ba44a8ca1165c58d42da6c1"
 dependencies = [
  "bitflags 2.9.0",
 ]
@@ -9720,7 +9840,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d65cbf2f12c15564212d48f4e3dfb87923d25d611f2aed18f4cb23f0413d89e"
 dependencies = [
  "libc",
- "rustix 1.0.2",
+ "rustix 1.0.3",
 ]
 
 [[package]]
@@ -9861,18 +9981,18 @@ dependencies = [
 
 [[package]]
 name = "zstd-safe"
-version = "7.2.3"
+version = "7.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3051792fbdc2e1e143244dc28c60f73d8470e93f3f9cbd0ead44da5ed802722"
+checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
 dependencies = [
  "zstd-sys",
 ]
 
 [[package]]
 name = "zstd-sys"
-version = "2.0.14+zstd.1.5.7"
+version = "2.0.15+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fb060d4926e4ac3a3ad15d864e99ceb5f343c6b34f5bd6d81ae6ed417311be5"
+checksum = "eb81183ddd97d0c74cedf1d50d85c8d08c1b8b68ee863bdee9e706eedba1a237"
 dependencies = [
  "cc",
  "pkg-config",
