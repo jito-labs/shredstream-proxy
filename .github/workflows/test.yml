@@ -11,6 +11,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          lfs: true
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
