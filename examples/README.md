@@ -5,7 +5,7 @@ the shredstream proxy in real-time.
 
 ## Prerequisites
 
-- Running shredstream proxy with flag: `--service-port 9999`
+- Running shredstream proxy with flag: `--grpc-service-port 9999`
 
 ## Usage
 
