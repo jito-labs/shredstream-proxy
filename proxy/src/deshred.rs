@@ -330,9 +330,15 @@ mod tests {
         pub packets: Vec<Vec<u8>>,
     }
 
+    #[ignore]
+    #[test]
+    fn test_dump_packets() {
+        listen_and_write_shreds().unwrap();
+    }
+
     #[allow(unused)]
     fn listen_and_write_shreds() -> std::io::Result<()> {
-        let socket = UdpSocket::bind("127.0.0.1:5000")?;
+        let socket = UdpSocket::bind("127.0.0.1:9999")?;
         println!("Listening on {}", socket.local_addr()?);
 
         let mut map = HashMap::<usize, usize>::new();
