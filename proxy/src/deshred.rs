@@ -71,7 +71,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             continue;
         }
 
-        let (num_expected_data_shreds, num_data_shreds) = can_recover(shreds);
+        let (num_expected_data_shreds, num_data_shreds) = get_data_shred_info(shreds);
 
         // haven't received last data shred, haven't seen any coding shreds, so wait until more arrive
         if num_expected_data_shreds == 0
@@ -159,7 +159,13 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                     .iter()
                     .map(|s| s.0.common_header())
                     .collect::<Vec<_>>();
-                println!("num_expected_data_shreds {num_expected_data_shreds}, num_data_shreds: {num_data_shreds}, shred headers: {:?},  {:?}", common_headers, data_headers);
+                let diffs = sorted_deduped_data_payloads
+                    .iter()
+                    .map(|s| s.0.common_header().index - s.0.common_header().fec_set_index)
+                    .collect::<Vec<_>>();
+                println!("data_len {}, num_expected_data_shreds {num_expected_data_shreds}, num_data_shreds: {num_data_shreds}, shred headers: {common_headers:?}", sorted_deduped_data_payloads.len());
+                println!("data_headers: {data_headers:?}");
+                println!("diffs: {diffs:?}");
                 warn!(
                         "slot {slot} fec_set_index {fec_set_index} failed to deserialize bincode payload of size {}. Err: {e}",
                         deshred_payload.len()
@@ -209,7 +215,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
 const SLOT_LOOKBACK: Slot = 50;
 
 /// check if we can reconstruct (having minimum number of data + coding shreds)
-fn can_recover(
+fn get_data_shred_info(
     shreds: &HashSet<ComparableShred>,
 ) -> (
     u16, /* num_expected_data_shreds */
