@@ -163,9 +163,9 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                     .iter()
                     .map(|s| s.0.common_header().index - s.0.common_header().fec_set_index)
                     .collect::<Vec<_>>();
-                println!("data_len {}, num_expected_data_shreds {num_expected_data_shreds}, num_data_shreds: {num_data_shreds}, shred headers: {common_headers:?}", sorted_deduped_data_payloads.len());
-                println!("data_headers: {data_headers:?}");
-                println!("diffs: {diffs:?}");
+                warn!("data_len {}, num_expected_data_shreds {num_expected_data_shreds}, num_data_shreds: {num_data_shreds}, shred headers: {common_headers:?}", sorted_deduped_data_payloads.len());
+                warn!("data_headers: {data_headers:?}");
+                warn!("diffs: {diffs:?}");
                 warn!(
                         "slot {slot} fec_set_index {fec_set_index} failed to deserialize bincode payload of size {}. Err: {e}",
                         deshred_payload.len()
