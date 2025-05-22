@@ -10,6 +10,7 @@ use log::{debug, warn};
 use prost::Message;
 use solana_ledger::shred::{
     merkle::{Shred, ShredCode},
+    traits::ShredData,
     ReedSolomonCache, Shredder,
 };
 use solana_sdk::clock::{Slot, MAX_PROCESSING_AGE};
@@ -147,11 +148,18 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
         ) {
             Ok(e) => e,
             Err(e) => {
-                let data = sorted_deduped_data_payloads
+                let data_headers = sorted_deduped_data_payloads
+                    .iter()
+                    .filter_map(|x| match &x.0 .0 {
+                        Shred::ShredData(s) => Some(s.data_header()),
+                        _ => panic!("bad data shred"),
+                    })
+                    .collect::<Vec<_>>();
+                let common_headers = sorted_deduped_data_payloads
                     .iter()
                     .map(|s| s.0.common_header())
                     .collect::<Vec<_>>();
-                println!("num_expected_data_shreds {num_expected_data_shreds}, num_data_shreds: {num_data_shreds}, shred headers: {:?}", data);
+                println!("num_expected_data_shreds {num_expected_data_shreds}, num_data_shreds: {num_data_shreds}, shred headers: {:?},  {:?}", common_headers, data_headers);
                 warn!(
                         "slot {slot} fec_set_index {fec_set_index} failed to deserialize bincode payload of size {}. Err: {e}",
                         deshred_payload.len()
