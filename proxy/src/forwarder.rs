@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -9,6 +9,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use ahash::HashMapExt;
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError};
 use dashmap::DashMap;
@@ -31,7 +32,11 @@ use solana_streamer::{
 };
 use tokio::sync::broadcast::Sender;
 
-use crate::{deshred, deshred::ComparableShred, resolve_hostname_port, ShredstreamProxyError};
+use crate::{
+    deshred,
+    deshred::{ComparableShred, ShredsStateTracker},
+    resolve_hostname_port, ShredstreamProxyError,
+};
 
 // values copied from https://github.com/solana-labs/solana/blob/33bde55bbdde13003acf45bb6afe6db4ab599ae4/core/src/sigverify_shreds.rs#L20
 pub const DEDUPER_FALSE_POSITIVE_RATE: f64 = 0.001;
@@ -114,13 +119,17 @@ pub fn start_forwarder_threads(
                     };
 
                     // Track parsed Shred as reconstructed_shreds[ slot ][ fec_set_index ] -> Vec<Shred>
-                    let mut all_shreds: HashMap<
+                    let mut all_shreds: ahash::HashMap<
                         Slot,
-                        HashMap<
-                            u32, /* fec_set_index */
-                            (bool /* completed */, HashSet<ComparableShred>),
-                        >,
-                    > = HashMap::with_capacity(MAX_PROCESSING_AGE);
+                        (
+                            ahash::HashMap<
+                                u32, /* fec_set_index */
+                                (bool /* completed */, HashSet<ComparableShred>),
+                            >,
+                            ShredsStateTracker,
+                        ),
+                    > = ahash::HashMap::with_capacity(MAX_PROCESSING_AGE);
+                    let mut slot_fec_indexes_to_iterate = HashSet::new();
 
                     while !exit.load(Ordering::Relaxed) {
                         crossbeam_channel::select! {
@@ -129,7 +138,7 @@ pub fn start_forwarder_threads(
                                 let res = recv_from_channel_and_send_multiple_dest(
                                     maybe_packet_batch,
                                     &deduper,
-                                    &mut all_shreds,
+                                    &mut all_shreds, &mut slot_fec_indexes_to_iterate,
                                     &mut deshredded_entries,
                                     &rs_cache,
                                     &send_socket,
@@ -172,10 +181,17 @@ pub fn start_forwarder_threads(
 fn recv_from_channel_and_send_multiple_dest(
     maybe_packet_batch: Result<PacketBatch, RecvError>,
     deduper: &RwLock<Deduper<2, [u8]>>,
-    all_shreds: &mut HashMap<
+    all_shreds: &mut ahash::HashMap<
         Slot,
-        HashMap<u32 /* fec_set_index */, (bool /* completed */, HashSet<ComparableShred>)>,
+        (
+            ahash::HashMap<
+                u32, /* fec_set_index */
+                (bool /* completed */, HashSet<ComparableShred>),
+            >,
+            ShredsStateTracker,
+        ),
     >,
+    slot_fec_indexes_to_iterate: &mut HashSet<(Slot, u32)>,
     deshredded_entries: &mut Vec<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>,
     rs_cache: &ReedSolomonCache,
     send_socket: &UdpSocket,
@@ -263,6 +279,7 @@ fn recv_from_channel_and_send_multiple_dest(
                 .flat_map(|x| x.iter())
                 .filter_map(|x| x.data(..)),
             all_shreds,
+            slot_fec_indexes_to_iterate,
             deshredded_entries,
             rs_cache,
             metrics,
@@ -566,7 +583,7 @@ impl ShredMetrics {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, HashSet},
+        collections::HashSet,
         net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         str::FromStr,
         sync::{Arc, Mutex, RwLock},
@@ -654,10 +671,14 @@ mod tests {
             });
 
         let entry_sender = Arc::new(BroadcastSender::new(1_000));
-        let mut all_shreds: HashMap<
+        let mut all_shreds: ahash::HashMap<
             Slot,
-            HashMap<u32 /* fec_set_index */, (bool /* completed */, HashSet<ComparableShred>)>,
-        > = HashMap::new();
+            ahash::HashMap<
+                u32, /* fec_set_index */
+                (bool /* completed */, HashSet<ComparableShred>),
+            >,
+        > = ahash::HashMap::default();
+        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
         // send packets
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
@@ -666,6 +687,7 @@ mod tests {
                 crate::forwarder::DEDUPER_NUM_BITS,
             ))),
             &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
             &mut Vec::new(),
             &ReedSolomonCache::default(),
             &udp_sender,

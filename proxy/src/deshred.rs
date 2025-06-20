@@ -1,35 +1,86 @@
-use std::{
-    collections::{HashMap, HashSet},
-    hash::Hash,
-    sync::atomic::Ordering,
-};
+use std::{collections::HashSet, hash::Hash, sync::atomic::Ordering};
 
 use itertools::Itertools;
 use jito_protos::shredstream::TraceShred;
 use log::{debug, warn};
 use prost::Message;
-use solana_ledger::shred::{
-    merkle::{Shred, ShredCode},
-    ReedSolomonCache, Shredder,
+use solana_ledger::{
+    blockstore::MAX_DATA_SHREDS_PER_SLOT,
+    shred::{
+        merkle::{Shred, ShredCode},
+        traits::ShredData,
+        ReedSolomonCache, Shredder, DATA_SHREDS_PER_FEC_BLOCK,
+    },
 };
 use solana_sdk::clock::{Slot, MAX_PROCESSING_AGE};
 
 use crate::forwarder::ShredMetrics;
 
+#[derive(Default, Debug, Copy, Clone)]
+enum ShredStatus {
+    #[default]
+    Unknown,
+    /// Shred that is **not** marked as [ShredFlags::DATA_COMPLETE_SHRED]
+    NotDataComplete,
+    /// Shred that is marked as [ShredFlags::DATA_COMPLETE_SHRED]
+    DataComplete,
+}
+
+/// Tracks per-slot shred information
+/// Guaranteed to have MAX_DATA_SHREDS_PER_SLOT entries in each Vec
+#[derive(Debug)]
+pub struct ShredsStateTracker {
+    /// Compact status of each shred for fast iteration.
+    status: Vec<ShredStatus>,
+    /// Shreds received for the slot
+    data: Vec<Option<Shred>>,
+    /// array of bools that track which FEC set indexes have been already processed
+    already_processed_fec_sets: Vec<bool>,
+    /// index is FEC set number, value is number of how many shreds we have received in the set
+    shreds_received_per_fec_set: Vec<u8>,
+}
+impl Default for ShredsStateTracker {
+    fn default() -> Self {
+        Self {
+            status: vec![ShredStatus::Unknown; MAX_DATA_SHREDS_PER_SLOT],
+            data: vec![None; MAX_DATA_SHREDS_PER_SLOT],
+            already_processed_fec_sets: vec![
+                false;
+                MAX_DATA_SHREDS_PER_SLOT / DATA_SHREDS_PER_FEC_BLOCK
+            ],
+            shreds_received_per_fec_set: vec![
+                0;
+                MAX_DATA_SHREDS_PER_SLOT / DATA_SHREDS_PER_FEC_BLOCK
+            ],
+        }
+    }
+}
+
 /// Returns the number of shreds reconstructed
 /// Updates all_shreds with current state, and deshredded_entries with returned values
 pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
+    //FIXME use vec
     packet_batch_vec: I,
-    all_shreds: &mut HashMap<
+    all_shreds: &mut ahash::HashMap<
         Slot,
-        HashMap<u32 /* fec_set_index */, (bool /* completed */, HashSet<ComparableShred>)>,
+        (
+            ahash::HashMap<
+                u32, /* fec_set_index */
+                (bool /* completed */, HashSet<ComparableShred>),
+            >,
+            ShredsStateTracker,
+        ),
     >,
+    slot_fec_indexes_to_iterate: &mut HashSet<(Slot, u32)>,
     deshredded_entries: &mut Vec<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>,
     rs_cache: &ReedSolomonCache,
     metrics: &ShredMetrics,
 ) -> usize {
     deshredded_entries.clear();
-    let mut slot_fec_index_to_iterate = HashSet::new();
+    slot_fec_indexes_to_iterate.clear();
+    let mut slot_index_to_deserialize = HashSet::new();
+    let mut highest_slot_seen = 0;
+    // ingest all packets
     for data in packet_batch_vec {
         match solana_ledger::shred::Shred::new_from_serialized_shred(data.to_vec())
             .and_then(Shred::try_from)
@@ -37,14 +88,20 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             Ok(shred) => {
                 let slot = shred.common_header().slot;
                 let fec_set_index = shred.fec_set_index();
-                all_shreds
-                    .entry(slot)
-                    .or_default()
-                    .entry(fec_set_index)
-                    .or_default()
-                    .1
-                    .insert(ComparableShred(shred));
-                slot_fec_index_to_iterate.insert((slot, fec_set_index));
+                let (all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
+                let (is_fec_completed, received_shreds) =
+                    all_shreds.entry(fec_set_index).or_default();
+                if *is_fec_completed {
+                    debug!("already completed slot: {slot}, fec_set_index: {fec_set_index}");
+                    continue;
+                }
+                let Some(shred_index) = update_state_tracker(&shred, state_tracker) else {
+                    continue;
+                };
+                slot_index_to_deserialize.insert((slot, shred_index));
+                received_shreds.insert(ComparableShred(shred));
+                slot_fec_indexes_to_iterate.insert((slot, fec_set_index));
+                highest_slot_seen = highest_slot_seen.max(slot);
             }
             Err(e) => {
                 if TraceShred::decode(data).is_ok() {
@@ -55,36 +112,27 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
         }
     }
 
-    let mut recovered_count = 0;
-    let mut highest_slot_seen = 0;
-    for (slot, fec_set_index) in slot_fec_index_to_iterate {
-        highest_slot_seen = highest_slot_seen.max(slot);
-        let Some((already_deshredded, shreds)) = all_shreds
-            .get_mut(&slot)
-            .and_then(|fec_set_indexes| fec_set_indexes.get_mut(&fec_set_index))
-        else {
-            continue;
-        };
-        if *already_deshredded {
-            debug!("already completed slot {slot}");
-            continue;
-        }
-
-        let (num_expected_data_shreds, num_data_shreds) = can_recover(shreds);
+    // try recovering by FEC set
+    let mut total_recovered_count = 0;
+    for (slot, fec_set_index) in slot_fec_indexes_to_iterate.iter() {
+        let (all_shreds, state_tracker) = all_shreds.entry(*slot).or_default();
+        let (is_fec_completed, shreds) = all_shreds.entry(*fec_set_index).or_default();
+        let (
+            num_expected_data_shreds,
+            num_expected_coding_shreds,
+            num_data_shreds,
+            num_coding_shreds,
+        ) = get_data_shred_info(&shreds);
 
         // haven't received last data shred, haven't seen any coding shreds, so wait until more arrive
-        if num_expected_data_shreds == 0
-            || (num_data_shreds < num_expected_data_shreds
-                && shreds.len() < num_data_shreds as usize)
-        {
-            // not enough data shreds, not enough shreds to recover
+        let min_shreds_needed_to_recover = num_expected_data_shreds as usize;
+        if num_expected_data_shreds == 0 || shreds.len() < min_shreds_needed_to_recover {
             continue;
         }
 
         // try to recover if we have enough coding shreds
-        let mut recovered_shreds = Vec::new();
         if num_data_shreds < num_expected_data_shreds
-            && shreds.len() as u16 >= num_expected_data_shreds
+            && shreds.len() >= min_shreds_needed_to_recover
         {
             let merkle_shreds = shreds
                 .iter()
@@ -95,60 +143,116 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 Ok(r) => r,
                 Err(e) => {
                     warn!("Failed to recover shreds for slot: {slot}, fec set: {fec_set_index}. Err: {e}");
+                    warn!(
+                    "slot {slot} failed to deshred fec_set_index {fec_set_index}. num_expected_data_shreds: {num_expected_data_shreds}, num_data_shreds: {num_data_shreds} num_expected_coding_shreds: {num_expected_coding_shreds} num_coding_shreds: {num_coding_shreds} Err: {e}",
+                );
                     continue;
                 }
             };
 
+            let mut fec_set_recovered_count = 0;
             for shred in recovered {
                 match shred {
                     Ok(shred) => {
-                        recovered_count += 1;
-                        recovered_shreds.push(ComparableShred(shred));
-                        // can also just insert into hashmap, but kept separate for ease of debug
+                        let Some(_shred_index) = update_state_tracker(&shred, state_tracker) else {
+                            continue;
+                        };
+                        let is_new_shred= shreds.insert(ComparableShred(shred));
+                        if is_new_shred{
+                            total_recovered_count += 1;
+                            fec_set_recovered_count += 1;
+                        }
                     }
                     Err(e) => warn!(
                         "Failed to recover shred for slot {slot}, fec set: {fec_set_index}. Err: {e}"
                     ),
                 }
             }
+            if fec_set_recovered_count > 0 {
+                *is_fec_completed = true;
+                shreds.clear();
+            }
         }
+    }
 
-        let sorted_deduped_data_payloads = shreds
-            .iter()
-            .chain(recovered_shreds.iter())
-            .filter_map(|s| Some((s, solana_ledger::shred::layout::get_data(s.payload()).ok()?)))
-            .sorted_by_key(|(s, _data)| s.index())
-            .collect_vec();
-
-        if (sorted_deduped_data_payloads.len() as u16) < num_expected_data_shreds {
-            continue;
+    // try deshred, mark slot as completed, move on to the next shred outside the completed range
+    'outer: for (slot, index) in slot_index_to_deserialize {
+        // match up to next DATA_COMPLETE_SHRED, making sure its never unknown in between,
+        let (_all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
+        // look at header, find number of shreds in this set, check all are set
+        // start loop with datacomplete, iterate making sure all are notdatacomplete until next datacomplete
+        let mut start_data_complete_idx = index;
+        'inner: while start_data_complete_idx >= 0 {
+            match &state_tracker.status[start_data_complete_idx] {
+                ShredStatus::Unknown => break 'outer,
+                ShredStatus::NotDataComplete => start_data_complete_idx -= 1,
+                ShredStatus::DataComplete => break 'inner,
+            };
         }
+        start_data_complete_idx += 1;
+        let mut end_data_complete_idx = index;
+        'inner: while end_data_complete_idx < state_tracker.status.len() {
+            match &state_tracker.status[end_data_complete_idx] {
+                ShredStatus::Unknown => break 'outer,
+                ShredStatus::NotDataComplete => end_data_complete_idx += 1,
+                ShredStatus::DataComplete => break 'inner,
+            };
+        }
+        end_data_complete_idx += 1;
 
-        let deshred_payload = match Shredder::deshred_unchecked(
-            sorted_deduped_data_payloads
-                .iter()
-                .map(|(s, _data)| s.payload()),
-        ) {
+        let to_deshred = &state_tracker.data[start_data_complete_idx..=end_data_complete_idx];
+        let deshred_payload = match Shredder::deshred(to_deshred.iter().filter_map(|s| {
+            Some(solana_ledger::shred::layout::get_data(s.as_ref()?.payload()).ok()?)
+        })) {
             Ok(v) => v,
             Err(e) => {
-                warn!(
-                    "slot {slot} failed to deshred fec_set_index {fec_set_index}. num_expected_data_shreds: {num_expected_data_shreds}, num_data_shreds: {num_data_shreds}. shred set len: {}, recovered shred set len: {},  Err: {e}.",
-                    shreds.len(),
-                    recovered_shreds.len(),
-                );
+                let fec_set_indexes = to_deshred
+                    .iter()
+                    .filter_map(|s| s.as_ref().map(|s| s.fec_set_index()))
+                    .collect::<HashSet<u32>>();
+                warn!("slot {slot} failed to deshred fec_set_index {fec_set_indexes:?} start_data_complete_idx: {start_data_complete_idx} end_data_complete_idx: {end_data_complete_idx}. Err: {e}",);
                 metrics
                     .fec_recovery_error_count
                     .fetch_add(1, Ordering::Relaxed);
                 continue;
             }
         };
+
         let entries = match bincode::deserialize::<Vec<solana_entry::entry::Entry>>(
             &deshred_payload,
         ) {
-            Ok(e) => e,
+            Ok(entries) => entries,
             Err(e) => {
+                let data_headers = to_deshred
+                    .iter()
+                    .filter_map(|s| match s.as_ref()? {
+                        Shred::ShredData(s) => Some(s.data_header()),
+                        _ => panic!("bad data shred"),
+                    })
+                    .collect::<Vec<_>>();
+                let common_headers = to_deshred
+                    .iter()
+                    .filter_map(|s| s.as_ref().map(|s| s.common_header()))
+                    .collect::<Vec<_>>();
+                let diffs = to_deshred
+                    .iter()
+                    .filter_map(|s| {
+                        s.as_ref()
+                            .map(|s| s.common_header().index - s.common_header().fec_set_index)
+                    })
+                    .collect::<Vec<_>>();
+                let fec_set_indexes = to_deshred
+                    .iter()
+                    .filter_map(|s| s.as_ref().map(|s| s.fec_set_index()))
+                    .collect::<HashSet<u32>>();
                 warn!(
-                        "slot {slot} fec_set_index {fec_set_index} failed to deserialize bincode payload of size {}. Err: {e}",
+                    "data_len {}, shred headers: {common_headers:?}",
+                    to_deshred.len()
+                );
+                warn!("data_headers: {data_headers:?}");
+                warn!("diffs: {diffs:?}");
+                warn!(
+                        "slot {slot} fec_set_indexes {fec_set_indexes:?} start_data_complete_idx: {start_data_complete_idx} end_data_complete_idx: {end_data_complete_idx}. failed to deserialize bincode payload of size {}. Err: {e}",
                         deshred_payload.len()
                     );
                 metrics
@@ -163,20 +267,20 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
         let txn_count = entries.iter().map(|e| e.transactions.len() as u64).sum();
         metrics.txn_count.fetch_add(txn_count, Ordering::Relaxed);
         debug!(
-            "Successfully decoded slot: {slot} fec_index: {fec_set_index} with entry count: {}, txn count: {txn_count}",
+            "Successfully decoded slot: {slot} start_data_complete_idx: {start_data_complete_idx} end_data_complete_idx: {end_data_complete_idx} with entry count: {}, txn count: {txn_count}",
             entries.len(),
         );
 
         deshredded_entries.push((slot, entries, deshred_payload));
-        if let Some(fec_set) = all_shreds.get_mut(&slot) {
-            // done with this fec set index
-            let _ = fec_set
-                .get_mut(&fec_set_index)
-                .map(|(is_completed, fec_set_shreds)| {
-                    *is_completed = true;
-                    fec_set_shreds.clear();
-                });
-        }
+        // if let Some(fec_set) = all_shreds.get_mut(&slot) {
+        //     // done with this fec set index
+        //     let _ = fec_set
+        //         .get_mut(&fec_set_index)
+        //         .map(|(is_completed, fec_set_shreds)| {
+        //             *is_completed = true;
+        //             fec_set_shreds.clear();
+        //         });
+        // }
     }
 
     if all_shreds.len() > MAX_PROCESSING_AGE && highest_slot_seen > SLOT_LOOKBACK {
@@ -184,33 +288,58 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
         all_shreds.retain(|slot, _fec_set_index| *slot >= threshold);
     }
 
-    if recovered_count > 0 {
+    if total_recovered_count > 0 {
         metrics
             .recovered_count
-            .fetch_add(recovered_count as u64, Ordering::Relaxed);
+            .fetch_add(total_recovered_count as u64, Ordering::Relaxed);
     }
 
-    recovered_count
+    total_recovered_count
+}
+
+/// Returns shred index on new insert
+/// None if already exists
+fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker) -> Option<usize> {
+    let index = shred.index() as usize;
+    let fec_set_index = shred.fec_set_index() as usize;
+    if state_tracker.already_processed_fec_sets[fec_set_index]
+        || state_tracker.data[index].is_some()
+    {
+        return None;
+    }
+    state_tracker.shreds_received_per_fec_set[fec_set_index] += 1; // new entry
+    state_tracker.data[index] = Some(shred.clone());
+    state_tracker.status[index] = match &shred {
+        Shred::ShredData(s) if s.data_complete() || s.last_in_slot() => ShredStatus::DataComplete,
+        _ => ShredStatus::NotDataComplete,
+    };
+    Some(index)
 }
 
 const SLOT_LOOKBACK: Slot = 50;
 
 /// check if we can reconstruct (having minimum number of data + coding shreds)
-fn can_recover(
+fn get_data_shred_info(
     shreds: &HashSet<ComparableShred>,
 ) -> (
     u16, /* num_expected_data_shreds */
+    u16, /* num_expected_coding_shreds */
     u16, /* num_data_shreds */
+    u16, /* num_coding_shreds */
 ) {
     let mut num_expected_data_shreds = 0;
-    let mut data_shred_count = 0;
+    let mut num_expected_coding_shreds = 0;
+    let mut num_data_shreds = 0;
+    let mut num_coding_shreds = 0;
     for shred in shreds {
         match &shred.0 {
             Shred::ShredCode(s) => {
+                num_coding_shreds += 1;
                 num_expected_data_shreds = s.coding_header.num_data_shreds;
+                num_expected_coding_shreds = s.coding_header.num_coding_shreds;
             }
             Shred::ShredData(s) => {
-                data_shred_count += 1;
+                num_data_shreds += 1;
                 if num_expected_data_shreds == 0 && (s.data_complete() || s.last_in_slot()) {
                     num_expected_data_shreds =
                         (shred.0.index() - shred.0.fec_set_index()) as u16 + 1;
@@ -218,7 +347,12 @@ fn can_recover(
             }
         }
     }
-    (num_expected_data_shreds, data_shred_count)
+    (
+        num_expected_data_shreds,
+        num_expected_coding_shreds,
+        num_data_shreds,
+        num_coding_shreds,
+    )
 }
 
 /// Issue: datashred equality comparison is wrong due to data size being smaller than the 1203 bytes allocated
@@ -412,13 +546,12 @@ mod tests {
 
         // Test 1: all shreds provided
         let mut deshredded_entries = Vec::new();
-        let mut all_shreds: HashMap<
-            Slot,
-            HashMap<u32 /* fec_set_index */, (bool /* completed */, HashSet<ComparableShred>)>,
-        > = HashMap::new();
+        let mut all_shreds = HashMap::new();
+        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
         let recovered_count = reconstruct_shreds(
             shreds.iter().map(|shred| shred.payload().iter().as_slice()),
             &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
             &rs_cache,
             &metrics,
@@ -453,10 +586,8 @@ mod tests {
 
         // Test 2: 33% of shreds missing
         let mut deshredded_entries = Vec::new();
-        let mut all_shreds: HashMap<
-            Slot,
-            HashMap<u32 /* fec_set_index */, (bool /* completed */, HashSet<ComparableShred>)>,
-        > = HashMap::new();
+        let mut all_shreds = HashMap::new();
+        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
         let recovered_count = reconstruct_shreds(
             shreds
                 .iter()
@@ -464,6 +595,7 @@ mod tests {
                 .filter(|(index, _)| (index + 1) % 3 != 0)
                 .map(|(_, shred)| shred.payload().iter().as_slice()),
             &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
             &rs_cache,
             &metrics,
@@ -542,13 +674,12 @@ mod tests {
 
         // Test 1: all shreds provided
         let mut deshredded_entries = Vec::new();
-        let mut all_shreds: HashMap<
-            Slot,
-            HashMap<u32 /* fec_set_index */, (bool /* completed */, HashSet<ComparableShred>)>,
-        > = HashMap::new();
+        let mut all_shreds = HashMap::new();
+        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
         let recovered_count = reconstruct_shreds(
             packets.iter().map(|s| s.data(..).unwrap()),
             &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
             &rs_cache,
             &metrics,
@@ -568,10 +699,9 @@ mod tests {
 
         // Test 2: 33% of shreds missing
         let mut deshredded_entries = Vec::new();
-        let mut all_shreds: HashMap<
-            Slot,
-            HashMap<u32 /* fec_set_index */, (bool /* completed */, HashSet<ComparableShred>)>,
-        > = HashMap::new();
+        let mut all_shreds = HashMap::new();
+        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+
         let recovered_count = reconstruct_shreds(
             packets
                 .iter()
@@ -579,6 +709,7 @@ mod tests {
                 .filter(|(index, _)| (index + 1) % 3 != 0)
                 .map(|(_, s)| s.data(..).unwrap()),
             &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
             &rs_cache,
             &metrics,

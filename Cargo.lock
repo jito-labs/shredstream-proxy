@@ -2570,6 +2570,7 @@ dependencies = [
 name = "jito-shredstream-proxy"
 version = "0.2.5"
 dependencies = [
+ "ahash 0.8.11",
  "arc-swap",
  "bincode",
  "borsh 1.5.6",

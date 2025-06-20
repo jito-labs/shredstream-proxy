@@ -18,6 +18,7 @@ edition = "2021"
 lto = "thin"
 
 [workspace.dependencies]
+ahash = "0.8"
 arc-swap = "1.6"
 clap = { version = "4", features = ["derive", "env"] }
 crossbeam-channel = "0.5.8"
