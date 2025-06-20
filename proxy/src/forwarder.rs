@@ -603,10 +603,7 @@ mod tests {
     };
     use tokio::sync::broadcast::Sender as BroadcastSender;
 
-    use crate::{
-        deshred::ComparableShred,
-        forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics},
-    };
+    use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
 
     fn listen_and_collect(listen_socket: UdpSocket, received_packets: Arc<Mutex<Vec<Vec<u8>>>>) {
         let mut buf = [0u8; PACKET_DATA_SIZE];
@@ -671,13 +668,7 @@ mod tests {
             });
 
         let entry_sender = Arc::new(BroadcastSender::new(1_000));
-        let mut all_shreds: ahash::HashMap<
-            Slot,
-            ahash::HashMap<
-                u32, /* fec_set_index */
-                (bool /* completed */, HashSet<ComparableShred>),
-            >,
-        > = ahash::HashMap::default();
+        let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
         // send packets
         recv_from_channel_and_send_multiple_dest(
