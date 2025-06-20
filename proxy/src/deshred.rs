@@ -58,6 +58,9 @@ impl Default for ShredsStateTracker {
 
 /// Returns the number of shreds reconstructed
 /// Updates all_shreds with current state, and deshredded_entries with returned values
+/// receive shreds per FEC set, attempting to recover the other shreds in the fec set so you do not have to wait until all data shreds have arrived.
+/// every time a fec is recovered, scan for neighbouring DATA_COMPLETE_SHRED flags in the shreds, attempting to deserialize into solana entries when there are no missing shreds between the DATA_COMPLETE_SHRED flags.
+/// note that an FEC set doesn't necessarily contain DATA_COMPLETE_SHRED in the last shred. when deserializing the bincode data, you must use data between shreds starting at the last DATA_COMPLETE_SHRED (not inclusive) to the next DATA_COMPLETE_SHRED (inclusive)
 pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
     //FIXME use vec
     packet_batch_vec: I,
@@ -188,9 +191,11 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
         };
 
         let to_deshred = &state_tracker.data[start_data_complete_idx..=end_data_complete_idx];
-        let deshred_payload = match Shredder::deshred(to_deshred.iter().filter_map(|s| {
-            solana_ledger::shred::layout::get_data(s.as_ref()?.payload()).ok()
-        })) {
+        let deshred_payload = match Shredder::deshred(
+            to_deshred
+                .iter()
+                .filter_map(|s| solana_ledger::shred::layout::get_data(s.as_ref()?.payload()).ok()),
+        ) {
             Ok(v) => v,
             Err(e) => {
                 let fec_set_indexes = to_deshred
@@ -259,15 +264,12 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
         );
 
         deshredded_entries.push((slot, entries, deshred_payload));
-        // if let Some(fec_set) = all_shreds.get_mut(&slot) {
-        //     // done with this fec set index
-        //     let _ = fec_set
-        //         .get_mut(&fec_set_index)
-        //         .map(|(is_completed, fec_set_shreds)| {
-        //             *is_completed = true;
-        //             fec_set_shreds.clear();
-        //         });
-        // }
+        to_deshred.iter().for_each(|shred| {
+            let Some(fec_index) = shred.as_ref().map(|s| s.fec_set_index()) else {
+                return;
+            };
+            state_tracker.already_processed_fec_sets[fec_index] = true;
+        })
     }
 
     if all_shreds.len() > MAX_PROCESSING_AGE && highest_slot_seen > SLOT_LOOKBACK {
@@ -288,8 +290,9 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
 /// Rules:
 /// * A segment **ends** at the first `DataComplete` *at or after* `index`.
 /// * It **starts** one position after the previous `DataComplete`, or at the beginning of the vector if there is none.
-/// * If an `Unknown` is seen while searching in either direction the segment is discarded and `None` is returned.
+/// * If an `Unknown` is seen while searching in either direction, the segment is discarded and `None` is returned.
 fn get_indexes(status: &[ShredStatus], index: usize) -> Option<(usize, usize)> {
+    // TODO: handle already_processed
     if index >= status.len() {
         return None;
     }
