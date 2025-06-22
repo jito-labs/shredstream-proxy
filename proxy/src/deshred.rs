@@ -9,7 +9,7 @@ use solana_ledger::{
     shred::{
         merkle::{Shred, ShredCode},
         traits::ShredData,
-        ReedSolomonCache, Shredder, DATA_SHREDS_PER_FEC_BLOCK,
+        ReedSolomonCache, Shredder,
     },
 };
 use solana_sdk::clock::{Slot, MAX_PROCESSING_AGE};
@@ -165,6 +165,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                     ),
                 }
             }
+            println!("recovered:{fec_set_recovered_count}");
             if fec_set_recovered_count > 0 {
                 *is_fec_completed = true;
                 shreds.clear();
@@ -316,7 +317,8 @@ fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usi
         if left < 0 {
             return Some((0, end)); // no earlier DataComplete
         }
-        if tracker.already_processed_fec_sets[tracker.data[end].as_ref()?.fec_set_index() as usize]
+        if tracker.already_processed_fec_sets
+            [tracker.data[left as usize].as_ref()?.fec_set_index() as usize]
         {
             return None;
         }
@@ -333,9 +335,7 @@ fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usi
 fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker) -> Option<usize> {
     let index = shred.index() as usize;
     let fec_set_index = shred.fec_set_index() as usize;
-    if state_tracker.already_processed_fec_sets[fec_set_index]
-        || state_tracker.data[index].is_some()
-    {
+    if state_tracker.already_processed_fec_sets[fec_set_index] {
         return None;
     }
     state_tracker.shreds_received_per_fec_set[fec_set_index] += 1; // new entry
