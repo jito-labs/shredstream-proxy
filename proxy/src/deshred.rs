@@ -44,14 +44,8 @@ impl Default for ShredsStateTracker {
         Self {
             status: vec![ShredStatus::Unknown; MAX_DATA_SHREDS_PER_SLOT],
             data: vec![None; MAX_DATA_SHREDS_PER_SLOT],
-            already_processed_fec_sets: vec![
-                false;
-                MAX_DATA_SHREDS_PER_SLOT / DATA_SHREDS_PER_FEC_BLOCK
-            ],
-            shreds_received_per_fec_set: vec![
-                0;
-                MAX_DATA_SHREDS_PER_SLOT / DATA_SHREDS_PER_FEC_BLOCK
-            ],
+            already_processed_fec_sets: vec![false; MAX_DATA_SHREDS_PER_SLOT],
+            shreds_received_per_fec_set: vec![0; MAX_DATA_SHREDS_PER_SLOT],
         }
     }
 }
@@ -185,7 +179,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
         // look at header, find number of shreds in this set, check all are set
         // start loop with datacomplete, iterate making sure all are notdatacomplete until next datacomplete
         let Some((start_data_complete_idx, end_data_complete_idx)) =
-            get_indexes(&state_tracker.status, index)
+            get_indexes(&state_tracker, index)
         else {
             continue;
         };
@@ -268,7 +262,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             let Some(fec_index) = shred.as_ref().map(|s| s.fec_set_index()) else {
                 return;
             };
-            state_tracker.already_processed_fec_sets[fec_index] = true;
+            state_tracker.already_processed_fec_sets[fec_index as usize] = true;
         })
     }
 
@@ -291,23 +285,26 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
 /// * A segment **ends** at the first `DataComplete` *at or after* `index`.
 /// * It **starts** one position after the previous `DataComplete`, or at the beginning of the vector if there is none.
 /// * If an `Unknown` is seen while searching in either direction, the segment is discarded and `None` is returned.
-fn get_indexes(status: &[ShredStatus], index: usize) -> Option<(usize, usize)> {
-    // TODO: handle already_processed
-    if index >= status.len() {
+fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usize)> {
+    if index >= (&tracker.status).len() {
         return None;
     }
 
     // find the right boundary (first DataComplete ≥ index)
     let mut end = index;
-    while end < status.len() {
-        match status[end] {
+    while end < tracker.status.len() {
+        if tracker.already_processed_fec_sets[tracker.data[end].as_ref()?.fec_set_index() as usize]
+        {
+            return None;
+        }
+        match &tracker.status[end] {
             ShredStatus::Unknown => return None,
             ShredStatus::DataComplete => break,
             ShredStatus::NotDataComplete => end += 1,
         }
     }
-    if end == status.len() {
-        return None;
+    if end == tracker.status.len() {
+        return None; // never saw a DataComplete
     }
 
     // find the left boundary (prev DataComplete + 1)
@@ -319,7 +316,11 @@ fn get_indexes(status: &[ShredStatus], index: usize) -> Option<(usize, usize)> {
         if left < 0 {
             return Some((0, end)); // no earlier DataComplete
         }
-        match status[left as usize] {
+        if tracker.already_processed_fec_sets[tracker.data[end].as_ref()?.fec_set_index() as usize]
+        {
+            return None;
+        }
+        match tracker.status[left as usize] {
             ShredStatus::Unknown => return None,
             ShredStatus::DataComplete => return Some(((left as usize) + 1, end)),
             ShredStatus::NotDataComplete => left -= 1,
@@ -758,10 +759,15 @@ mod tests {
         );
     }
 }
-
 #[cfg(test)]
 mod get_indexes_tests {
-    use super::{get_indexes, ShredStatus};
+    use super::{get_indexes, ShredStatus, ShredsStateTracker};
+
+    fn make_test_statustracker(statuses: &[ShredStatus]) -> ShredsStateTracker {
+        let mut tracker = ShredsStateTracker::default();
+        tracker.status[..statuses.len()].copy_from_slice(statuses);
+        tracker
+    }
 
     #[test]
     fn start_at_index_zero() {
@@ -770,21 +776,24 @@ mod get_indexes_tests {
             ShredStatus::NotDataComplete,
             ShredStatus::DataComplete,
         ];
-        assert_eq!(get_indexes(&s, 0), Some((0, 2)));
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 0), Some((0, 2)));
 
         let s = [
             ShredStatus::DataComplete,
             ShredStatus::NotDataComplete,
             ShredStatus::DataComplete,
         ];
-        assert_eq!(get_indexes(&s, 0), Some((0, 0)));
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 0), Some((0, 0)));
 
         let s = [
             ShredStatus::Unknown,
             ShredStatus::NotDataComplete,
             ShredStatus::DataComplete,
         ];
-        assert_eq!(get_indexes(&s, 0), None);
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 0), None);
     }
 
     #[test]
@@ -795,7 +804,8 @@ mod get_indexes_tests {
             ShredStatus::NotDataComplete,
             ShredStatus::DataComplete,
         ];
-        assert_eq!(get_indexes(&s, 1), Some((1, 3)));
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 3)));
     }
 
     #[test]
@@ -805,7 +815,8 @@ mod get_indexes_tests {
             ShredStatus::NotDataComplete,
             ShredStatus::DataComplete,
         ];
-        assert_eq!(get_indexes(&s, 1), Some((1, 2)));
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 2)));
     }
 
     #[test]
@@ -815,8 +826,9 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
             ShredStatus::DataComplete,
         ];
-        assert_eq!(get_indexes(&s, 1), Some((0, 1)));
-        assert_eq!(get_indexes(&s, 2), Some((2, 2)));
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 1), Some((0, 1)));
+        assert_eq!(get_indexes(&tracker, 2), Some((2, 2)));
     }
 
     #[test]
@@ -828,9 +840,10 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
             ShredStatus::NotDataComplete,
         ];
-        assert_eq!(get_indexes(&s, 1), Some((0, 1)));
-        assert_eq!(get_indexes(&s, 2), Some((2, 2)));
-        assert_eq!(get_indexes(&s, 3), Some((3, 3)));
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 1), Some((0, 1)));
+        assert_eq!(get_indexes(&tracker, 2), Some((2, 2)));
+        assert_eq!(get_indexes(&tracker, 3), Some((3, 3)));
     }
 
     #[test]
@@ -840,13 +853,15 @@ mod get_indexes_tests {
             ShredStatus::Unknown,
             ShredStatus::DataComplete,
         ];
-        assert_eq!(get_indexes(&s, 0), None);
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 0), None);
 
         let s = [
             ShredStatus::Unknown,
             ShredStatus::NotDataComplete,
             ShredStatus::DataComplete,
         ];
-        assert_eq!(get_indexes(&s, 1), None);
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 1), None);
     }
 }
