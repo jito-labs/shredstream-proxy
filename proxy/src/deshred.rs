@@ -335,7 +335,10 @@ fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usi
 fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker) -> Option<usize> {
     let index = shred.index() as usize;
     let fec_set_index = shred.fec_set_index() as usize;
-    if state_tracker.already_processed_fec_sets[fec_set_index] {
+    if state_tracker.already_processed_fec_sets[fec_set_index]
+        || state_tracker.data[index].is_some()
+        || !matches!(state_tracker.status[index], ShredStatus::Unknown)
+    {
         return None;
     }
     state_tracker.shreds_received_per_fec_set[fec_set_index] += 1; // new entry
