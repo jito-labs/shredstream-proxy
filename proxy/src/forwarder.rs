@@ -122,10 +122,7 @@ pub fn start_forwarder_threads(
                     let mut all_shreds: ahash::HashMap<
                         Slot,
                         (
-                            ahash::HashMap<
-                                u32, /* fec_set_index */
-                                (bool /* completed */, HashSet<ComparableShred>),
-                            >,
+                            ahash::HashMap<u32 /* fec_set_index */, HashSet<ComparableShred>>,
                             ShredsStateTracker,
                         ),
                     > = ahash::HashMap::with_capacity(MAX_PROCESSING_AGE);
@@ -184,10 +181,7 @@ fn recv_from_channel_and_send_multiple_dest(
     all_shreds: &mut ahash::HashMap<
         Slot,
         (
-            ahash::HashMap<
-                u32, /* fec_set_index */
-                (bool /* completed */, HashSet<ComparableShred>),
-            >,
+            ahash::HashMap<u32 /* fec_set_index */, HashSet<ComparableShred>>,
             ShredsStateTracker,
         ),
     >,
