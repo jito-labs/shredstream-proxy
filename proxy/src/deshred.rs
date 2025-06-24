@@ -9,7 +9,7 @@ use solana_ledger::{
     shred::{
         merkle::{Shred, ShredCode},
         traits::ShredData,
-        ReedSolomonCache, Shredder,
+        ReedSolomonCache, ShredType, Shredder,
     },
 };
 use solana_sdk::clock::{Slot, MAX_PROCESSING_AGE};
@@ -30,25 +30,25 @@ enum ShredStatus {
 /// Guaranteed to have MAX_DATA_SHREDS_PER_SLOT entries in each Vec
 #[derive(Debug)]
 pub struct ShredsStateTracker {
-    /// Compact status of each shred for fast iteration.
+    /// Compact status of each data shred for fast iteration.
     status: Vec<ShredStatus>,
-    /// Shreds received for the slot
-    data: Vec<Option<Shred>>,
+    /// Data shreds received for the slot (not coding!)
+    data_shreds: Vec<Option<Shred>>,
     /// array of bools that track which FEC set indexes have been already recovered
     already_recovered_fec_sets: Vec<bool>,
     /// array of bools that track which shred indexes have been already deshredded
     already_deshredded: Vec<bool>,
-    /// index is FEC set number, value is number of how many shreds we have received in the set
-    shreds_received_per_fec_set: Vec<u8>,
+    // /// index is FEC set number, value is number of how many shreds we have received in the set
+    // shreds_received_per_fec_set: Vec<u8>,
 }
 impl Default for ShredsStateTracker {
     fn default() -> Self {
         Self {
             status: vec![ShredStatus::Unknown; MAX_DATA_SHREDS_PER_SLOT],
-            data: vec![None; MAX_DATA_SHREDS_PER_SLOT],
+            data_shreds: vec![None; MAX_DATA_SHREDS_PER_SLOT],
             already_recovered_fec_sets: vec![false; MAX_DATA_SHREDS_PER_SLOT],
             already_deshredded: vec![false; MAX_DATA_SHREDS_PER_SLOT],
-            shreds_received_per_fec_set: vec![0; MAX_DATA_SHREDS_PER_SLOT],
+            // shreds_received_per_fec_set: vec![0; MAX_DATA_SHREDS_PER_SLOT],
         }
     }
 }
@@ -87,9 +87,10 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 let index = shred.index() as usize;
                 let fec_set_index = shred.fec_set_index();
                 let (all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
-                if state_tracker.data[index].is_some()
-                    || state_tracker.already_recovered_fec_sets[fec_set_index as usize]
+                if state_tracker.already_recovered_fec_sets[fec_set_index as usize]
                     || state_tracker.already_deshredded[index]
+                    || (shred.shred_type() == ShredType::Data
+                        && state_tracker.data_shreds[index].is_some())
                 {
                     debug!("already completed slot: {slot}, fec_set_index: {fec_set_index}, index: {index}");
                     continue;
@@ -97,6 +98,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 let Some(shred_index) = update_state_tracker(&shred, state_tracker) else {
                     continue;
                 };
+
                 all_shreds
                     .entry(fec_set_index)
                     .or_default()
@@ -133,7 +135,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             continue;
         }
 
-        // try to recover if we have enough coding shreds
+        // try to recover if we have enough shreds in the FEC set
         if num_data_shreds < num_expected_data_shreds
             && shreds.len() >= min_shreds_needed_to_recover
         {
@@ -172,7 +174,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                     ),
                 }
             }
-            println!("recovered:{fec_set_recovered_count}");
+
             if fec_set_recovered_count > 0 {
                 shreds.clear();
             }
@@ -180,26 +182,26 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
     }
 
     // try to bincode deserialize, mark shred as completed
-    for (slot, index) in slot_index_to_deserialize {
-        let (_all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
+    for (slot, fec_set_index) in slot_fec_indexes_to_iterate.iter() {
+        println!("slot {slot}, fec_set_index {fec_set_index}");
+        let (_all_shreds, state_tracker) = all_shreds.entry(*slot).or_default();
         let Some((start_data_complete_idx, end_data_complete_idx)) =
-            get_indexes(&state_tracker, index)
+            get_indexes(&state_tracker, *fec_set_index as usize)
         else {
             continue;
         };
 
-        let to_deshred = &state_tracker.data[start_data_complete_idx..=end_data_complete_idx];
+        let to_deshred =
+            &state_tracker.data_shreds[start_data_complete_idx..=end_data_complete_idx];
         let deshred_payload = match Shredder::deshred(
-            to_deshred
-                .iter()
-                .filter_map(|s| solana_ledger::shred::layout::get_data(s.as_ref()?.payload()).ok()),
+            to_deshred.iter().map(|s| s.as_ref().unwrap().payload()),
         ) {
             Ok(v) => v,
             Err(e) => {
                 let fec_set_indexes = to_deshred
                     .iter()
                     .filter_map(|s| s.as_ref().map(|s| s.fec_set_index()))
-                    .collect::<HashSet<u32>>();
+                    .collect::<HashSet<u32>>(); //fixme invalid size of data
                 warn!("slot {slot} failed to deshred slot: {slot}, fec_set_indexes: {fec_set_indexes:?}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}. Err: {e}");
                 metrics
                     .fec_recovery_error_count
@@ -261,7 +263,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             entries.len(),
         );
 
-        deshredded_entries.push((slot, entries, deshred_payload));
+        deshredded_entries.push((*slot, entries, deshred_payload));
         to_deshred.iter().for_each(|shred| {
             let Some(index) = shred.as_ref().map(|s| s.index()) else {
                 return;
@@ -290,14 +292,15 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
 /// * It **starts** one position after the previous `DataComplete`, or at the beginning of the vector if there is none.
 /// * If an `Unknown` is seen while searching in either direction, the segment is discarded and `None` is returned.
 fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usize)> {
-    if index >= (&tracker.status).len() {
+    if index >= tracker.status.len() {
         return None;
     }
 
     // find the right boundary (first DataComplete ≥ index)
     let mut end = index;
     while end < tracker.status.len() {
-        if tracker.already_recovered_fec_sets[tracker.data[end].as_ref()?.fec_set_index() as usize]
+        if tracker.already_recovered_fec_sets
+            [tracker.data_shreds[end].as_ref()?.fec_set_index() as usize]
         {
             return None;
         }
@@ -315,20 +318,21 @@ fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usi
     if end == 0 {
         return Some((0, 0)); // the vec *starts* with DataComplete
     }
-    let mut left = (end as isize) - 1;
+    let mut start = (end as isize) - 1;
     loop {
-        if left < 0 {
+        if start < 0 {
             return Some((0, end)); // no earlier DataComplete
         }
-        if tracker.already_recovered_fec_sets
-            [tracker.data[left as usize].as_ref()?.fec_set_index() as usize]
-        {
+        let fec_set_index = tracker.data_shreds[start as usize]
+            .as_ref()?
+            .fec_set_index();
+        if tracker.already_recovered_fec_sets[fec_set_index as usize] {
             return None;
         }
-        match tracker.status[left as usize] {
+        match tracker.status[start as usize] {
             ShredStatus::Unknown => return None,
-            ShredStatus::DataComplete => return Some(((left as usize) + 1, end)),
-            ShredStatus::NotDataComplete => left -= 1,
+            ShredStatus::DataComplete => return Some(((start + 1) as usize, end)),
+            ShredStatus::NotDataComplete => start -= 1,
         }
     }
 }
@@ -338,17 +342,23 @@ fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usi
 fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker) -> Option<usize> {
     let index = shred.index() as usize;
     let fec_set_index = shred.fec_set_index() as usize;
-    if state_tracker.data[index].is_some()
-        || state_tracker.already_recovered_fec_sets[fec_set_index]
+    if state_tracker.already_recovered_fec_sets[fec_set_index]
         || !matches!(state_tracker.status[index], ShredStatus::Unknown)
+        || (shred.shred_type() == ShredType::Data && state_tracker.data_shreds[index].is_some())
     {
         return None;
     }
-    state_tracker.shreds_received_per_fec_set[fec_set_index] += 1; // new entry
-    state_tracker.data[index] = Some(shred.clone());
-    state_tracker.status[index] = match &shred {
-        Shred::ShredData(s) if s.data_complete() || s.last_in_slot() => ShredStatus::DataComplete,
-        _ => ShredStatus::NotDataComplete,
+    // state_tracker.shreds_received_per_fec_set[fec_set_index] += 1; // new entry
+    match &shred {
+        Shred::ShredData(s) => {
+            state_tracker.data_shreds[index] = Some(shred.clone());
+            if s.data_complete() || s.last_in_slot() {
+                state_tracker.status[index] = ShredStatus::DataComplete;
+            } else {
+                state_tracker.status[index] = ShredStatus::NotDataComplete;
+            }
+        }
+        _ => {}
     };
     Some(index)
 }
