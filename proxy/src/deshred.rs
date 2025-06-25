@@ -174,7 +174,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
     for (slot, fec_set_index) in slot_fec_indexes_to_iterate.iter() {
         let (_all_shreds, state_tracker) = all_shreds.entry(*slot).or_default();
         let Some((start_data_complete_idx, end_data_complete_idx)) =
-            get_indexes(&state_tracker, *fec_set_index as usize)
+            get_indexes(state_tracker, *fec_set_index as usize)
         else {
             continue;
         };
@@ -333,16 +333,13 @@ fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker) -
     {
         return None;
     }
-    match &shred {
-        Shred::ShredData(s) => {
-            state_tracker.data_shreds[index] = Some(shred.clone());
-            if s.data_complete() || s.last_in_slot() {
-                state_tracker.data_status[index] = ShredStatus::DataComplete;
-            } else {
-                state_tracker.data_status[index] = ShredStatus::NotDataComplete;
-            }
+    if let Shred::ShredData(s) = &shred {
+        state_tracker.data_shreds[index] = Some(shred.clone());
+        if s.data_complete() || s.last_in_slot() {
+            state_tracker.data_status[index] = ShredStatus::DataComplete;
+        } else {
+            state_tracker.data_status[index] = ShredStatus::NotDataComplete;
         }
-        _ => {}
     };
     Some(index)
 }
@@ -652,7 +649,7 @@ mod tests {
     /// Helper function to compare all shred output
     #[allow(unused)]
     fn debug_to_disk(
-        deshredded_entries: &Vec<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>,
+        deshredded_entries: &[(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)],
         filepath: &str,
     ) {
         let entries = deshredded_entries
