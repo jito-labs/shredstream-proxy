@@ -82,11 +82,16 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 let index = shred.index() as usize;
                 let fec_set_index = shred.fec_set_index();
                 let (all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
-                if highest_slot_seen.saturating_sub(SLOT_LOOKBACK) > slot
-                    || state_tracker.already_recovered_fec_sets[fec_set_index as usize]
+                if highest_slot_seen.saturating_sub(SLOT_LOOKBACK) > slot {
+                    debug!(
+                        "Old shred slot: {slot}, fec_set_index: {fec_set_index}, index: {index}"
+                    );
+                    continue;
+                }
+                if state_tracker.already_recovered_fec_sets[fec_set_index as usize]
                     || state_tracker.already_deshredded[index]
                 {
-                    debug!("already completed slot: {slot}, fec_set_index: {fec_set_index}, index: {index}");
+                    debug!("Already completed slot: {slot}, fec_set_index: {fec_set_index}, index: {index}");
                     continue;
                 }
                 let Some(_shred_index) = update_state_tracker(&shred, state_tracker) else {
@@ -222,16 +227,17 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
 
         deshredded_entries.push((*slot, entries, deshredded_payload));
         to_deshred.iter().for_each(|shred| {
-            let Some(index) = shred.as_ref().map(|s| s.index()) else {
+            let Some(shred) = shred.as_ref() else {
                 return;
             };
-            state_tracker.already_deshredded[index as usize] = true;
+            state_tracker.already_recovered_fec_sets[shred.fec_set_index() as usize] = true;
+            state_tracker.already_deshredded[shred.index() as usize] = true;
         })
     }
 
     if all_shreds.len() > MAX_PROCESSING_AGE {
         let slot_threshold = highest_slot_seen.saturating_sub(SLOT_LOOKBACK);
-        let mut incomplete_fec_sets = ahash::HashMap::<Slot, Vec<u32>>::default();
+        let mut incomplete_fec_sets = ahash::HashMap::<Slot, Vec<_>>::default();
         let mut incomplete_fec_sets_count = 0;
         all_shreds.retain(|slot, (fec_set_indexes, state_tracker)| {
             if *slot >= slot_threshold {
@@ -239,32 +245,45 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             }
 
             // count missing fec sets before clearing
-            for (fec_set_index, _shreds) in fec_set_indexes.iter() {
+            for (fec_set_index, shreds) in fec_set_indexes.iter() {
                 if state_tracker.already_recovered_fec_sets[*fec_set_index as usize] {
                     continue;
                 }
+                let (
+                    num_expected_data_shreds,
+                    _num_expected_coding_shreds,
+                    _num_data_shreds,
+                    _num_coding_shreds,
+                ) = get_data_shred_info(shreds);
+
                 incomplete_fec_sets_count += 1;
                 incomplete_fec_sets
                     .entry(*slot)
-                    .and_modify(|fec_set_indexes| fec_set_indexes.push(*fec_set_index))
-                    .or_insert_with(|| vec![*fec_set_index]);
+                    .and_modify(|fec_set_data| {
+                        fec_set_data.push((*fec_set_index, num_expected_data_shreds, shreds.len()))
+                    })
+                    .or_insert_with(|| {
+                        vec![(*fec_set_index, num_expected_data_shreds, shreds.len())]
+                    });
             }
 
             false
         });
-        incomplete_fec_sets
-            .iter_mut()
-            .for_each(|(_slot, fec_set_indexes)| fec_set_indexes.sort_unstable());
-        datapoint_warn!(
-            "shredstream_proxy-deshred_missed_fec_sets",
-            (
-                "slot_fec_set_indexes",
-                format!("{:?}", incomplete_fec_sets.iter().sorted().collect_vec()),
-                String
-            ),
-            ("slot_count", incomplete_fec_sets.len(), i64),
-            ("fec_set_count", incomplete_fec_sets_count, i64),
-        );
+        if incomplete_fec_sets_count > 0 {
+            incomplete_fec_sets
+                .iter_mut()
+                .for_each(|(_slot, fec_set_indexes)| fec_set_indexes.sort_unstable());
+            datapoint_warn!(
+                "shredstream_proxy-deshred_missed_fec_sets",
+                (
+                    "slot_fec_set_indexes",
+                    format!("{:?}", incomplete_fec_sets.iter().sorted().collect_vec()),
+                    String
+                ),
+                ("slot_count", incomplete_fec_sets.len(), i64),
+                ("fec_set_count", incomplete_fec_sets_count, i64),
+            );
+        }
     }
 
     if total_recovered_count > 0 {
