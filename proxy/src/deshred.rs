@@ -237,7 +237,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 return true;
             }
 
-            // track missing fec set stats before clearing
+            // count missing fec sets before clearing
             for (fec_set_index, _shreds) in fec_set_indexes.iter() {
                 if state_tracker.already_recovered_fec_sets[*fec_set_index as usize] {
                     continue;
@@ -245,16 +245,24 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 incomplete_fec_sets_count += 1;
                 incomplete_fec_sets
                     .entry(*slot)
-                    .and_modify(|x| x.push(*fec_set_index))
+                    .and_modify(|fec_set_indexes| fec_set_indexes.push(*fec_set_index))
                     .or_insert_with(|| vec![*fec_set_index]);
             }
 
             false
         });
+        incomplete_fec_sets
+            .iter_mut()
+            .for_each(|(_slot, fec_set_indexes)| fec_set_indexes.sort_unstable());
         datapoint_warn!(
             "shredstream_proxy-deshred_missed_fec_sets",
-            ("entries", format!("{incomplete_fec_sets:?}"), String),
-            ("count", incomplete_fec_sets_count, i64),
+            (
+                "slot_fec_set_indexes",
+                format!("{:?}", incomplete_fec_sets.iter().sorted().collect_vec()),
+                String
+            ),
+            ("slot_count", incomplete_fec_sets.len(), i64),
+            ("fec_set_count", incomplete_fec_sets_count, i64),
         );
     }
 
@@ -676,6 +684,122 @@ mod tests {
             .collect_vec();
         let mut file = std::fs::File::create(filepath).unwrap();
         write!(file, "entries: {:#?}", &entries).unwrap();
+    }
+
+    #[test]
+    /// Test if DATA_COMPLETE_SHRED across multiple FEC sets is handled correctly
+    fn test_reconstruct_live_data_complete_shred() {
+        let packets = {
+            let mut file =
+                std::fs::File::open("../bins/serialized_shreds_data_complete_test.bin").unwrap();
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer).unwrap();
+            Packets::try_from_slice(&buffer).unwrap()
+        };
+        assert_eq!(packets.packets.len(), 150_000);
+
+        let shreds = packets
+            .packets
+            .iter()
+            .filter_map(|p| Shred::from_payload(p.clone()).ok())
+            .collect::<Vec<_>>();
+        assert_eq!(shreds.len(), 149977);
+
+        let unique_shreds = packets
+            .packets
+            .iter()
+            .filter_map(|p| Shred::from_payload(p.clone()).ok().map(ComparableShred))
+            .collect::<HashSet<ComparableShred>>();
+        assert_eq!(unique_shreds.len(), 109221);
+
+        let unique_slot_fec_shreds = packets
+            .packets
+            .iter()
+            .filter_map(|p| {
+                Shred::from_payload(p.clone())
+                    .ok()
+                    .map(|s| *s.common_header())
+            })
+            .collect::<HashSet<ShredCommonHeader>>();
+        assert_eq!(unique_slot_fec_shreds.len(), 109221);
+
+        let rs_cache = ReedSolomonCache::default();
+        let metrics = Arc::new(ShredMetrics::default());
+
+        // Test 1: all shreds provided
+        let mut deshredded_entries = Vec::new();
+        let mut all_shreds = ahash::HashMap::default();
+        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let recovered_count = reconstruct_shreds(
+            shreds.iter().map(|shred| shred.payload().iter().as_slice()),
+            &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
+            &mut deshredded_entries,
+            &rs_cache,
+            &metrics,
+        );
+
+        // debug_to_disk(&mut deshredded_entries);
+        assert!(recovered_count < deshredded_entries.len());
+        assert_eq!(
+            deshredded_entries
+                .iter()
+                .map(|(_slot, entries, _entries_bytes)| entries.len())
+                .sum::<usize>(),
+            43140
+        );
+        assert_eq!(all_shreds.len(), 61);
+
+        let slot_to_entry = deshredded_entries
+            .iter()
+            .into_group_map_by(|(slot, _entries, _entries_bytes)| *slot);
+        // slot_to_entry
+        //     .iter()
+        //     .sorted_by_key(|(slot, _)| *slot)
+        //     .for_each(|(slot, entry)| {
+        //         println!(
+        //             "slot {slot} entry count: {:?}, txn count: {}",
+        //             entry.len(),
+        //             entry
+        //                 .iter()
+        //                 .map(|(_slot, entry)| entry.transactions.len())
+        //                 .sum::<usize>()
+        //         );
+        //     });
+        assert_eq!(slot_to_entry.len(), 60);
+
+        // Test 2: 33% of shreds missing
+        let mut deshredded_entries = Vec::new();
+        let mut all_shreds = ahash::HashMap::default();
+        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let recovered_count = reconstruct_shreds(
+            shreds
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| (index + 1) % 3 != 0)
+                .map(|(_, shred)| shred.payload().iter().as_slice()),
+            &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
+            &mut deshredded_entries,
+            &rs_cache,
+            &metrics,
+        );
+
+        // debug_to_disk(&deshredded_entries, "new.txt");
+        assert!(recovered_count > (deshredded_entries.len() / 4));
+        assert_eq!(
+            deshredded_entries
+                .iter()
+                .map(|(_slot, entries, _entries_bytes)| entries.len())
+                .sum::<usize>(),
+            43140
+        );
+        assert!(all_shreds.len() > 15);
+
+        let slot_to_entry = deshredded_entries
+            .iter()
+            .into_group_map_by(|(slot, _entries, _entries_bytes)| *slot);
+        assert_eq!(slot_to_entry.len(), 60);
     }
 
     #[test]
