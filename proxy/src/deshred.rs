@@ -201,7 +201,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 let fec_set_indexes = to_deshred
                     .iter()
                     .filter_map(|s| s.as_ref().map(|s| s.fec_set_index()))
-                    .collect::<HashSet<u32>>(); //fixme invalid size of data
+                    .collect::<HashSet<u32>>();
                 warn!("slot {slot} failed to deshred slot: {slot}, fec_set_indexes: {fec_set_indexes:?}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}. Err: {e}");
                 metrics
                     .fec_recovery_error_count
