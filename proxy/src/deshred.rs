@@ -139,10 +139,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 .sorted_by_key(|s| (u8::MAX - s.shred_type() as u8, s.index()))
                 .map(|s| s.0.clone())
                 .collect_vec();
-            let recovered = match solana_ledger::shred::merkle::recover(
-                merkle_shreds.clone(),
-                rs_cache,
-            ) {
+            let recovered = match solana_ledger::shred::merkle::recover(merkle_shreds, rs_cache) {
                 Ok(r) => r, // data shreds followed by code shreds (whatever was missing from to_deshred_payload)
                 Err(e) => {
                     warn!("Failed to recover shreds for slot: {slot}, fec set: {fec_set_index}. Err: {e}");
@@ -157,7 +154,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             for shred in recovered {
                 match shred {
                     Ok(shred) => {
-println!(                        "recovered shred for slot {slot}, fec set: {fec_set_index} index: {}, type:{:?}",shred.index(), shred.shred_type());
+                        // println!("recovered shred for slot {slot}, fec set: {fec_set_index} index: {}, type:{:?}",shred.index(), shred.shred_type());
                         if update_state_tracker(&shred, state_tracker).is_none() { // already seen before in state tracker
                             continue;
                         }
@@ -165,7 +162,6 @@ println!(                        "recovered shred for slot {slot}, fec set: {fec
                         total_recovered_count += 1;
                         fec_set_recovered_count += 1;
 
-                        state_tracker.already_recovered_fec_sets[*fec_set_index as usize] = true;
                     }
                     Err(e) => warn!(
                         "Failed to recover shred for slot {slot}, fec set: {fec_set_index}. Err: {e}"
@@ -175,7 +171,8 @@ println!(                        "recovered shred for slot {slot}, fec set: {fec
 
             if fec_set_recovered_count > 0 {
                 println!("cleared {slot}, fec_index: {fec_set_index}, recovered count: {fec_set_recovered_count}");
-                // shreds.clear(); //TODO: check this
+                state_tracker.already_recovered_fec_sets[*fec_set_index as usize] = true;
+                shreds.clear();
             }
         }
     }
@@ -267,7 +264,7 @@ fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usi
     let mut end = index;
     while end < tracker.status.len() {
         if tracker.already_deshredded[end] {
-            // return None; // FIXME readd
+            return None;
         }
         match &tracker.status[end] {
             ShredStatus::Unknown => return None,
@@ -288,13 +285,12 @@ fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usi
         if start < 0 {
             return Some((0, end)); // no earlier DataComplete
         }
-        if tracker.already_deshredded[start as usize] {
-            // return None; //FIXME readd
-        }
         match tracker.status[start as usize] {
-            ShredStatus::Unknown => return None,
             ShredStatus::DataComplete => return Some(((start + 1) as usize, end)),
-            ShredStatus::NotDataComplete => start -= 1,
+            ShredStatus::NotDataComplete if !tracker.already_deshredded[start as usize] => {
+                start -= 1
+            }
+            _ => return None,
         }
     }
 }
