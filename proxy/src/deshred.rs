@@ -170,7 +170,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
         }
     }
 
-    // try to bincode deserialize, mark shred as completed
+    // deshred and bincode deserialize
     for (slot, fec_set_index) in slot_fec_indexes_to_iterate.iter() {
         let (_all_shreds, state_tracker) = all_shreds.entry(*slot).or_default();
         let Some((start_data_complete_idx, end_data_complete_idx)) =
@@ -200,7 +200,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             Ok(entries) => entries,
             Err(e) => {
                 warn!(
-                        "failed to deserialize bincode payload of size {} for slot {slot} start_data_complete_idx: {start_data_complete_idx} end_data_complete_idx: {end_data_complete_idx}. Err: {e}",
+                        "Failed to deserialize bincode payload of size {} for slot {slot} start_data_complete_idx: {start_data_complete_idx} end_data_complete_idx: {end_data_complete_idx}. Err: {e}",
                         deshredded_payload.len()
                     );
                 metrics
