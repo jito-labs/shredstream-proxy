@@ -26,7 +26,7 @@ enum ShredStatus {
     DataComplete,
 }
 
-/// Tracks per-slot shred information
+/// Tracks per-slot shred information for data shreds
 /// Guaranteed to have MAX_DATA_SHREDS_PER_SLOT entries in each Vec
 #[derive(Debug)]
 pub struct ShredsStateTracker {
@@ -36,7 +36,7 @@ pub struct ShredsStateTracker {
     data_shreds: Vec<Option<Shred>>,
     /// array of bools that track which FEC set indexes have been already recovered
     already_recovered_fec_sets: Vec<bool>,
-    /// array of bools that track which shred indexes have been already deshredded
+    /// array of bools that track which data shred indexes have been already deshredded
     already_deshredded: Vec<bool>,
     // /// index is FEC set number, value is number of how many shreds we have received in the set
     // shreds_received_per_fec_set: Vec<u8>,
@@ -75,7 +75,6 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
 ) -> usize {
     deshredded_entries.clear();
     slot_fec_indexes_to_iterate.clear();
-    let mut slot_index_to_deserialize = HashSet::new();
     let mut highest_slot_seen = 0;
     // ingest all packets
     for data in packet_batch_vec {
@@ -89,13 +88,11 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 let (all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
                 if state_tracker.already_recovered_fec_sets[fec_set_index as usize]
                     || state_tracker.already_deshredded[index]
-                    || (shred.shred_type() == ShredType::Data
-                        && state_tracker.data_shreds[index].is_some())
                 {
                     debug!("already completed slot: {slot}, fec_set_index: {fec_set_index}, index: {index}");
                     continue;
                 }
-                let Some(shred_index) = update_state_tracker(&shred, state_tracker) else {
+                let Some(_shred_index) = update_state_tracker(&shred, state_tracker) else {
                     continue;
                 };
 
@@ -103,7 +100,6 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                     .entry(fec_set_index)
                     .or_default()
                     .insert(ComparableShred(shred));
-                slot_index_to_deserialize.insert((slot, shred_index));
                 slot_fec_indexes_to_iterate.insert((slot, fec_set_index));
                 highest_slot_seen = highest_slot_seen.max(slot);
             }
