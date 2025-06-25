@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.5"
+version = "0.2.6"
 description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://jito-labs.gitbook.io/mev/searcher-services/shredstream for details."
 authors = ["Jito Team <team@jito.wtf>"]
 homepage = "https://jito.wtf/"
@@ -25,7 +25,7 @@ crossbeam-channel = "0.5.8"
 dashmap = "5"
 env_logger = "0.11"
 hostname = "0.4.0"
-itertools = "0.13.0"
+itertools = "0.14.0"
 jito-protos = { path = "jito_protos" }
 log = "0.4"
 prost = "0.12"

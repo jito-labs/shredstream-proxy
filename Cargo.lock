@@ -2518,9 +2518,9 @@ dependencies = [
 
 [[package]]
 name = "itertools"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]
@@ -2557,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "jito-protos"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "prost 0.12.6",
  "prost-types 0.12.6",
@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "jito-shredstream-proxy"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "ahash 0.8.11",
  "arc-swap",
@@ -2579,7 +2579,7 @@ dependencies = [
  "dashmap",
  "env_logger 0.11.7",
  "hostname",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "jito-protos",
  "log",
  "prost 0.12.6",
