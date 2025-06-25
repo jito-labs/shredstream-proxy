@@ -100,6 +100,7 @@ pub fn start_forwarder_threads(
             let metrics = metrics.clone();
             let shutdown_receiver = shutdown_receiver.clone();
             let mut deshredded_entries = Vec::new();
+            let mut highest_slot_seen = 0;
             let rs_cache = ReedSolomonCache::default();
             let entry_sender = entry_sender.clone();
             let exit = exit.clone();
@@ -137,6 +138,7 @@ pub fn start_forwarder_threads(
                                     &deduper,
                                     &mut all_shreds, &mut slot_fec_indexes_to_iterate,
                                     &mut deshredded_entries,
+                                    &mut highest_slot_seen,
                                     &rs_cache,
                                     &send_socket,
                                     &local_dest_sockets,
@@ -187,6 +189,7 @@ fn recv_from_channel_and_send_multiple_dest(
     >,
     slot_fec_indexes_to_iterate: &mut HashSet<(Slot, u32)>,
     deshredded_entries: &mut Vec<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>,
+    highest_slot_seen: &mut Slot,
     rs_cache: &ReedSolomonCache,
     send_socket: &UdpSocket,
     local_dest_sockets: &[SocketAddr],
@@ -275,6 +278,7 @@ fn recv_from_channel_and_send_multiple_dest(
             all_shreds,
             slot_fec_indexes_to_iterate,
             deshredded_entries,
+            highest_slot_seen,
             rs_cache,
             metrics,
         );
@@ -664,6 +668,7 @@ mod tests {
         let entry_sender = Arc::new(BroadcastSender::new(1_000));
         let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut highest_slot_seen = 0;
         // send packets
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
@@ -674,6 +679,7 @@ mod tests {
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut Vec::new(),
+            &mut highest_slot_seen,
             &ReedSolomonCache::default(),
             &udp_sender,
             &Arc::new(dest_socketaddrs),

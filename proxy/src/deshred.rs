@@ -66,12 +66,12 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
     >,
     slot_fec_indexes_to_iterate: &mut HashSet<(Slot, u32)>,
     deshredded_entries: &mut Vec<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>,
+    highest_slot_seen: &mut Slot,
     rs_cache: &ReedSolomonCache,
     metrics: &ShredMetrics,
 ) -> usize {
     deshredded_entries.clear();
     slot_fec_indexes_to_iterate.clear();
-    let mut highest_slot_seen = 0;
     // ingest all packets
     for data in packet_batch_vec {
         match solana_ledger::shred::Shred::new_from_serialized_shred(data.to_vec())
@@ -82,7 +82,8 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 let index = shred.index() as usize;
                 let fec_set_index = shred.fec_set_index();
                 let (all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
-                if state_tracker.already_recovered_fec_sets[fec_set_index as usize]
+                if highest_slot_seen.saturating_sub(SLOT_LOOKBACK) > slot
+                    || state_tracker.already_recovered_fec_sets[fec_set_index as usize]
                     || state_tracker.already_deshredded[index]
                 {
                     debug!("already completed slot: {slot}, fec_set_index: {fec_set_index}, index: {index}");
@@ -97,7 +98,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                     .or_default()
                     .insert(ComparableShred(shred));
                 slot_fec_indexes_to_iterate.insert((slot, fec_set_index));
-                highest_slot_seen = highest_slot_seen.max(slot);
+                *highest_slot_seen = std::cmp::max(*highest_slot_seen, slot);
             }
             Err(e) => {
                 if TraceShred::decode(data).is_ok() {
@@ -571,14 +572,16 @@ mod tests {
         let metrics = Arc::new(ShredMetrics::default());
 
         // Test 1: all shreds provided
-        let mut deshredded_entries = Vec::new();
         let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
             shreds.iter().map(|shred| shred.payload().iter().as_slice()),
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
+            &mut highest_slot_seen,
             &rs_cache,
             &metrics,
         );
@@ -613,9 +616,10 @@ mod tests {
         assert_eq!(slot_to_entry.len(), 28);
 
         // Test 2: 33% of shreds missing
-        let mut deshredded_entries = Vec::new();
         let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = highest_slot_seen;
         let recovered_count = reconstruct_shreds(
             shreds
                 .iter()
@@ -625,6 +629,7 @@ mod tests {
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
+            &mut highest_slot_seen,
             &rs_cache,
             &metrics,
         );
@@ -724,14 +729,16 @@ mod tests {
         let metrics = Arc::new(ShredMetrics::default());
 
         // Test 1: all shreds provided
-        let mut deshredded_entries = Vec::new();
         let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
             shreds.iter().map(|shred| shred.payload().iter().as_slice()),
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
+            &mut highest_slot_seen,
             &rs_cache,
             &metrics,
         );
@@ -766,9 +773,10 @@ mod tests {
         assert_eq!(slot_to_entry.len(), 60);
 
         // Test 2: 33% of shreds missing
-        let mut deshredded_entries = Vec::new();
         let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
             shreds
                 .iter()
@@ -778,6 +786,7 @@ mod tests {
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
+            &mut highest_slot_seen,
             &rs_cache,
             &metrics,
         );
@@ -856,14 +865,16 @@ mod tests {
         let rs_cache = ReedSolomonCache::default();
 
         // Test 1: all shreds provided
-        let mut deshredded_entries = Vec::new();
         let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
             packets.iter().map(|s| s.data(..).unwrap()),
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
+            &mut highest_slot_seen,
             &rs_cache,
             &metrics,
         );
@@ -881,10 +892,10 @@ mod tests {
         );
 
         // Test 2: 33% of shreds missing
-        let mut deshredded_entries = Vec::new();
         let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
-
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
             packets
                 .iter()
@@ -894,6 +905,7 @@ mod tests {
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
+            &mut highest_slot_seen,
             &rs_cache,
             &metrics,
         );
