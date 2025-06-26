@@ -680,7 +680,7 @@ mod tests {
                     .iter()
                     .map(|x| {
                         let mut packet = Packet::default();
-                        packet.buffer_mut()[..x.len()].copy_from_slice(&x);
+                        packet.buffer_mut()[..x.len()].copy_from_slice(x);
                         packet.meta_mut().size = x.len();
                         packet
                     })
@@ -737,7 +737,7 @@ mod tests {
                     .filter(|(index, _)| (index + 1) % 3 != 0)
                     .map(|(_i, x)| {
                         let mut packet = Packet::default();
-                        packet.buffer_mut()[..x.len()].copy_from_slice(&x);
+                        packet.buffer_mut()[..x.len()].copy_from_slice(x);
                         packet.meta_mut().size = x.len();
                         packet
                     })
@@ -857,7 +857,7 @@ mod tests {
                     .iter()
                     .map(|x| {
                         let mut packet = Packet::default();
-                        packet.buffer_mut()[..x.len()].copy_from_slice(&x);
+                        packet.buffer_mut()[..x.len()].copy_from_slice(x);
                         packet.meta_mut().size = x.len();
                         packet
                     })
@@ -914,7 +914,7 @@ mod tests {
                     .filter(|(index, _)| (index + 1) % 3 != 0)
                     .map(|(_i, x)| {
                         let mut packet = Packet::default();
-                        packet.buffer_mut()[..x.len()].copy_from_slice(&x);
+                        packet.buffer_mut()[..x.len()].copy_from_slice(x);
                         packet.meta_mut().size = x.len();
                         packet
                     })
