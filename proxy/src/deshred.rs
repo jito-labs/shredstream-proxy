@@ -361,7 +361,8 @@ fn debug_remaining_shreds(
 /// Rules:
 /// * A segment **ends** at the first `DataComplete` *at or after* `index`.
 /// * It **starts** one position after the previous `DataComplete`, or at the beginning of the vector if there is none.
-/// * If an `Unknown` is seen while searching in either direction, the segment is discarded and `None` is returned.
+/// * If an `Unknown` is seen while searching towards the right, the segment is discarded and `None` is returned.
+/// * We allow `Unknown` towards the left since sometimes entire FEC sets are not sent out
 fn get_indexes(
     tracker: &ShredsStateTracker,
     index: usize,
