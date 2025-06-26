@@ -127,7 +127,7 @@ pub fn start_forwarder_threads(
                             ShredsStateTracker,
                         ),
                     > = ahash::HashMap::with_capacity(MAX_PROCESSING_AGE);
-                    let mut slot_fec_indexes_to_iterate = HashSet::new();
+                    let mut slot_fec_indexes_to_iterate = Vec::new();
 
                     while !exit.load(Ordering::Relaxed) {
                         crossbeam_channel::select! {
@@ -136,7 +136,8 @@ pub fn start_forwarder_threads(
                                 let res = recv_from_channel_and_send_multiple_dest(
                                     maybe_packet_batch,
                                     &deduper,
-                                    &mut all_shreds, &mut slot_fec_indexes_to_iterate,
+                                    &mut all_shreds,
+                                    &mut slot_fec_indexes_to_iterate,
                                     &mut deshredded_entries,
                                     &mut highest_slot_seen,
                                     &rs_cache,
@@ -187,7 +188,7 @@ fn recv_from_channel_and_send_multiple_dest(
             ShredsStateTracker,
         ),
     >,
-    slot_fec_indexes_to_iterate: &mut HashSet<(Slot, u32)>,
+    slot_fec_indexes_to_iterate: &mut Vec<(Slot, u32)>,
     deshredded_entries: &mut Vec<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>,
     highest_slot_seen: &mut Slot,
     rs_cache: &ReedSolomonCache,
@@ -598,7 +599,6 @@ impl ShredMetrics {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet,
         net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         str::FromStr,
         sync::{Arc, Mutex, RwLock},
@@ -612,10 +612,7 @@ mod tests {
         deduper::Deduper,
         packet::{Meta, Packet, PacketBatch},
     };
-    use solana_sdk::{
-        clock::Slot,
-        packet::{PacketFlags, PACKET_DATA_SIZE},
-    };
+    use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
     use tokio::sync::broadcast::Sender as BroadcastSender;
 
     use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
@@ -684,7 +681,7 @@ mod tests {
 
         let entry_sender = Arc::new(BroadcastSender::new(1_000));
         let mut all_shreds = ahash::HashMap::default();
-        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut slot_fec_indexes_to_iterate = Vec::new();
         let mut highest_slot_seen = 0;
         // send packets
         recv_from_channel_and_send_multiple_dest(

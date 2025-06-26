@@ -65,7 +65,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             ShredsStateTracker,
         ),
     >,
-    slot_fec_indexes_to_iterate: &mut HashSet<(Slot, u32)>,
+    slot_fec_indexes_to_iterate: &mut Vec<(Slot, u32)>,
     deshredded_entries: &mut Vec<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>,
     highest_slot_seen: &mut Slot,
     rs_cache: &ReedSolomonCache,
@@ -103,7 +103,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                     .entry(fec_set_index)
                     .or_default()
                     .insert(ComparableShred(shred));
-                slot_fec_indexes_to_iterate.insert((slot, fec_set_index));
+                slot_fec_indexes_to_iterate.push((slot, fec_set_index)); // use Vec so we can sort to make sure if any earlier FEC sets have DATA_SHRED_COMPLETE, later entries can use the flag to find the bounds
                 *highest_slot_seen = std::cmp::max(*highest_slot_seen, slot);
             }
             Err(e) => {
@@ -114,6 +114,8 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             }
         }
     }
+    slot_fec_indexes_to_iterate.sort_unstable();
+    slot_fec_indexes_to_iterate.dedup();
 
     // try recovering by FEC set
     // already checked if FEC set is completed or deserialized
@@ -662,7 +664,7 @@ mod tests {
 
         // Test 1: all shreds provided
         let mut all_shreds = ahash::HashMap::default();
-        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
@@ -706,7 +708,7 @@ mod tests {
 
         // Test 2: 33% of shreds missing
         let mut all_shreds = ahash::HashMap::default();
-        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
@@ -819,7 +821,7 @@ mod tests {
 
         // Test 1: all shreds provided
         let mut all_shreds = ahash::HashMap::default();
-        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
@@ -863,7 +865,7 @@ mod tests {
 
         // Test 2: 33% of shreds missing
         let mut all_shreds = ahash::HashMap::default();
-        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
@@ -955,7 +957,7 @@ mod tests {
 
         // Test 1: all shreds provided
         let mut all_shreds = ahash::HashMap::default();
-        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
@@ -982,7 +984,7 @@ mod tests {
 
         // Test 2: 33% of shreds missing
         let mut all_shreds = ahash::HashMap::default();
-        let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
