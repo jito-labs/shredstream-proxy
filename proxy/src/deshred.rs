@@ -1,5 +1,6 @@
 use std::{collections::HashSet, hash::Hash, sync::atomic::Ordering};
 
+use ahash::HashMap;
 use itertools::Itertools;
 use jito_protos::shredstream::TraceShred;
 use log::{debug, warn};
@@ -16,7 +17,7 @@ use solana_sdk::clock::{Slot, MAX_PROCESSING_AGE};
 
 use crate::forwarder::ShredMetrics;
 
-#[derive(Default, Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 enum ShredStatus {
     #[default]
     Unknown,
@@ -179,11 +180,16 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
     // deshred and bincode deserialize
     for (slot, fec_set_index) in slot_fec_indexes_to_iterate.iter() {
         let (_all_shreds, state_tracker) = all_shreds.entry(*slot).or_default();
-        let Some((start_data_complete_idx, end_data_complete_idx)) =
+        let Some((start_data_complete_idx, end_data_complete_idx, unknown_start)) =
             get_indexes(state_tracker, *fec_set_index as usize)
         else {
             continue;
         };
+        if unknown_start {
+            metrics
+                .unknown_start_position_count
+                .fetch_add(1, Ordering::Relaxed);
+        }
 
         let to_deshred =
             &state_tracker.data_shreds[start_data_complete_idx..=end_data_complete_idx];
@@ -196,6 +202,11 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 metrics
                     .fec_recovery_error_count
                     .fetch_add(1, Ordering::Relaxed);
+                if unknown_start {
+                    metrics
+                        .unknown_start_position_error_count
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 continue;
             }
         };
@@ -212,6 +223,11 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 metrics
                     .bincode_deserialize_error_count
                     .fetch_add(1, Ordering::Relaxed);
+                if unknown_start {
+                    metrics
+                        .unknown_start_position_error_count
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 continue;
             }
         };
@@ -295,12 +311,57 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
     total_recovered_count
 }
 
+#[allow(unused)]
+fn debug_remaining_shreds(
+    all_shreds: &mut HashMap<Slot, (HashMap<u32, HashSet<ComparableShred>>, ShredsStateTracker)>,
+) {
+    let mut incomplete_fec_sets = ahash::HashMap::<Slot, Vec<_>>::default();
+    let mut incomplete_fec_sets_count = 0;
+    all_shreds
+        .iter()
+        .for_each(|(slot, (fec_set_indexes, state_tracker))| {
+            // count missing fec sets before clearing
+            for (fec_set_index, shreds) in fec_set_indexes.iter() {
+                if state_tracker.already_recovered_fec_sets[*fec_set_index as usize] {
+                    continue;
+                }
+                let (
+                    num_expected_data_shreds,
+                    _num_expected_coding_shreds,
+                    _num_data_shreds,
+                    _num_coding_shreds,
+                ) = get_data_shred_info(shreds);
+
+                incomplete_fec_sets_count += 1;
+                incomplete_fec_sets
+                    .entry(*slot)
+                    .and_modify(|fec_set_data| {
+                        fec_set_data.push((*fec_set_index, num_expected_data_shreds, shreds.len()))
+                    })
+                    .or_insert_with(|| {
+                        vec![(*fec_set_index, num_expected_data_shreds, shreds.len())]
+                    });
+            }
+        });
+    incomplete_fec_sets
+        .iter_mut()
+        .for_each(|(_slot, fec_set_indexes)| fec_set_indexes.sort_unstable());
+    println!("{:?}", incomplete_fec_sets.iter().sorted().collect_vec());
+}
+
 /// Return the inclusive range of shreds that constitute one complete segment: [0+ NotDataComplete, DataComplete]
 /// Rules:
 /// * A segment **ends** at the first `DataComplete` *at or after* `index`.
 /// * It **starts** one position after the previous `DataComplete`, or at the beginning of the vector if there is none.
 /// * If an `Unknown` is seen while searching in either direction, the segment is discarded and `None` is returned.
-fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usize)> {
+fn get_indexes(
+    tracker: &ShredsStateTracker,
+    index: usize,
+) -> Option<(
+    usize, /* start_data_complete_idx */
+    usize, /* end_data_complete_idx */
+    bool,  /* unknown start index */
+)> {
     if index >= tracker.data_status.len() {
         return None;
     }
@@ -321,21 +382,30 @@ fn get_indexes(tracker: &ShredsStateTracker, index: usize) -> Option<(usize, usi
         return None; // never saw a DataComplete
     }
 
-    // find the left boundary (prev DataComplete + 1)
     if end == 0 {
-        return Some((0, 0)); // the vec *starts* with DataComplete
+        return Some((0, 0, false)); // the vec *starts* with DataComplete
     }
-    let mut start = (index as isize) - 1;
+    if index == 0 {
+        return Some((0, end, false));
+    }
+
+    // find the left boundary (prev DataComplete + 1)
+    let mut start = index;
+    let mut next = start - 1;
     loop {
-        if start < 0 {
-            return Some((0, end)); // no earlier DataComplete
-        }
-        match tracker.data_status[start as usize] {
-            ShredStatus::DataComplete => return Some(((start + 1) as usize, end)),
-            ShredStatus::NotDataComplete if !tracker.already_deshredded[start as usize] => {
-                start -= 1
+        match tracker.data_status[next] {
+            ShredStatus::NotDataComplete => {
+                if tracker.already_deshredded[next] {
+                    return None; // already covered by some other iteration
+                }
+                if next == 0 {
+                    return Some((0, end, false)); // no earlier DataComplete
+                }
+                start = next;
+                next -= 1;
             }
-            _ => return None,
+            ShredStatus::DataComplete => return Some((start, end, false)),
+            ShredStatus::Unknown => return Some((start, end, true)), // sometimes we don't have the previous starting shreds, make best guess
         }
     }
 }
@@ -612,7 +682,7 @@ mod tests {
                 .iter()
                 .map(|(_slot, entries, _entries_bytes)| entries.len())
                 .sum::<usize>(),
-            13561
+            13580
         );
         assert_eq!(all_shreds.len(), 30);
 
@@ -632,13 +702,13 @@ mod tests {
         //                 .sum::<usize>()
         //         );
         //     });
-        assert_eq!(slot_to_entry.len(), 28);
+        assert_eq!(slot_to_entry.len(), 29);
 
         // Test 2: 33% of shreds missing
         let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: HashSet<(Slot, u32)> = HashSet::new();
         let mut deshredded_entries = Vec::new();
-        let mut highest_slot_seen = highest_slot_seen;
+        let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
             shreds
                 .iter()
@@ -660,14 +730,14 @@ mod tests {
                 .iter()
                 .map(|(_slot, entries, _entries_bytes)| entries.len())
                 .sum::<usize>(),
-            13561
+            13580
         );
         assert!(all_shreds.len() > 15);
 
         let slot_to_entry = deshredded_entries
             .iter()
             .into_group_map_by(|(slot, _entries, _entries_bytes)| *slot);
-        assert_eq!(slot_to_entry.len(), 28);
+        assert_eq!(slot_to_entry.len(), 29);
     }
 
     /// Helper function to compare all shred output
@@ -769,7 +839,7 @@ mod tests {
                 .iter()
                 .map(|(_slot, entries, _entries_bytes)| entries.len())
                 .sum::<usize>(),
-            43140
+            43170
         );
         assert_eq!(all_shreds.len(), 61);
 
@@ -789,7 +859,7 @@ mod tests {
         //                 .sum::<usize>()
         //         );
         //     });
-        assert_eq!(slot_to_entry.len(), 60);
+        assert_eq!(slot_to_entry.len(), 61);
 
         // Test 2: 33% of shreds missing
         let mut all_shreds = ahash::HashMap::default();
@@ -817,14 +887,14 @@ mod tests {
                 .iter()
                 .map(|(_slot, entries, _entries_bytes)| entries.len())
                 .sum::<usize>(),
-            43140
+            43170
         );
         assert!(all_shreds.len() > 15);
 
         let slot_to_entry = deshredded_entries
             .iter()
             .into_group_map_by(|(slot, _entries, _entries_bytes)| *slot);
-        assert_eq!(slot_to_entry.len(), 60);
+        assert_eq!(slot_to_entry.len(), 61);
     }
 
     #[test]
@@ -960,7 +1030,7 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 0), Some((0, 2)));
+        assert_eq!(get_indexes(&tracker, 0), Some((0, 2, false)));
 
         let s = [
             ShredStatus::DataComplete,
@@ -968,7 +1038,7 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 0), Some((0, 0)));
+        assert_eq!(get_indexes(&tracker, 0), Some((0, 0, false)));
 
         let s = [
             ShredStatus::Unknown,
@@ -988,7 +1058,7 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), Some((1, 3)));
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 3, false)));
     }
 
     #[test]
@@ -999,7 +1069,7 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), Some((1, 2)));
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 2, false)));
     }
 
     #[test]
@@ -1010,8 +1080,8 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), Some((0, 1)));
-        assert_eq!(get_indexes(&tracker, 2), Some((2, 2)));
+        assert_eq!(get_indexes(&tracker, 1), Some((0, 1, false)));
+        assert_eq!(get_indexes(&tracker, 2), Some((2, 2, false)));
     }
 
     #[test]
@@ -1024,9 +1094,9 @@ mod get_indexes_tests {
             ShredStatus::NotDataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), Some((0, 1)));
-        assert_eq!(get_indexes(&tracker, 2), Some((2, 2)));
-        assert_eq!(get_indexes(&tracker, 3), Some((3, 3)));
+        assert_eq!(get_indexes(&tracker, 1), Some((0, 1, false)));
+        assert_eq!(get_indexes(&tracker, 2), Some((2, 2, false)));
+        assert_eq!(get_indexes(&tracker, 3), Some((3, 3, false)));
     }
 
     #[test]
@@ -1045,6 +1115,22 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), None);
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 2, true)));
+    }
+
+    #[test]
+    fn test_unknown() {
+        let s = [
+            ShredStatus::Unknown,
+            ShredStatus::DataComplete,
+            ShredStatus::DataComplete,
+            ShredStatus::NotDataComplete,
+            ShredStatus::DataComplete,
+        ];
+        let tracker = make_test_statustracker(&s);
+        assert_eq!(get_indexes(&tracker, 0), None);
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 1, true)));
+        assert_eq!(get_indexes(&tracker, 2), Some((2, 2, false)));
+        assert_eq!(get_indexes(&tracker, 3), Some((3, 4, false)));
     }
 }
