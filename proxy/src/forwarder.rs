@@ -78,10 +78,10 @@ pub fn start_forwarder_threads(
     let (reconstruct_tx, reconstruct_rx) = crossbeam_channel::bounded(1_024);
     let mut thread_hdls = Vec::with_capacity(num_threads + 1);
 
-    // make a new thread that receives shreds from recv_from_channel_and_send_multiple_dest and call deshred::reconstruct_shreds in a loop
     if should_reconstruct_shreds {
         let recon_metrics = metrics.clone();
         let exit = exit.clone();
+        // receives shreds from recv_from_channel_and_send_multiple_dest and calls deshred::reconstruct_shreds
         let hdl = std::thread::Builder::new()
             .name("shred_reconstructor".to_string())
             .spawn(move || {
@@ -98,9 +98,8 @@ pub fn start_forwarder_threads(
                 let mut highest_slot_seen: Slot = 0;
                 let rs_cache = ReedSolomonCache::default();
 
-                // main loop
                 while !exit.load(Ordering::Relaxed) {
-                    match reconstruct_rx.recv_timeout(Duration::from_millis(400)) {
+                    match reconstruct_rx.recv_timeout(Duration::from_millis(100)) {
                         Ok(pkt_batch) => {
                             deshred::reconstruct_shreds(
                                 pkt_batch,
