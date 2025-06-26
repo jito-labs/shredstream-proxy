@@ -217,7 +217,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
             Ok(entries) => entries,
             Err(e) => {
                 warn!(
-                        "Failed to deserialize bincode payload of size {} for slot {slot} start_data_complete_idx: {start_data_complete_idx} end_data_complete_idx: {end_data_complete_idx}. Err: {e}",
+                        "Failed to deserialize bincode payload of size {} for slot {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}, unknown_start: {unknown_start}. Err: {e}",
                         deshredded_payload.len()
                     );
                 metrics
