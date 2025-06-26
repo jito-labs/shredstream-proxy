@@ -9,7 +9,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use ahash::HashMapExt;
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError};
 use dashmap::DashMap;
@@ -25,7 +24,7 @@ use solana_perf::{
     packet::{PacketBatch, PacketBatchRecycler},
     recycler::Recycler,
 };
-use solana_sdk::clock::{Slot, MAX_PROCESSING_AGE};
+use solana_sdk::clock::Slot;
 use solana_streamer::{
     sendmmsg::{batch_send, SendPktsError},
     streamer::{self, StreamerReceiveStats},
@@ -76,6 +75,61 @@ pub fn start_forwarder_threads(
         panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
     });
 
+    let (reconstruct_tx, reconstruct_rx) = crossbeam_channel::bounded(1_024);
+    let mut thread_hdls = Vec::with_capacity(num_threads + 1);
+
+    // make a new thread that receives shreds from recv_from_channel_and_send_multiple_dest and call deshred::reconstruct_shreds in a loop
+    if should_reconstruct_shreds {
+        let recon_metrics = metrics.clone();
+        let exit = exit.clone();
+        let hdl = std::thread::Builder::new()
+            .name("shred_reconstructor".to_string())
+            .spawn(move || {
+                let mut all_shreds = ahash::HashMap::<
+                    Slot,
+                    (
+                        ahash::HashMap<u32, HashSet<ComparableShred>>,
+                        ShredsStateTracker,
+                    ),
+                >::default();
+                let mut slot_fec_indexes_to_iterate = Vec::<(Slot, u32)>::new();
+                let mut deshredded_entries =
+                    Vec::<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>::new();
+                let mut highest_slot_seen: Slot = 0;
+                let rs_cache = ReedSolomonCache::default();
+
+                // main loop
+                while !exit.load(Ordering::Relaxed) {
+                    match reconstruct_rx.recv_timeout(Duration::from_millis(400)) {
+                        Ok(pkt_batch) => {
+                            deshred::reconstruct_shreds(
+                                pkt_batch,
+                                &mut all_shreds,
+                                &mut slot_fec_indexes_to_iterate,
+                                &mut deshredded_entries,
+                                &mut highest_slot_seen,
+                                &rs_cache,
+                                &recon_metrics,
+                            );
+
+                            deshredded_entries.drain(..).for_each(
+                                |(slot, _entries, entries_bytes)| {
+                                    let _ = entry_sender.send(PbEntry {
+                                        slot,
+                                        entries: entries_bytes,
+                                    });
+                                },
+                            );
+                        }
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {} // do nothing
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            })
+            .unwrap();
+        thread_hdls.push(hdl);
+    };
+
     sockets
         .1
         .into_iter()
@@ -99,10 +153,7 @@ pub fn start_forwarder_threads(
             let unioned_dest_sockets = unioned_dest_sockets.clone();
             let metrics = metrics.clone();
             let shutdown_receiver = shutdown_receiver.clone();
-            let mut deshredded_entries = Vec::new();
-            let mut highest_slot_seen = 0;
-            let rs_cache = ReedSolomonCache::default();
-            let entry_sender = entry_sender.clone();
+            let reconstruct_tx = reconstruct_tx.clone();
             let exit = exit.clone();
 
             let send_thread = Builder::new()
@@ -119,16 +170,6 @@ pub fn start_forwarder_threads(
                         crossbeam_channel::tick(Duration::MAX)
                     };
 
-                    // Track parsed Shred as reconstructed_shreds[ slot ][ fec_set_index ] -> Vec<Shred>
-                    let mut all_shreds: ahash::HashMap<
-                        Slot,
-                        (
-                            ahash::HashMap<u32 /* fec_set_index */, HashSet<ComparableShred>>,
-                            ShredsStateTracker,
-                        ),
-                    > = ahash::HashMap::with_capacity(MAX_PROCESSING_AGE);
-                    let mut slot_fec_indexes_to_iterate = Vec::new();
-
                     while !exit.load(Ordering::Relaxed) {
                         crossbeam_channel::select! {
                             // forward packets
@@ -136,15 +177,10 @@ pub fn start_forwarder_threads(
                                 let res = recv_from_channel_and_send_multiple_dest(
                                     maybe_packet_batch,
                                     &deduper,
-                                    &mut all_shreds,
-                                    &mut slot_fec_indexes_to_iterate,
-                                    &mut deshredded_entries,
-                                    &mut highest_slot_seen,
-                                    &rs_cache,
                                     &send_socket,
                                     &local_dest_sockets,
                                     should_reconstruct_shreds,
-                                    &entry_sender,
+                                    &reconstruct_tx,
                                     debug_trace_shred,
                                     &metrics,
                                 );
@@ -181,21 +217,10 @@ pub fn start_forwarder_threads(
 fn recv_from_channel_and_send_multiple_dest(
     maybe_packet_batch: Result<PacketBatch, RecvError>,
     deduper: &RwLock<Deduper<2, [u8]>>,
-    all_shreds: &mut ahash::HashMap<
-        Slot,
-        (
-            ahash::HashMap<u32 /* fec_set_index */, HashSet<ComparableShred>>,
-            ShredsStateTracker,
-        ),
-    >,
-    slot_fec_indexes_to_iterate: &mut Vec<(Slot, u32)>,
-    deshredded_entries: &mut Vec<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>,
-    highest_slot_seen: &mut Slot,
-    rs_cache: &ReedSolomonCache,
     send_socket: &UdpSocket,
     local_dest_sockets: &[SocketAddr],
     should_reconstruct_shreds: bool,
-    entry_sender: &Sender<PbEntry>,
+    reconstruct_tx: &crossbeam_channel::Sender<PacketBatch>,
     debug_trace_shred: bool,
     metrics: &ShredMetrics,
 ) -> Result<(), ShredstreamProxyError> {
@@ -210,13 +235,16 @@ fn recv_from_channel_and_send_multiple_dest(
         packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
     );
 
+    if should_reconstruct_shreds {
+        let _ = reconstruct_tx.try_send(packet_batch.clone());
+    }
+
     let mut packet_batch_vec = vec![packet_batch];
 
     let num_deduped = solana_perf::deduper::dedup_packets_and_count_discards(
         &deduper.read().unwrap(),
         &mut packet_batch_vec,
     );
-
     // Store stats for each Packet
     packet_batch_vec.iter().for_each(|batch| {
         batch.iter().for_each(|packet| {
@@ -269,30 +297,6 @@ fn recv_from_channel_and_send_multiple_dest(
             }
         }
     });
-
-    if should_reconstruct_shreds {
-        deshred::reconstruct_shreds(
-            packet_batch_vec
-                .iter()
-                .flat_map(|x| x.iter())
-                .filter_map(|x| x.data(..)),
-            all_shreds,
-            slot_fec_indexes_to_iterate,
-            deshredded_entries,
-            highest_slot_seen,
-            rs_cache,
-            metrics,
-        );
-
-        deshredded_entries
-            .drain(..)
-            .for_each(|(slot, _entries, entries_bytes)| {
-                let _ = entry_sender.send(PbEntry {
-                    slot,
-                    entries: entries_bytes,
-                });
-            });
-    }
 
     // Count TraceShred shreds
     if debug_trace_shred {
@@ -607,13 +611,11 @@ mod tests {
         time::Duration,
     };
 
-    use solana_ledger::shred::ReedSolomonCache;
     use solana_perf::{
         deduper::Deduper,
         packet::{Meta, Packet, PacketBatch},
     };
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
-    use tokio::sync::broadcast::Sender as BroadcastSender;
 
     use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
 
@@ -679,10 +681,7 @@ mod tests {
                 thread::spawn(move || listen_and_collect(socket, to_receive));
             });
 
-        let entry_sender = Arc::new(BroadcastSender::new(1_000));
-        let mut all_shreds = ahash::HashMap::default();
-        let mut slot_fec_indexes_to_iterate = Vec::new();
-        let mut highest_slot_seen = 0;
+        let (reconstruct_tx, _reconstruct_rx) = crossbeam_channel::bounded(1_024);
         // send packets
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
@@ -690,15 +689,10 @@ mod tests {
                 &mut rand::thread_rng(),
                 crate::forwarder::DEDUPER_NUM_BITS,
             ))),
-            &mut all_shreds,
-            &mut slot_fec_indexes_to_iterate,
-            &mut Vec::new(),
-            &mut highest_slot_seen,
-            &ReedSolomonCache::default(),
             &udp_sender,
             &Arc::new(dest_socketaddrs),
             true,
-            &entry_sender,
+            &reconstruct_tx,
             false,
             &Arc::new(ShredMetrics::default()),
         )

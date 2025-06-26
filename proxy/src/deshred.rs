@@ -1,6 +1,5 @@
 use std::{collections::HashSet, hash::Hash, sync::atomic::Ordering};
 
-use ahash::HashMap;
 use itertools::Itertools;
 use jito_protos::shredstream::TraceShred;
 use log::{debug, warn};
@@ -13,6 +12,7 @@ use solana_ledger::{
     },
 };
 use solana_metrics::datapoint_warn;
+use solana_perf::packet::PacketBatch;
 use solana_sdk::clock::{Slot, MAX_PROCESSING_AGE};
 
 use crate::forwarder::ShredMetrics;
@@ -56,8 +56,8 @@ impl Default for ShredsStateTracker {
 /// receive shreds per FEC set, attempting to recover the other shreds in the fec set so you do not have to wait until all data shreds have arrived.
 /// every time a fec is recovered, scan for neighbouring DATA_COMPLETE_SHRED flags in the shreds, attempting to deserialize into solana entries when there are no missing shreds between the DATA_COMPLETE_SHRED flags.
 /// note that an FEC set doesn't necessarily contain DATA_COMPLETE_SHRED in the last shred. when deserializing the bincode data, you must use data between shreds starting at the last DATA_COMPLETE_SHRED (not inclusive) to the next DATA_COMPLETE_SHRED (inclusive)
-pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
-    packet_batch_vec: I, //FIXME use vec instead of slice of u8
+pub fn reconstruct_shreds(
+    packet_batch: PacketBatch,
     all_shreds: &mut ahash::HashMap<
         Slot,
         (
@@ -74,8 +74,8 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
     deshredded_entries.clear();
     slot_fec_indexes_to_iterate.clear();
     // ingest all packets
-    for data in packet_batch_vec {
-        match solana_ledger::shred::Shred::new_from_serialized_shred(data.to_vec())
+    for packet in packet_batch.iter().filter_map(|p| p.data(..)) {
+        match solana_ledger::shred::Shred::new_from_serialized_shred(packet.to_vec())
             .and_then(Shred::try_from)
         {
             Ok(shred) => {
@@ -107,7 +107,7 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
                 *highest_slot_seen = std::cmp::max(*highest_slot_seen, slot);
             }
             Err(e) => {
-                if TraceShred::decode(data).is_ok() {
+                if TraceShred::decode(packet).is_ok() {
                     continue;
                 }
                 warn!("Failed to decode shred. Err: {e:?}");
@@ -315,7 +315,13 @@ pub fn reconstruct_shreds<'a, I: Iterator<Item = &'a [u8]>>(
 
 #[allow(unused)]
 fn debug_remaining_shreds(
-    all_shreds: &mut HashMap<Slot, (HashMap<u32, HashSet<ComparableShred>>, ShredsStateTracker)>,
+    all_shreds: &mut ahash::HashMap<
+        Slot,
+        (
+            ahash::HashMap<u32, HashSet<ComparableShred>>,
+            ShredsStateTracker,
+        ),
+    >,
 ) {
     let mut incomplete_fec_sets = ahash::HashMap::<Slot, Vec<_>>::default();
     let mut incomplete_fec_sets_count = 0;
@@ -570,7 +576,7 @@ mod tests {
         blockstore::make_slot_entries_with_transactions,
         shred::{merkle::Shred, ProcessShredsStats, ReedSolomonCache, ShredCommonHeader, Shredder},
     };
-    use solana_perf::packet::Packet;
+    use solana_perf::packet::{Packet, PacketBatch};
     use solana_sdk::{clock::Slot, hash::Hash, signature::Keypair};
 
     use crate::{
@@ -668,7 +674,18 @@ mod tests {
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
-            shreds.iter().map(|shred| shred.payload().iter().as_slice()),
+            PacketBatch::new(
+                packets
+                    .packets
+                    .iter()
+                    .map(|x| {
+                        let mut packet = Packet::default();
+                        packet.buffer_mut()[..x.len()].copy_from_slice(&x);
+                        packet.meta_mut().size = x.len();
+                        packet
+                    })
+                    .collect_vec(),
+            ),
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
@@ -712,11 +729,20 @@ mod tests {
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
-            shreds
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| (index + 1) % 3 != 0)
-                .map(|(_, shred)| shred.payload().iter().as_slice()),
+            PacketBatch::new(
+                packets
+                    .packets
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| (index + 1) % 3 != 0)
+                    .map(|(_i, x)| {
+                        let mut packet = Packet::default();
+                        packet.buffer_mut()[..x.len()].copy_from_slice(&x);
+                        packet.meta_mut().size = x.len();
+                        packet
+                    })
+                    .collect_vec(),
+            ),
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
@@ -825,7 +851,18 @@ mod tests {
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
-            shreds.iter().map(|shred| shred.payload().iter().as_slice()),
+            PacketBatch::new(
+                packets
+                    .packets
+                    .iter()
+                    .map(|x| {
+                        let mut packet = Packet::default();
+                        packet.buffer_mut()[..x.len()].copy_from_slice(&x);
+                        packet.meta_mut().size = x.len();
+                        packet
+                    })
+                    .collect_vec(),
+            ),
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
@@ -869,11 +906,20 @@ mod tests {
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
-            shreds
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| (index + 1) % 3 != 0)
-                .map(|(_, shred)| shred.payload().iter().as_slice()),
+            PacketBatch::new(
+                packets
+                    .packets
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| (index + 1) % 3 != 0)
+                    .map(|(_i, x)| {
+                        let mut packet = Packet::default();
+                        packet.buffer_mut()[..x.len()].copy_from_slice(&x);
+                        packet.meta_mut().size = x.len();
+                        packet
+                    })
+                    .collect_vec(),
+            ),
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
@@ -961,7 +1007,7 @@ mod tests {
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
-            packets.iter().map(|s| s.data(..).unwrap()),
+            PacketBatch::new(packets.clone()),
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
@@ -988,11 +1034,14 @@ mod tests {
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
         let recovered_count = reconstruct_shreds(
-            packets
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| (index + 1) % 3 != 0)
-                .map(|(_, s)| s.data(..).unwrap()),
+            PacketBatch::new(
+                packets
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| (index + 1) % 3 != 0)
+                    .map(|(_i, p)| p.clone())
+                    .collect(),
+            ),
             &mut all_shreds,
             &mut slot_fec_indexes_to_iterate,
             &mut deshredded_entries,
