@@ -79,7 +79,7 @@ pub fn start_forwarder_threads(
     let mut thread_hdls = Vec::with_capacity(num_threads + 1);
 
     if should_reconstruct_shreds {
-        let recon_metrics = metrics.clone();
+        let metrics = metrics.clone();
         let exit = exit.clone();
         // receives shreds from recv_from_channel_and_send_multiple_dest and calls deshred::reconstruct_shreds
         let hdl = std::thread::Builder::new()
@@ -108,7 +108,7 @@ pub fn start_forwarder_threads(
                                 &mut deshredded_entries,
                                 &mut highest_slot_seen,
                                 &rs_cache,
-                                &recon_metrics,
+                                &metrics,
                             );
 
                             deshredded_entries.drain(..).for_each(
