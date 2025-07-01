@@ -1,3 +1,6 @@
+
+pub use tonic::*;
+
 pub mod shared {
     tonic::include_proto!("shared");
 }
