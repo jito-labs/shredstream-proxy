@@ -243,7 +243,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
     if let ProxySubcommands::Shredstream(args) = shredstream_args {
         if args.desired_regions.len() > 2 {
             warn!(
-                "Too many regions selected, only {:?} will be used",
+                "Too many regions requested, only regions: {:?} will be used",
                 &args.desired_regions[..2]
             );
         }
