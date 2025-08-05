@@ -244,7 +244,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         if args.desired_regions.len() > 2 {
             warn!(
                 "Too many regions selected, only {:?} will be used",
-                args.desired_regions[0..2]
+                &args.desired_regions[..2]
             );
         }
         let heartbeat_hdl =
