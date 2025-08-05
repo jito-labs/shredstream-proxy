@@ -8,7 +8,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.2.8"
-description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://jito-labs.gitbook.io/mev/searcher-services/shredstream for details."
+description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://docs.jito.wtf/lowlatencytxnfeed/ for details."
 authors = ["Jito Team <team@jito.wtf>"]
 homepage = "https://jito.wtf/"
 edition = "2021"
