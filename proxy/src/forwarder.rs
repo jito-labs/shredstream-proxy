@@ -17,6 +17,7 @@ use jito_protos::shredstream::{Entry as PbEntry, TraceShred};
 use log::{debug, error, info, warn};
 use prost::Message;
 use solana_ledger::shred::ReedSolomonCache;
+use solana_client::client_error::reqwest;
 use solana_metrics::{datapoint_info, datapoint_warn};
 use solana_net_utils::SocketConfig;
 use solana_perf::{

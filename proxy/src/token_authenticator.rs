@@ -133,7 +133,7 @@ impl ClientInterceptor {
                 let now = SystemTime::now();
 
                 let refresh_token_ttl =
-                    SystemTime::try_from(refresh_token.expires_at_utc.as_ref().unwrap().clone())
+                    SystemTime::try_from(*refresh_token.expires_at_utc.as_ref().unwrap())
                         .unwrap()
                         .duration_since(now)
                         .unwrap_or_default();
@@ -162,7 +162,7 @@ impl ClientInterceptor {
                     continue;
                 }
 
-                let access_token_ttl = SystemTime::try_from(access_token_expiration.clone())
+                let access_token_ttl = SystemTime::try_from(access_token_expiration)
                     .unwrap()
                     .duration_since(now)
                     .unwrap_or_default();
@@ -222,7 +222,7 @@ pub async fn create_grpc_channel(url: String) -> BlockEngineConnectionResult<Cha
     let endpoint = match url.starts_with("https") {
         true => Endpoint::from_shared(url)
             .map_err(BlockEngineConnectionError::Transport)?
-            .tls_config(tonic::transport::ClientTlsConfig::new())?,
+            .tls_config(tonic::transport::ClientTlsConfig::new().with_enabled_roots())?,
         false => Endpoint::from_shared(url).map_err(BlockEngineConnectionError::Transport)?,
     };
     Ok(endpoint.connect().await?)
