@@ -241,6 +241,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let runtime = Runtime::new()?;
     let mut thread_handles = vec![];
     if let ProxySubcommands::Shredstream(args) = shredstream_args {
+        if args.desired_regions.len() > 2 {
+            warn!(
+                "Too many regions selected, only {:?} will be used",
+                args.desired_regions[0..2]
+            );
+        }
         let heartbeat_hdl =
             start_heartbeat(args, &exit, &shutdown_receiver, runtime, metrics.clone());
         thread_handles.push(heartbeat_hdl);

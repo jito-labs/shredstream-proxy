@@ -9,7 +9,6 @@ publish = false
 
 [dependencies]
 prost = { workspace = true }
-prost-types = { workspace = true }
 tonic = { workspace = true }
 
 [build-dependencies]

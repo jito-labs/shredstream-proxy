@@ -222,7 +222,7 @@ pub async fn create_grpc_channel(url: String) -> BlockEngineConnectionResult<Cha
     let endpoint = match url.starts_with("https") {
         true => Endpoint::from_shared(url)
             .map_err(BlockEngineConnectionError::Transport)?
-            .tls_config(tonic::transport::ClientTlsConfig::new())?,
+            .tls_config(tonic::transport::ClientTlsConfig::new().with_enabled_roots())?,
         false => Endpoint::from_shared(url).map_err(BlockEngineConnectionError::Transport)?,
     };
     Ok(endpoint.connect().await?)
