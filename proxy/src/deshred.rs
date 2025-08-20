@@ -218,7 +218,7 @@ pub fn reconstruct_shreds(
         ) {
             Ok(entries) => entries,
             Err(e) => {
-                warn!(
+                debug!(
                         "Failed to deserialize bincode payload of size {} for slot {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}, unknown_start: {unknown_start}. Err: {e}",
                         deshredded_payload.len()
                     );
