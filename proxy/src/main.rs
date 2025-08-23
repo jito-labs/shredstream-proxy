@@ -5,6 +5,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     panic,
     path::{Path, PathBuf},
+    process::Command,
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -19,6 +20,7 @@ use arc_swap::ArcSwap;
 use clap::{arg, Parser};
 use crossbeam_channel::{Receiver, RecvError, Sender};
 use log::*;
+use serde::Deserialize;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use solana_client::client_error::{reqwest, ClientError};
 use solana_ledger::shred::Shred;
@@ -87,6 +89,10 @@ struct CommonArgs {
     /// Port where Shredstream proxy listens. Use `0` for random ephemeral port.
     #[arg(long, env, default_value_t = 20_000)]
     src_bind_port: u16,
+
+    /// Port to receive multicast shreds
+    #[arg(long, env, default_value_t = 20001)]
+    multicast_subscribe_port: u16,
 
     /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated.
     /// Eg. `127.0.0.1:8001,10.0.0.1:8001`.
@@ -271,10 +277,21 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
+    let maybe_multicast_address = match get_doublezero_multicast_ip() {
+        Ok(ip) => {
+            info!("Sending shreds to multicast IP: {ip}");
+            Some(SocketAddr::new(ip, args.multicast_subscribe_port))
+        }
+        Err(e) => {
+            debug!("Failed to parse multicast IP. Error: {e}");
+            None
+        }
+    };
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_addr,
         args.src_bind_port,
+        maybe_multicast_address,
         args.num_threads,
         deduper.clone(),
         args.grpc_service_port.is_some(),
@@ -375,7 +392,7 @@ fn start_heartbeat(
             args.common_args
                 .public_ip
                 .unwrap_or_else(|| get_public_ip().unwrap()),
-            args.common_args.src_bind_port,
+            9999,
         ),
         runtime,
         "shredstream_proxy".to_string(),
@@ -383,4 +400,62 @@ fn start_heartbeat(
         shutdown_receiver.clone(),
         exit.clone(),
     )
+}
+
+#[derive(Debug, Error)]
+pub enum MulticastError {
+    #[error("failed to run 'doublezero': {0}")]
+    Io(#[from] io::Error),
+
+    #[error("doublezero exited with status {0}")]
+    CliStatus(std::process::ExitStatus),
+
+    #[error("failed to parse JSON output: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("no entry with code `jito-shredstream`")]
+    NotFoundCode,
+
+    #[error("missing `multicast_ip` for code `jito-shredstream`")]
+    MissingMulticastIp,
+
+    #[error("invalid IP address: {0}")]
+    AddrParse(#[from] std::net::AddrParseError),
+
+    #[error("stdout did not contain a JSON array")]
+    NoJsonArray,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupRow {
+    code: String,
+    #[serde(default)]
+    multicast_ip: Option<String>,
+}
+
+/// Runs `doublezero multicast group list --json-compact` and returns the multicast IP for `jito-shredstream`.
+pub fn get_doublezero_multicast_ip() -> Result<IpAddr, MulticastError> {
+    let output = Command::new("doublezero")
+        .args(["multicast", "group", "list", "--json-compact"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(MulticastError::CliStatus(output.status));
+    }
+
+    // Tolerate non-JSON noise before/after the array.
+    // Sometimes messages that prefix the output like: A new version of the client is available. We recommend updating to the latest version for the best experience.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let start = stdout.find('[').ok_or(MulticastError::NoJsonArray)?;
+    let end = stdout.rfind(']').ok_or(MulticastError::NoJsonArray)?;
+
+    const CODE: &str = "jito-shredstream";
+    let ip_str = serde_json::from_str::<Vec<GroupRow>>(&stdout[start..=end])?
+        .into_iter()
+        .find(|r| r.code == CODE)
+        .ok_or(MulticastError::NotFoundCode)?
+        .multicast_ip
+        .ok_or(MulticastError::MissingMulticastIp)?;
+
+    Ok(ip_str.parse::<IpAddr>()?)
 }
