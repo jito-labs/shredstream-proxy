@@ -98,6 +98,11 @@ struct CommonArgs {
     #[arg(long, env, default_value_t = 20001)]
     multicast_subscribe_port: u16,
 
+    /// Multicast topic in doublezero CLI to listen for shreds. This is ignored if `multicast_bind_ip` is set.
+    /// Check with `doublezero multicast group list`
+    #[arg(long, env)]
+    doublezero_multicast_code: Option<String>,
+
     /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated.
     /// Eg. `127.0.0.1:8001,10.0.0.1:8001`.
     // Note: store the original string, so we can do hostname resolution when refreshing destinations
@@ -283,7 +288,9 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
     let maybe_multicast_address = match args.multicast_bind_ip {
         Some(ip) => Some(SocketAddr::new(ip, args.multicast_subscribe_port)),
-        None => match get_doublezero_multicast_ip() {
+        None => match get_doublezero_multicast_ip(
+            args.doublezero_multicast_code.as_ref().map(|x| x.as_str()),
+        ) {
             Ok(ip) => {
                 info!("Using discovered multicast IP: {ip}");
                 Some(SocketAddr::new(ip, args.multicast_subscribe_port))
@@ -441,7 +448,7 @@ struct GroupRow {
 }
 
 /// Runs `doublezero multicast group list --json-compact` and returns the multicast IP for `jito-shredstream`.
-pub fn get_doublezero_multicast_ip() -> Result<IpAddr, MulticastError> {
+pub fn get_doublezero_multicast_ip(multicast_code: Option<&str>) -> Result<IpAddr, MulticastError> {
     let output = Command::new("doublezero")
         .args(["multicast", "group", "list", "--json-compact"])
         .output()?;
@@ -456,10 +463,10 @@ pub fn get_doublezero_multicast_ip() -> Result<IpAddr, MulticastError> {
     let start = stdout.find('[').ok_or(MulticastError::NoJsonArray)?;
     let end = stdout.rfind(']').ok_or(MulticastError::NoJsonArray)?;
 
-    const CODE: &str = "jito-shredstream";
+    let code = multicast_code.unwrap_or("jito-shredstream");
     let ip_str = serde_json::from_str::<Vec<GroupRow>>(&stdout[start..=end])?
         .into_iter()
-        .find(|r| r.code == CODE)
+        .find(|r| r.code.starts_with(code))
         .ok_or(MulticastError::NotFoundCode)?
         .multicast_ip
         .ok_or(MulticastError::MissingMulticastIp)?;
