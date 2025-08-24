@@ -90,6 +90,10 @@ struct CommonArgs {
     #[arg(long, env, default_value_t = 20_000)]
     src_bind_port: u16,
 
+    /// Multicast IP to listen for shreds. If none provided, attempts to parse out the address from doublezero cli
+    #[arg(long, env)]
+    multicast_bind_ip: Option<IpAddr>,
+
     /// Port to receive multicast shreds
     #[arg(long, env, default_value_t = 20001)]
     multicast_subscribe_port: u16,
@@ -277,15 +281,18 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
-    let maybe_multicast_address = match get_doublezero_multicast_ip() {
-        Ok(ip) => {
-            info!("Sending shreds to multicast IP: {ip}");
-            Some(SocketAddr::new(ip, args.multicast_subscribe_port))
-        }
-        Err(e) => {
-            debug!("Failed to parse multicast IP. Error: {e}");
-            None
-        }
+    let maybe_multicast_address = match args.multicast_bind_ip {
+        Some(ip) => Some(SocketAddr::new(ip, args.multicast_subscribe_port)),
+        None => match get_doublezero_multicast_ip() {
+            Ok(ip) => {
+                info!("Using discovered multicast IP: {ip}");
+                Some(SocketAddr::new(ip, args.multicast_subscribe_port))
+            }
+            Err(e) => {
+                debug!("No multicast IP provided, discovery failed: {e}");
+                None
+            }
+        },
     };
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
