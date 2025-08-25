@@ -100,11 +100,6 @@ struct CommonArgs {
     #[arg(long, env, default_value_t = 20001)]
     multicast_subscribe_port: u16,
 
-    /// Multicast topic in doublezero CLI to listen for shreds. This is ignored if `multicast_bind_ip` is set.
-    /// Check with `doublezero multicast group list`
-    #[arg(long, env)]
-    doublezero_multicast_code: Option<String>,
-
     /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated.
     /// Eg. `127.0.0.1:8001,10.0.0.1:8001`.
     // Note: store the original string, so we can do hostname resolution when refreshing destinations
@@ -293,7 +288,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
         "doublezero1",
         args.multicast_subscribe_port,
         args.multicast_bind_ip,
-        args.doublezero_multicast_code.as_deref(),
     );
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
@@ -440,7 +434,6 @@ fn create_multicast_socket_on_device(
     device_name: &str,
     multicast_port: u16,
     multicast_ip: Option<IpAddr>,
-    doublezero_multicast_code: Option<&str>,
 ) -> Option<Vec<UdpSocket>> {
     // Determine target groups
     let mut groups_v4: Vec<Ipv4Addr> = Vec::new();
@@ -458,17 +451,6 @@ fn create_multicast_socket_on_device(
             }
             Err(e) => warn!("Failed to parse 'ip route list' for {device_name}: {e}"),
         },
-    }
-
-    // If no groups from routes or explicit flag, try doublezero fallback
-    if groups_v4.is_empty() {
-        match get_doublezero_multicast_ip(doublezero_multicast_code) {
-            Ok(IpAddr::V4(ip)) => groups_v4.push(ip),
-            Ok(IpAddr::V6(_)) => {
-                warn!("Doublezero multicast returned IPv6; IPv4 expected for {device_name}")
-            }
-            Err(e) => warn!("No multicast group from doublezero: {e}"),
-        }
     }
 
     if groups_v4.is_empty() {
@@ -530,62 +512,4 @@ fn start_heartbeat(
         shutdown_receiver.clone(),
         exit.clone(),
     )
-}
-
-#[derive(Debug, Error)]
-pub enum MulticastError {
-    #[error("failed to run 'doublezero': {0}")]
-    Io(#[from] io::Error),
-
-    #[error("doublezero exited with status {0}")]
-    CliStatus(std::process::ExitStatus),
-
-    #[error("failed to parse JSON output: {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("no entry with code `jito-shredstream`")]
-    NotFoundCode,
-
-    #[error("missing `multicast_ip` for code `jito-shredstream`")]
-    MissingMulticastIp,
-
-    #[error("invalid IP address: {0}")]
-    AddrParse(#[from] std::net::AddrParseError),
-
-    #[error("stdout did not contain a JSON array")]
-    NoJsonArray,
-}
-
-#[derive(Debug, Deserialize)]
-struct GroupRow {
-    code: String,
-    #[serde(default)]
-    multicast_ip: Option<String>,
-}
-
-/// Runs `doublezero multicast group list --json-compact` and returns the multicast IP for `jito-shredstream`.
-pub fn get_doublezero_multicast_ip(multicast_code: Option<&str>) -> Result<IpAddr, MulticastError> {
-    let output = Command::new("doublezero")
-        .args(["multicast", "group", "list", "--json-compact"])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(MulticastError::CliStatus(output.status));
-    }
-
-    // Tolerate non-JSON noise before/after the array.
-    // Sometimes messages that prefix the output like: A new version of the client is available. We recommend updating to the latest version for the best experience.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let start = stdout.find('[').ok_or(MulticastError::NoJsonArray)?;
-    let end = stdout.rfind(']').ok_or(MulticastError::NoJsonArray)?;
-
-    let code = multicast_code.unwrap_or("jito-shredstream");
-    let ip_str = serde_json::from_str::<Vec<GroupRow>>(&stdout[start..=end])?
-        .into_iter()
-        .find(|r| r.code.starts_with(code))
-        .ok_or(MulticastError::NotFoundCode)?
-        .multicast_ip
-        .ok_or(MulticastError::MissingMulticastIp)?;
-
-    Ok(ip_str.parse::<IpAddr>()?)
 }
