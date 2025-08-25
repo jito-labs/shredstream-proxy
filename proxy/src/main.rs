@@ -370,7 +370,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 }
 
 /// Parse multicast groups routed to `device` via `ip --json route show dev <device>`
-fn parse_ip_route_for_device(device: &str) -> io::Result<Vec<Ipv4Addr>> {
+fn parse_ip_route_for_device(device: &str) -> io::Result<Vec<IpAddr>> {
     let output = Command::new("ip")
         .args(["--json", "route", "show", "dev", device])
         .output()?;
@@ -392,8 +392,8 @@ fn parse_ip_route_for_device(device: &str) -> io::Result<Vec<Ipv4Addr>> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
         .iter()
         .filter_map(|r| r.dst.split('/').next())
-        .filter_map(|base| base.parse::<Ipv4Addr>().ok())
-        .filter(|ip| (224..=239).contains(&ip.octets()[0]))
+        .filter_map(|base| base.parse::<IpAddr>().ok())
+        .filter(|ip| ip.is_multicast())
         .collect::<Vec<_>>();
 
     groups.sort_unstable();
