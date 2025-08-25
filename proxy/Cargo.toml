@@ -23,6 +23,7 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 signal-hook = { workspace = true }
 solana-client = { workspace = true }
@@ -36,4 +37,3 @@ solana-streamer = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
-serde = { version = "1.0.219", features = ["derive"] }
