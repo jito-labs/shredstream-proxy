@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     io,
     io::{Error, ErrorKind},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
     panic,
     path::{Path, PathBuf},
     process::Command,
@@ -90,7 +90,9 @@ struct CommonArgs {
     #[arg(long, env, default_value_t = 20_000)]
     src_bind_port: u16,
 
-    /// Multicast IP to listen for shreds. If none provided, attempts to parse out the address from doublezero cli
+    /// Multicast IP to listen for shreds. If none provided, attempts to
+    /// - parse multicast routes for device `doublezero1` via `ip --json route show dev doublezero1`, or
+    /// - fall back to doublezero CLI group list when available.
     #[arg(long, env)]
     multicast_bind_ip: Option<IpAddr>,
 
@@ -286,24 +288,13 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
-    let maybe_multicast_address = match args.multicast_bind_ip {
-        Some(ip) => Some(SocketAddr::new(ip, args.multicast_subscribe_port)),
-        None => match get_doublezero_multicast_ip(
-            args.doublezero_multicast_code.as_ref().map(|x| x.as_str()),
-        ) {
-            Ok(ip) => {
-                info!("Using discovered multicast IP: {ip}");
-                Some(SocketAddr::new(ip, args.multicast_subscribe_port))
-            }
-            Err(e) => {
-                debug!("No multicast IP provided, discovery failed: {e}");
-                None
-            }
-        },
-    };
-    // Try to create a multicast socket bound to device `doublezero1` if present
-    let maybe_multicast_socket = maybe_multicast_address
-        .and_then(|addr| create_multicast_socket_on_device("doublezero1", addr));
+    // Multicast: bind on subscribe port and join groups
+    let maybe_multicast_socket = create_multicast_socket_on_device(
+        "doublezero1",
+        args.multicast_subscribe_port,
+        args.multicast_bind_ip,
+        args.doublezero_multicast_code.as_deref(),
+    );
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_addr,
@@ -384,51 +375,126 @@ fn main() -> Result<(), ShredstreamProxyError> {
     Ok(())
 }
 
-/// Creates sockets listening on all routes from `ip route list` with interface `device_name`
-fn create_multicast_socket_on_device(
-    _device_name: &str,
-    multicast_addr: SocketAddr,
-) -> Option<Vec<UdpSocket>> {
-    match multicast_addr.ip() {
-        IpAddr::V4(group_v4) => {
-            let bind_addr =
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), multicast_addr.port());
-            match UdpSocket::bind(bind_addr) {
-                Ok(sock) => {
-                    if let Err(e) = sock.join_multicast_v4(&group_v4, &Ipv4Addr::UNSPECIFIED) {
-                        warn!("Failed to join IPv4 multicast on {multicast_addr}: {e}");
-                        None
-                    } else {
-                        info!("Listening for IPv4 multicast on {multicast_addr}");
-                        Some(vec![sock])
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to bind IPv4 multicast socket on {bind_addr}: {e}");
-                    None
-                }
+/// Parse multicast groups and local src IPv4 from `ip --json route show dev <device>`
+fn parse_ip_route_for_device(device: &str) -> io::Result<(Option<Ipv4Addr>, Vec<Ipv4Addr>)> {
+    #[derive(Debug, Deserialize)]
+    struct RouteRow {
+        dst: Option<String>,
+        #[serde(alias = "prefsrc")]
+        prefsrc: Option<String>,
+    }
+
+    let output = Command::new("ip")
+        .args(["--json", "route", "show", "dev", device])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("ip --json route list failed: status {}", output.status),
+        ));
+    }
+
+    let rows: Vec<RouteRow> = serde_json::from_slice(&output.stdout).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("json parse error: {e}"))
+    })?;
+
+    let mut local_src: Option<Ipv4Addr> = None;
+    let mut groups: Vec<Ipv4Addr> = Vec::new();
+
+    // derive local src from any row that has prefsrc (device already filtered by ip command)
+    for r in &rows {
+        if let Some(src_s) = &r.prefsrc {
+            if let Ok(ip) = src_s.parse::<Ipv4Addr>() {
+                local_src = Some(ip);
+                break;
             }
         }
-        IpAddr::V6(group_v6) => {
-            let bind_addr =
-                SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), multicast_addr.port());
-            match UdpSocket::bind(bind_addr) {
-                Ok(sock) => {
-                    if let Err(e) = sock.join_multicast_v6(&group_v6, 0 /* any */) {
-                        warn!("Failed to join IPv6 multicast on {multicast_addr} (idx 0): {e}");
-                        None
-                    } else {
-                        info!("Listening for IPv6 multicast on {multicast_addr} (idx 0)");
-                        Some(vec![sock])
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to bind IPv6 multicast socket on {bind_addr}: {e}");
-                    None
+    }
+
+    // collect multicast groups routed via this device
+    for r in &rows {
+        if let Some(dst) = &r.dst {
+            // handle both "A.B.C.D" and "A.B.C.D/XX"
+            let base = dst.split('/').next().unwrap_or(dst);
+            if let Ok(ip) = base.parse::<Ipv4Addr>() {
+                let o1 = ip.octets()[0];
+                if (224..=239).contains(&o1) {
+                    groups.push(ip);
                 }
             }
         }
     }
+
+    groups.sort_unstable();
+    groups.dedup();
+    Ok((local_src, groups))
+}
+
+/// Creates one UDP socket bound on `multicast_port` and joins applicable multicast groups.
+///
+/// Priority:
+/// - If `multicast_ip` is provided, join just that group.
+/// - Else, parse `ip route list` for entries on `device_name` and join all multicast groups found.
+/// - Else, fall back to `doublezero multicast group list` and join that group (if present).
+fn create_multicast_socket_on_device(
+    device_name: &str,
+    multicast_port: u16,
+    multicast_ip: Option<IpAddr>,
+    doublezero_multicast_code: Option<&str>,
+) -> Option<Vec<UdpSocket>> {
+    // Determine target groups
+    let mut groups_v4: Vec<Ipv4Addr> = Vec::new();
+    let mut iface_src_v4: Option<Ipv4Addr> = None;
+
+    match multicast_ip {
+        Some(IpAddr::V4(g)) => groups_v4.push(g),
+        Some(IpAddr::V6(_)) => {
+            // IPv6 not currently supported in device-route parsing; best-effort join below
+        }
+        None => match parse_ip_route_for_device(device_name) {
+            Ok((src, mut gs)) => {
+                iface_src_v4 = src;
+                groups_v4.append(&mut gs);
+            }
+            Err(e) => warn!("Failed to parse 'ip route list' for {device_name}: {e}"),
+        },
+    }
+
+    // If no groups from routes or explicit flag, try doublezero fallback
+    if groups_v4.is_empty() {
+        match get_doublezero_multicast_ip(doublezero_multicast_code) {
+            Ok(IpAddr::V4(ip)) => groups_v4.push(ip),
+            Ok(IpAddr::V6(_)) => {
+                warn!("Doublezero multicast returned IPv6; IPv4 expected for {device_name}")
+            }
+            Err(e) => warn!("No multicast group from doublezero: {e}"),
+        }
+    }
+
+    if groups_v4.is_empty() {
+        warn!("No multicast groups found for device {device_name}; skipping multicast listener");
+        return None;
+    }
+
+    // Bind a single socket and join all groups
+    let bind_v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), multicast_port);
+    let sock = match UdpSocket::bind(bind_v4) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to bind IPv4 multicast socket on {bind_v4}: {e}");
+            return None;
+        }
+    };
+
+    for g in &groups_v4 {
+        let iface = iface_src_v4.unwrap_or(Ipv4Addr::UNSPECIFIED);
+        match sock.join_multicast_v4(g, &iface) {
+            Ok(()) => info!("Joined IPv4 multicast group {g} on {device_name} (iface {iface}) port {multicast_port}"),
+            Err(e) => warn!("Failed joining IPv4 group {g} on {device_name}: {e}"),
+        }
+    }
+
+    Some(vec![sock])
 }
 
 fn start_heartbeat(
