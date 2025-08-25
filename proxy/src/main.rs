@@ -384,11 +384,11 @@ fn main() -> Result<(), ShredstreamProxyError> {
     Ok(())
 }
 
+/// Creates sockets listening on all routes from `ip route list` with interface `device_name`
 fn create_multicast_socket_on_device(
     _device_name: &str,
     multicast_addr: SocketAddr,
-) -> Option<UdpSocket> {
-    // todo: find all ips from `ip route list` and create sockets for them
+) -> Option<Vec<UdpSocket>> {
     match multicast_addr.ip() {
         IpAddr::V4(group_v4) => {
             let bind_addr =
@@ -400,7 +400,7 @@ fn create_multicast_socket_on_device(
                         None
                     } else {
                         info!("Listening for IPv4 multicast on {multicast_addr}");
-                        Some(sock)
+                        Some(vec![sock])
                     }
                 }
                 Err(e) => {
@@ -419,7 +419,7 @@ fn create_multicast_socket_on_device(
                         None
                     } else {
                         info!("Listening for IPv6 multicast on {multicast_addr} (idx 0)");
-                        Some(sock)
+                        Some(vec![sock])
                     }
                 }
                 Err(e) => {

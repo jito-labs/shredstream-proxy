@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    net::{IpAddr,  Ipv6Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock,
@@ -49,7 +49,7 @@ pub fn start_forwarder_threads(
     unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
     src_addr: IpAddr,
     src_port: u16,
-    maybe_multicast_socket: Option<UdpSocket>,
+    maybe_multicast_socket: Option<Vec<UdpSocket>>,
     num_threads: Option<usize>,
     deduper: Arc<RwLock<Deduper<2, [u8]>>>,
     should_reconstruct_shreds: bool,
@@ -133,7 +133,7 @@ pub fn start_forwarder_threads(
 
     sockets
         .into_iter()
-        .chain(maybe_multicast_socket) // FIXME?
+        .chain(maybe_multicast_socket.into_iter().flatten())
         .enumerate()
         .flat_map(|(thread_id, incoming_shred_socket)| {
             let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
