@@ -223,13 +223,13 @@ fn main() -> Result<(), ShredstreamProxyError> {
     if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
         || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
     {
-        panic!("Invalid arguments provided, dynamic endpoints requires both --endpoint-discovery-url and --discovered-endpoints-port.")
+        return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "Invalid arguments provided, dynamic endpoints requires both --endpoint-discovery-url and --discovered-endpoints-port.")));
     }
     if args.endpoint_discovery_url.is_none()
         && args.discovered_endpoints_port.is_none()
         && args.dest_ip_ports.is_empty()
     {
-        panic!("No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")
+        return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")));
     }
 
     let exit = Arc::new(AtomicBool::new(false));
@@ -369,59 +369,36 @@ fn main() -> Result<(), ShredstreamProxyError> {
     Ok(())
 }
 
-/// Parse multicast groups and local src IPv4 from `ip --json route show dev <device>`
-fn parse_ip_route_for_device(device: &str) -> io::Result<(Option<Ipv4Addr>, Vec<Ipv4Addr>)> {
-    #[derive(Debug, Deserialize)]
-    struct RouteRow {
-        dst: Option<String>,
-        #[serde(alias = "prefsrc")]
-        prefsrc: Option<String>,
-    }
-
+/// Parse multicast groups routed to `device` via `ip --json route show dev <device>`
+fn parse_ip_route_for_device(device: &str) -> io::Result<Vec<Ipv4Addr>> {
     let output = Command::new("ip")
         .args(["--json", "route", "show", "dev", device])
         .output()?;
     if !output.status.success() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("ip --json route list failed: status {}", output.status),
+            format!("Command failed with status: {}", output.status),
         ));
     }
 
-    let rows: Vec<RouteRow> = serde_json::from_slice(&output.stdout).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("json parse error: {e}"))
-    })?;
-
-    let mut local_src: Option<Ipv4Addr> = None;
-    let mut groups: Vec<Ipv4Addr> = Vec::new();
-
-    // derive local src from any row that has prefsrc (device already filtered by ip command)
-    for r in &rows {
-        if let Some(src_s) = &r.prefsrc {
-            if let Ok(ip) = src_s.parse::<Ipv4Addr>() {
-                local_src = Some(ip);
-                break;
-            }
-        }
+    // for parsing output like: ip --json route show dev doublezero1
+    // [{"dst":"169.254.2.112/31","protocol":"kernel","scope":"link","prefsrc":"169.254.2.113","flags":[]},{"dst":"233.84.178.2","gateway":"169.254.2.112","protocol":"static","flags":[]}]
+    #[derive(Debug, Deserialize)]
+    struct RouteRow {
+        dst: String,
     }
 
-    // collect multicast groups routed via this device
-    for r in &rows {
-        if let Some(dst) = &r.dst {
-            // handle both "A.B.C.D" and "A.B.C.D/XX"
-            let base = dst.split('/').next().unwrap_or(dst);
-            if let Ok(ip) = base.parse::<Ipv4Addr>() {
-                let o1 = ip.octets()[0];
-                if (224..=239).contains(&o1) {
-                    groups.push(ip);
-                }
-            }
-        }
-    }
+    let mut groups = serde_json::from_slice::<Vec<RouteRow>>(&output.stdout)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+        .iter()
+        .filter_map(|r| r.dst.split('/').next())
+        .filter_map(|base| base.parse::<Ipv4Addr>().ok())
+        .filter(|ip| (224..=239).contains(&ip.octets()[0]))
+        .collect::<Vec<_>>();
 
     groups.sort_unstable();
     groups.dedup();
-    Ok((local_src, groups))
+    Ok(groups)
 }
 
 /// Creates one UDP socket bound on `multicast_port` and joins applicable multicast groups.
@@ -435,23 +412,17 @@ fn create_multicast_socket_on_device(
     multicast_port: u16,
     multicast_ip: Option<IpAddr>,
 ) -> Option<Vec<UdpSocket>> {
-    // Determine target groups
-    let mut groups_v4: Vec<Ipv4Addr> = Vec::new();
-    let mut iface_src_v4: Option<Ipv4Addr> = None;
-
-    match multicast_ip {
-        Some(IpAddr::V4(g)) => groups_v4.push(g),
-        Some(IpAddr::V6(_)) => {
-            // IPv6 not currently supported in device-route parsing; best-effort join below
+    let mut groups_v4 = match multicast_ip {
+        Some(IpAddr::V4(g)) => vec![g],
+        Some(IpAddr::V6(g6)) => {
+            warn!("IPv6 multicast not supported via route parsing; ignoring {g6}");
+            Vec::new()
         }
-        None => match parse_ip_route_for_device(device_name) {
-            Ok((src, mut gs)) => {
-                iface_src_v4 = src;
-                groups_v4.append(&mut gs);
-            }
-            Err(e) => warn!("Failed to parse 'ip route list' for {device_name}: {e}"),
-        },
-    }
+        None => parse_ip_route_for_device(device_name).unwrap_or_else(|e| {
+            warn!("Failed to parse 'ip route list' for {device_name}: {e}");
+            Vec::new()
+        }),
+    };
 
     if groups_v4.is_empty() {
         warn!("No multicast groups found for device {device_name}; skipping multicast listener");
@@ -468,13 +439,12 @@ fn create_multicast_socket_on_device(
         }
     };
 
-    for g in &groups_v4 {
-        let iface = iface_src_v4.unwrap_or(Ipv4Addr::UNSPECIFIED);
-        match sock.join_multicast_v4(g, &iface) {
-            Ok(()) => info!("Joined IPv4 multicast group {g} on {device_name} (iface {iface}) port {multicast_port}"),
+    groups_v4.drain(..).for_each(
+        |g| match sock.join_multicast_v4(&g, &Ipv4Addr::UNSPECIFIED) {
+            Ok(()) => info!("Joined IPv4 multicast group {g}  port {multicast_port}"),
             Err(e) => warn!("Failed joining IPv4 group {g} on {device_name}: {e}"),
-        }
-    }
+        },
+    );
 
     Some(vec![sock])
 }
