@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     io,
     io::{Error, ErrorKind},
-    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket},
     panic,
     path::{Path, PathBuf},
     process::Command,
@@ -301,11 +301,14 @@ fn main() -> Result<(), ShredstreamProxyError> {
             }
         },
     };
+    // Try to create a multicast socket bound to device `doublezero1` if present
+    let maybe_multicast_socket = maybe_multicast_address
+        .and_then(|addr| create_multicast_socket_on_device("doublezero1", addr));
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_addr,
         args.src_bind_port,
-        maybe_multicast_address,
+        maybe_multicast_socket,
         args.num_threads,
         deduper.clone(),
         args.grpc_service_port.is_some(),
@@ -379,6 +382,76 @@ fn main() -> Result<(), ShredstreamProxyError> {
         metrics.duplicate_cumulative.load(Ordering::Relaxed),
     );
     Ok(())
+}
+
+fn create_multicast_socket_on_device(
+    device_name: &str,
+    multicast_addr: SocketAddr,
+) -> Option<UdpSocket> {
+    let iface = pnet_datalink::interfaces()
+        .into_iter()
+        .find(|i| i.name == device_name)?;
+
+    match multicast_addr.ip() {
+        IpAddr::V4(group_v4) => {
+            let Some(local_if_v4) = iface.ips.iter().find_map(|ipn| match ipn.ip() {
+                IpAddr::V4(v4) => Some(v4),
+                _ => None,
+            }) else {
+                debug!("Interface {device_name} has no IPv4; skipping IPv4 multicast bind");
+                return None;
+            };
+
+            let bind_addr =
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), multicast_addr.port());
+            match UdpSocket::bind(bind_addr) {
+                Ok(sock) => {
+                    if let Err(e) = sock.join_multicast_v4(&group_v4, &local_if_v4) {
+                        warn!(
+                                "Failed to join IPv4 multicast {group_v4} on iface {device_name} ({local_if_v4}): {e}"
+                            );
+                        None
+                    } else {
+                        info!(
+                                "Listening for IPv4 multicast on iface {device_name} ({local_if_v4}) port {}",
+                                multicast_addr.port()
+                            );
+                        Some(sock)
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to bind IPv4 multicast socket on {bind_addr}: {e}");
+                    None
+                }
+            }
+        }
+        IpAddr::V6(group_v6) => {
+            let bind_addr =
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), multicast_addr.port());
+            match UdpSocket::bind(bind_addr) {
+                Ok(sock) => {
+                    if let Err(e) = sock.join_multicast_v6(&group_v6, iface.index) {
+                        warn!(
+                            "Failed to join IPv6 multicast {group_v6} on iface {device_name} (idx {}): {e}",
+                            iface.index,
+                        );
+                        None
+                    } else {
+                        info!(
+                            "Listening for IPv6 multicast on iface {device_name} (idx {}) port {}",
+                            iface.index,
+                            multicast_addr.port()
+                        );
+                        Some(sock)
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to bind IPv6 multicast socket on {bind_addr}: {e}");
+                    None
+                }
+            }
+        }
+    }
 }
 
 fn start_heartbeat(

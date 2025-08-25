@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
+    net::{IpAddr,  Ipv6Addr, SocketAddr, UdpSocket},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock,
@@ -49,7 +49,7 @@ pub fn start_forwarder_threads(
     unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
     src_addr: IpAddr,
     src_port: u16,
-    maybe_multicast_address: Option<SocketAddr>,
+    maybe_multicast_socket: Option<UdpSocket>,
     num_threads: Option<usize>,
     deduper: Arc<RwLock<Deduper<2, [u8]>>>,
     should_reconstruct_shreds: bool,
@@ -133,46 +133,7 @@ pub fn start_forwarder_threads(
 
     sockets
         .into_iter()
-        .chain(maybe_multicast_address.iter().filter_map(|multicast_address| {
-            match multicast_address.ip() {
-                IpAddr::V4(ip) => {
-                    let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), multicast_address.port());
-                    match UdpSocket::bind(bind_addr) {
-                        Ok(sock) => {
-                            if let Err(e) = sock.join_multicast_v4(&ip, &Ipv4Addr::UNSPECIFIED) {
-                                warn!("Failed to join IPv4 multicast address {ip} on {bind_addr}: {e}");
-                                None
-                            } else {
-                                info!("Listening for IPv4 multicast shreds on {ip} port {}", multicast_address.port());
-                                Some(sock)
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to bind IPv4 multicast socket on {bind_addr}: {e}");
-                            None
-                        }
-                    }
-                }
-                IpAddr::V6(ip) => {
-                    let bind_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), multicast_address.port());
-                    match UdpSocket::bind(bind_addr) {
-                        Ok(sock) => {
-                            if let Err(e) = sock.join_multicast_v6(&ip, 0 /* any interface */) {
-                                warn!("Failed to join IPv6 multicast address {ip} on {bind_addr}: {e}");
-                                None
-                            } else {
-                                info!("Listening for IPv6 multicast shreds on {ip} port {}", multicast_address.port());
-                                Some(sock)
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to bind IPv6 multicast socket on {bind_addr}: {e}");
-                            None
-                        }
-                    }
-                }
-            }
-        }))
+        .chain(maybe_multicast_socket) // FIXME?
         .enumerate()
         .flat_map(|(thread_id, incoming_shred_socket)| {
             let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();

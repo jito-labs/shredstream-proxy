@@ -28,6 +28,7 @@ hostname = "0.4.0"
 itertools = "0.14.0"
 jito-protos = { path = "jito_protos" }
 log = "0.4"
+pnet_datalink = "0.35.0"
 prost = "0.13"
 prost-types = "0.13"
 rand = "0.8"
