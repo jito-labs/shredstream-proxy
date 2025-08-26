@@ -395,10 +395,21 @@ fn parse_ip_route_for_device(device: &str) -> io::Result<Vec<IpAddr>> {
 
     let mut groups = serde_json::from_slice::<Vec<RouteRow>>(&output.stdout)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-        .iter()
-        .filter_map(|r| r.dst.split('/').next())
-        .filter_map(|base| base.parse::<IpAddr>().ok())
-        .filter(|ip| ip.is_multicast())
+        .into_iter()
+        .filter_map(|r| {
+            if let Some((base, mask_str)) = r.dst.split_once('/') {
+                let ip: IpAddr = base.parse().ok()?;
+                let mask: u8 = mask_str.parse().ok()?;
+                let is_exact = match ip {
+                    IpAddr::V4(_) => mask == 32,
+                    IpAddr::V6(_) => mask == 128,
+                };
+                (ip.is_multicast() && is_exact).then_some(ip)
+            } else {
+                let ip: IpAddr = r.dst.parse().ok()?;
+                ip.is_multicast().then_some(ip)
+            }
+        })
         .collect::<Vec<_>>();
 
     groups.sort_unstable();
@@ -445,10 +456,8 @@ fn create_multicast_socket_on_device(
         if let Ok(sock_v4) = UdpSocket::bind(addr_v4) {
             for g in groups_v4.into_iter() {
                 match sock_v4.join_multicast_v4(&g, &Ipv4Addr::UNSPECIFIED) {
-                    Ok(()) => info!(
-                        "Joined IPv4 multicast group {g} on {device_name} port {multicast_port}"
-                    ),
-                    Err(e) => warn!("Failed joining IPv4 group {g} on {device_name}: {e}"),
+                    Ok(()) => info!("Joined IPv4 multicast group {g} port {multicast_port}"),
+                    Err(e) => warn!("Failed joining IPv4 group {g}: {e}"),
                 }
             }
             sockets.push(sock_v4);
@@ -462,10 +471,8 @@ fn create_multicast_socket_on_device(
         if let Ok(sock_v6) = UdpSocket::bind(addr_v6) {
             for g in groups_v6.into_iter() {
                 match sock_v6.join_multicast_v6(&g, 0) {
-                    Ok(()) => info!(
-                        "Joined IPv6 multicast group {g} on {device_name} port {multicast_port}"
-                    ),
-                    Err(e) => warn!("Failed joining IPv6 group {g} on {device_name}: {e}"),
+                    Ok(()) => info!("Joined IPv6 multicast group {g} port {multicast_port}"),
+                    Err(e) => warn!("Failed joining IPv6 group {g}: {e}"),
                 }
             }
             sockets.push(sock_v6);
