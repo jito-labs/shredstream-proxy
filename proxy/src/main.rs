@@ -406,44 +406,6 @@ fn parse_ip_route_for_device(device: &str) -> io::Result<Vec<IpAddr>> {
     Ok(groups)
 }
 
-/// Returns the IPv4 address assigned to a network device (if any), via
-/// `ip --json addr show dev <device>`.
-fn get_device_ipv4(device: &str) -> io::Result<Option<Ipv4Addr>> {
-    #[derive(Debug, Deserialize)]
-    struct AddrInfoRow {
-        family: Option<String>,
-        local: Option<String>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    struct IfaceRow {
-        addr_info: Option<Vec<AddrInfoRow>>,
-    }
-
-    let output = Command::new("ip")
-        .args(["--json", "addr", "show", "dev", device])
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Command failed with status: {}", output.status),
-        ));
-    }
-
-    let ifaces: Vec<IfaceRow> = serde_json::from_slice(&output.stdout)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    let ipv4 = ifaces
-        .into_iter()
-        .flat_map(|iface| iface.addr_info.into_iter().flatten())
-        .find_map(|row| match (row.family.as_deref(), row.local.as_deref()) {
-            (Some("inet"), Some(local)) => local.parse::<Ipv4Addr>().ok(),
-            _ => None,
-        });
-
-    Ok(ipv4)
-}
-
 /// Creates one UDP socket bound on `multicast_port` and joins applicable multicast groups.
 /// If `multicast_ip` is provided, join just that group, otherwise parse `ip route list` for
 /// entries on `device_name` and join all multicast groups found.
