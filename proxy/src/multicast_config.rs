@@ -93,7 +93,7 @@ pub fn parse_ipv4_addr_from_ip_addr_show_json(bytes: &[u8]) -> io::Result<Option
         .flat_map(|row| row.addr_info.unwrap_or_default())
         .find_map(|info| {
             (info.family.as_deref() == Some("inet"))
-                .then(|| info.local)
+                .then_some(info.local)
                 .flatten()
         })
         .and_then(|s| s.parse::<Ipv4Addr>().ok());
