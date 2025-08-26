@@ -414,7 +414,7 @@ fn create_multicast_socket_on_device(
     multicast_port: u16,
     multicast_ip: Option<IpAddr>,
 ) -> Option<Vec<UdpSocket>> {
-    let (mut groups_v4, mut groups_v6): (Vec<Ipv4Addr>, Vec<Ipv6Addr>) = match multicast_ip {
+    let (groups_v4, groups_v6): (Vec<Ipv4Addr>, Vec<Ipv6Addr>) = match multicast_ip {
         Some(IpAddr::V4(g)) => (vec![g], Vec::new()),
         Some(IpAddr::V6(g6)) => (Vec::new(), vec![g6]),
         None => match parse_ip_route_for_device(device_name) {
@@ -441,50 +441,40 @@ fn create_multicast_socket_on_device(
 
     let mut sockets: Vec<UdpSocket> = Vec::new();
     if !groups_v4.is_empty() {
-        let bind_v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), multicast_port);
-        match UdpSocket::bind(bind_v4) {
-            Ok(sock_v4) => {
-                groups_v4.drain(..).for_each(|g| match sock_v4.join_multicast_v4(&g, &Ipv4Addr::UNSPECIFIED) {
+        let addr_v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), multicast_port);
+        if let Ok(sock_v4) = UdpSocket::bind(addr_v4) {
+            for g in groups_v4.into_iter() {
+                match sock_v4.join_multicast_v4(&g, &Ipv4Addr::UNSPECIFIED) {
                     Ok(()) => info!(
-                        "Joined IPv4 multicast group {g} on {device_name} (default iface) port {multicast_port}"
+                        "Joined IPv4 multicast group {g} on {device_name} port {multicast_port}"
                     ),
-                    Err(e) => warn!(
-                        "Failed joining IPv4 group {g} on {device_name} (default iface): {e}"
-                    ),
-                });
-
-                sockets.push(sock_v4);
+                    Err(e) => warn!("Failed joining IPv4 group {g} on {device_name}: {e}"),
+                }
             }
-            Err(e) => warn!("Failed to bind IPv4 multicast socket on {bind_v4}: {e}"),
+            sockets.push(sock_v4);
+        } else {
+            warn!("Failed to bind IPv4 multicast socket on {addr_v4}");
         }
     }
 
     if !groups_v6.is_empty() {
-        let bind_v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), multicast_port);
-        match UdpSocket::bind(bind_v6) {
-            Ok(sock_v6) => {
-                groups_v6
-                    .drain(..)
-                    .for_each(|g| match sock_v6.join_multicast_v6(&g, 0) {
-                        Ok(()) => info!(
-                            "Joined IPv6 multicast group {g} on {device_name} (default iface) port {multicast_port}"
-                        ),
-                        Err(e) => warn!(
-                            "Failed joining IPv6 group {g} on {device_name} (default iface): {e}"
-                        ),
-                    });
-
-                sockets.push(sock_v6);
+        let addr_v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), multicast_port);
+        if let Ok(sock_v6) = UdpSocket::bind(addr_v6) {
+            for g in groups_v6.into_iter() {
+                match sock_v6.join_multicast_v6(&g, 0) {
+                    Ok(()) => info!(
+                        "Joined IPv6 multicast group {g} on {device_name} port {multicast_port}"
+                    ),
+                    Err(e) => warn!("Failed joining IPv6 group {g} on {device_name}: {e}"),
+                }
             }
-            Err(e) => warn!("Failed to bind IPv6 multicast socket on {bind_v6}: {e}"),
+            sockets.push(sock_v6);
+        } else {
+            warn!("Failed to bind IPv6 multicast socket on {addr_v6}");
         }
     }
 
-    if sockets.is_empty() {
-        None
-    } else {
-        Some(sockets)
-    }
+    (!sockets.is_empty()).then_some(sockets)
 }
 
 fn start_heartbeat(
