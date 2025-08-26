@@ -400,7 +400,7 @@ fn start_heartbeat(
             args.common_args
                 .public_ip
                 .unwrap_or_else(|| get_public_ip().unwrap()),
-            9999,
+            args.common_args.src_bind_port,
         ),
         runtime,
         "shredstream_proxy".to_string(),
