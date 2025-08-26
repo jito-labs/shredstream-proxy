@@ -417,6 +417,69 @@ fn parse_ip_route_for_device(device: &str) -> io::Result<Vec<IpAddr>> {
     Ok(groups)
 }
 
+/// Return the primary IPv4 address configured on `device` (if any), via `ip --json addr show`.
+fn ipv4_addr_for_device(device: &str) -> io::Result<Option<Ipv4Addr>> {
+    #[derive(Debug, Deserialize)]
+    struct AddrInfo {
+        family: Option<String>,
+        local: Option<String>,
+    }
+    #[derive(Debug, Deserialize)]
+    struct IfaceRow {
+        addr_info: Option<Vec<AddrInfo>>,
+    }
+
+    let output = Command::new("ip")
+        .args(["--json", "addr", "show", "dev", device])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Command failed with status: {}", output.status),
+        ));
+    }
+
+    let rows: Vec<IfaceRow> = serde_json::from_slice(&output.stdout)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    for row in rows.into_iter() {
+        if let Some(infos) = row.addr_info {
+            for info in infos.into_iter() {
+                if info.family.as_deref() == Some("inet") {
+                    if let Some(ip_str) = info.local {
+                        if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
+                            return Ok(Some(ip));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Return the interface index for `device` (if any), via `ip --json link show`.
+fn ifindex_for_device(device: &str) -> io::Result<Option<u32>> {
+    #[derive(Debug, Deserialize)]
+    struct LinkRow {
+        ifindex: Option<u32>,
+    }
+
+    let output = Command::new("ip")
+        .args(["--json", "link", "show", "dev", device])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Command failed with status: {}", output.status),
+        ));
+    }
+
+    let mut rows: Vec<LinkRow> = serde_json::from_slice(&output.stdout)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(rows.pop().and_then(|r| r.ifindex))
+}
+
 /// Creates one UDP socket bound on `multicast_port` and joins applicable multicast groups.
 /// If `multicast_ip` is provided, join just that group, otherwise parse `ip route list` for
 /// entries on `device_name` and join all multicast groups found.
@@ -425,6 +488,15 @@ fn create_multicast_socket_on_device(
     multicast_port: u16,
     multicast_ip: Option<IpAddr>,
 ) -> Option<Vec<UdpSocket>> {
+    // Determine device-local interface identifiers for membership
+    let device_ipv4 = ipv4_addr_for_device(device_name).unwrap_or_else(|e| {
+        warn!("Failed to resolve IPv4 address for device {device_name}: {e}");
+        None
+    });
+    let device_ifindex_v6 = ifindex_for_device(device_name).unwrap_or_else(|e| {
+        warn!("Failed to resolve ifindex for device {device_name}: {e}");
+        None
+    });
     let (groups_v4, groups_v6): (Vec<Ipv4Addr>, Vec<Ipv6Addr>) = match multicast_ip {
         Some(IpAddr::V4(g)) => (vec![g], Vec::new()),
         Some(IpAddr::V6(g6)) => (Vec::new(), vec![g6]),
@@ -455,7 +527,7 @@ fn create_multicast_socket_on_device(
         let addr_v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), multicast_port);
         if let Ok(sock_v4) = UdpSocket::bind(addr_v4) {
             for g in groups_v4.into_iter() {
-                match sock_v4.join_multicast_v4(&g, &Ipv4Addr::UNSPECIFIED) {
+                match sock_v4.join_multicast_v4(&g, &device_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)) {
                     Ok(()) => info!("Joined IPv4 multicast group {g} port {multicast_port}"),
                     Err(e) => warn!("Failed joining IPv4 group {g}: {e}"),
                 }
@@ -470,7 +542,7 @@ fn create_multicast_socket_on_device(
         let addr_v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), multicast_port);
         if let Ok(sock_v6) = UdpSocket::bind(addr_v6) {
             for g in groups_v6.into_iter() {
-                match sock_v6.join_multicast_v6(&g, 0) {
+                match sock_v6.join_multicast_v6(&g, device_ifindex_v6.unwrap_or(0)) {
                     Ok(()) => info!("Joined IPv6 multicast group {g} port {multicast_port}"),
                     Err(e) => warn!("Failed joining IPv6 group {g}: {e}"),
                 }
