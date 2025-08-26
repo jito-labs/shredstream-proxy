@@ -95,20 +95,17 @@ pub fn parse_ipv4_addr_from_ip_addr_show_json(bytes: &[u8]) -> io::Result<Option
     let rows: Vec<IfaceRow> =
         serde_json::from_slice(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    for row in rows.into_iter() {
-        if let Some(infos) = row.addr_info {
-            for info in infos.into_iter() {
-                if info.family.as_deref() == Some("inet") {
-                    if let Some(ip_str) = info.local {
-                        if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
-                            return Ok(Some(ip));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(None)
+    let ip = rows
+        .into_iter()
+        .flat_map(|row| row.addr_info.unwrap_or_default())
+        .find_map(|info| {
+            (info.family.as_deref() == Some("inet"))
+                .then(|| info.local)
+                .flatten()
+        })
+        .and_then(|s| s.parse::<Ipv4Addr>().ok());
+
+    Ok(ip)
 }
 
 pub fn parse_ifindex_from_ip_link_show_json(bytes: &[u8]) -> io::Result<Option<u32>> {
@@ -210,7 +207,7 @@ mod tests {
     };
 
     #[test]
-    fn parse_ip_route_for_device() {
+    fn parse_ip_route_for_device_test() {
         let json = r#"[{"dst":"169.254.2.112/31","protocol":"kernel","scope":"link","prefsrc":"169.254.2.113","flags":[]},{"dst":"233.84.178.2","gateway":"169.254.2.112","protocol":"static","flags":[]}]"#;
         let parsed = parse_ip_route_for_device(json.as_bytes()).unwrap();
         assert_eq!(parsed, vec![Ipv4Addr::new(233, 84, 178, 2)]);
