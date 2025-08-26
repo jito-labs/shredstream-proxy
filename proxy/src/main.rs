@@ -444,28 +444,6 @@ fn get_device_ipv4(device: &str) -> io::Result<Option<Ipv4Addr>> {
     Ok(ipv4)
 }
 
-/// Returns the interface index for `device` using `ip --json link show dev <device>`.
-fn get_device_ifindex(device: &str) -> io::Result<Option<u32>> {
-    #[derive(Debug, Deserialize)]
-    struct LinkRow {
-        ifindex: Option<u32>,
-    }
-
-    let output = Command::new("ip")
-        .args(["--json", "link", "show", "dev", device])
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Command failed with status: {}", output.status),
-        ));
-    }
-
-    let links: Vec<LinkRow> = serde_json::from_slice(&output.stdout)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(links.into_iter().find_map(|row| row.ifindex))
-}
-
 /// Creates one UDP socket bound on `multicast_port` and joins applicable multicast groups.
 /// If `multicast_ip` is provided, join just that group, otherwise parse `ip route list` for
 /// entries on `device_name` and join all multicast groups found.
@@ -504,26 +482,12 @@ fn create_multicast_socket_on_device(
         let bind_v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), multicast_port);
         match UdpSocket::bind(bind_v4) {
             Ok(sock_v4) => {
-                let iface_v4 = match get_device_ipv4(device_name) {
-                    Ok(Some(ip)) => ip,
-                    Ok(None) => {
-                        warn!(
-                            "No IPv4 addr for device {device_name}; joining via default interface"
-                        );
-                        Ipv4Addr::UNSPECIFIED
-                    }
-                    Err(e) => {
-                        warn!("Error determining IPv4 for {device_name}: {e}; joining via default interface");
-                        Ipv4Addr::UNSPECIFIED
-                    }
-                };
-
-                groups_v4.drain(..).for_each(|g| match sock_v4.join_multicast_v4(&g, &iface_v4) {
+                groups_v4.drain(..).for_each(|g| match sock_v4.join_multicast_v4(&g, &Ipv4Addr::UNSPECIFIED) {
                     Ok(()) => info!(
-                        "Joined IPv4 multicast group {g} on {device_name} (iface {iface_v4}) port {multicast_port}"
+                        "Joined IPv4 multicast group {g} on {device_name} (default iface) port {multicast_port}"
                     ),
                     Err(e) => warn!(
-                        "Failed joining IPv4 group {g} on {device_name} (iface {iface_v4}): {e}"
+                        "Failed joining IPv4 group {g} on {device_name} (default iface): {e}"
                     ),
                 });
 
@@ -537,29 +501,16 @@ fn create_multicast_socket_on_device(
         let bind_v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), multicast_port);
         match UdpSocket::bind(bind_v6) {
             Ok(sock_v6) => {
-                // Ensure IPv6-only binding does not block; default is dual-stack dependent on sysctl, but OK here.
-                let ifindex = match get_device_ifindex(device_name) {
-                    Ok(Some(idx)) => idx,
-                    Ok(None) => {
-                        warn!("No interface index for device {device_name}; skipping IPv6 group joins");
-                        0
-                    }
-                    Err(e) => {
-                        warn!("Error determining interface index for {device_name}: {e}; skipping IPv6 group joins");
-                        0
-                    }
-                };
-
-                if ifindex != 0 {
-                    groups_v6.drain(..).for_each(|g| match sock_v6.join_multicast_v6(&g, 0 /* any*/ ) {
+                groups_v6
+                    .drain(..)
+                    .for_each(|g| match sock_v6.join_multicast_v6(&g, 0) {
                         Ok(()) => info!(
-                            "Joined IPv6 multicast group {g} on {device_name} (ifindex {ifindex}) port {multicast_port}"
+                            "Joined IPv6 multicast group {g} on {device_name} (default iface) port {multicast_port}"
                         ),
                         Err(e) => warn!(
-                            "Failed joining IPv6 group {g} on {device_name} (ifindex {ifindex}): {e}"
+                            "Failed joining IPv6 group {g} on {device_name} (default iface): {e}"
                         ),
                     });
-                }
 
                 sockets.push(sock_v6);
             }
