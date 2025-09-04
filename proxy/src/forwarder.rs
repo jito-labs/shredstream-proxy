@@ -16,8 +16,8 @@ use itertools::Itertools;
 use jito_protos::shredstream::{Entry as PbEntry, TraceShred};
 use log::{debug, error, info, warn};
 use prost::Message;
-use solana_ledger::shred::ReedSolomonCache;
 use solana_client::client_error::reqwest;
+use solana_ledger::shred::ReedSolomonCache;
 use solana_metrics::{datapoint_info, datapoint_warn};
 use solana_net_utils::SocketConfig;
 use solana_perf::{
@@ -49,6 +49,7 @@ pub fn start_forwarder_threads(
     unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
     src_addr: IpAddr,
     src_port: u16,
+    maybe_multicast_socket: Option<Vec<UdpSocket>>,
     num_threads: Option<usize>,
     deduper: Arc<RwLock<Deduper<2, [u8]>>>,
     should_reconstruct_shreds: bool,
@@ -66,7 +67,7 @@ pub fn start_forwarder_threads(
     let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
 
     // multi_bind_in_range returns (port, Vec<UdpSocket>)
-    let sockets = solana_net_utils::multi_bind_in_range_with_config(
+    let (_port, sockets) = solana_net_utils::multi_bind_in_range_with_config(
         src_addr,
         (src_port, src_port + 1),
         SocketConfig::default().reuseport(true),
@@ -131,8 +132,8 @@ pub fn start_forwarder_threads(
     };
 
     sockets
-        .1
         .into_iter()
+        .chain(maybe_multicast_socket.into_iter().flatten())
         .enumerate()
         .flat_map(|(thread_id, incoming_shred_socket)| {
             let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();

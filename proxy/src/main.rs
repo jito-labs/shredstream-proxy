@@ -30,10 +30,14 @@ use thiserror::Error;
 use tokio::{runtime::Runtime, sync::broadcast::Sender as BroadcastSender};
 use tonic::Status;
 
-use crate::{forwarder::ShredMetrics, token_authenticator::BlockEngineConnectionError};
+use crate::{
+    forwarder::ShredMetrics, multicast_config::create_multicast_socket_on_device,
+    token_authenticator::BlockEngineConnectionError,
+};
 mod deshred;
 pub mod forwarder;
 mod heartbeat;
+mod multicast_config;
 mod server;
 mod token_authenticator;
 
@@ -87,6 +91,21 @@ struct CommonArgs {
     /// Port where Shredstream proxy listens. Use `0` for random ephemeral port.
     #[arg(long, env, default_value_t = 20_000)]
     src_bind_port: u16,
+
+    /// Multicast IP to listen for shreds. If none provided, attempts to
+    /// parse multicast routes for the device specified by `--multicast-device`
+    /// via `ip --json route show dev <device>`.
+    #[arg(long, env)]
+    multicast_bind_ip: Option<IpAddr>,
+
+    /// Network device to use for multicast route discovery and interface selection.
+    /// Example: `eth0`, `en0`, or `doublezero1`.
+    #[arg(long, env, default_value = "doublezero1")]
+    multicast_device: String,
+
+    /// Port to receive multicast shreds
+    #[arg(long, env, default_value_t = 20001)]
+    multicast_subscribe_port: u16,
 
     /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated.
     /// Eg. `127.0.0.1:8001,10.0.0.1:8001`.
@@ -211,13 +230,13 @@ fn main() -> Result<(), ShredstreamProxyError> {
     if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
         || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
     {
-        panic!("Invalid arguments provided, dynamic endpoints requires both --endpoint-discovery-url and --discovered-endpoints-port.")
+        return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "Invalid arguments provided, dynamic endpoints requires both --endpoint-discovery-url and --discovered-endpoints-port.")));
     }
     if args.endpoint_discovery_url.is_none()
         && args.discovered_endpoints_port.is_none()
         && args.dest_ip_ports.is_empty()
     {
-        panic!("No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")
+        return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")));
     }
 
     let exit = Arc::new(AtomicBool::new(false));
@@ -271,10 +290,16 @@ fn main() -> Result<(), ShredstreamProxyError> {
     let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
+    let maybe_multicast_socket = create_multicast_socket_on_device(
+        &args.multicast_device,
+        args.multicast_subscribe_port,
+        args.multicast_bind_ip,
+    );
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_addr,
         args.src_bind_port,
+        maybe_multicast_socket,
         args.num_threads,
         deduper.clone(),
         args.grpc_service_port.is_some(),

@@ -2775,6 +2775,7 @@ dependencies = [
  "prost-types 0.13.5",
  "rand 0.8.5",
  "reqwest 0.12.15",
+ "serde",
  "serde_json",
  "signal-hook",
  "solana-client",
