@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock,
@@ -15,6 +15,7 @@ use dashmap::DashMap;
 use itertools::Itertools;
 use jito_protos::shredstream::{Entry as PbEntry, TraceShred};
 use log::{debug, error, info, warn};
+use libc;
 use prost::Message;
 use solana_client::client_error::reqwest;
 use solana_ledger::shred::ReedSolomonCache;
@@ -160,9 +161,26 @@ pub fn start_forwarder_threads(
             let send_thread = Builder::new()
                 .name(format!("ssPxyTx_{thread_id}"))
                 .spawn(move || {
-                    let send_socket =
-                        UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
-                            .expect("to bind to udp port for forwarding");
+                    let send_socket = {
+                        let ipv6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0);
+                        match UdpSocket::bind(ipv6_addr) {
+                            Ok(socket) => {
+                                info!("Successfully bound send socket to IPv6 dual-stack address.");
+                                socket
+                            }
+                            Err(e) if e.raw_os_error() == Some(libc::EAFNOSUPPORT) => {
+                                // This error (code 97 on Linux) means IPv6 is not supported.
+                                warn!("IPv6 not available. Falling back to IPv4-only for sending.");
+                                let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+                                UdpSocket::bind(ipv4_addr)
+                                    .expect("Failed to bind to IPv4 socket after IPv6 failed")
+                            }
+                            Err(e) => {
+                                // For any other error (e.g., port in use), panic.
+                                panic!("Failed to bind send socket with an unexpected error: {e}");
+                            }
+                        }
+                    };
                     let mut local_dest_sockets = unioned_dest_sockets.load();
 
                     let refresh_subscribers_tick = if use_discovery_service {
