@@ -18,6 +18,7 @@ env_logger = { workspace = true }
 hostname = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
+libc = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
