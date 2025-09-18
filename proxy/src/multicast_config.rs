@@ -5,7 +5,7 @@ use std::{
 };
 
 use itertools::{Either, Itertools};
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde::Deserialize;
 
 fn run_ip_json(args: &[&str]) -> io::Result<Vec<u8>> {
@@ -121,11 +121,11 @@ pub fn create_multicast_socket_on_device(
     multicast_ip: Option<IpAddr>,
 ) -> Option<Vec<UdpSocket>> {
     let device_ipv4 = ipv4_addr_for_device(device_name).unwrap_or_else(|e| {
-        warn!("Failed to resolve IPv4 address for device {device_name}: {e}");
+        debug!("Failed to resolve IPv4 address for device {device_name}: {e}");
         None
     });
     let device_ifindex_v6 = ifindex_for_device(device_name).unwrap_or_else(|e| {
-        warn!("Failed to resolve ifindex for device {device_name}: {e}");
+        debug!("Failed to resolve ifindex for device {device_name}: {e}");
         None
     });
 
@@ -138,14 +138,14 @@ pub fn create_multicast_socket_on_device(
                 IpAddr::V6(v6) => Either::Right(v6),
             }),
             Err(e) => {
-                warn!("Failed to parse 'ip route list' for {device_name}: {e}");
+                debug!("Failed to parse 'ip route list' for {device_name}: {e}");
                 (Vec::new(), Vec::new())
             }
         },
     };
 
     if groups_v4.is_empty() && groups_v6.is_empty() {
-        warn!("No multicast groups found for device {device_name}; skipping multicast listener");
+        debug!("No multicast groups found for device {device_name}; skipping multicast listener");
         return None;
     }
 
