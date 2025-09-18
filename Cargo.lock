@@ -2746,7 +2746,7 @@ dependencies = [
 
 [[package]]
 name = "jito-protos"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "prost 0.13.5",
  "prost-types 0.13.5",
@@ -2757,7 +2757,7 @@ dependencies = [
 
 [[package]]
 name = "jito-shredstream-proxy"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "ahash 0.8.11",
  "arc-swap",
