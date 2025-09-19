@@ -294,7 +294,8 @@ fn main() -> Result<(), ShredstreamProxyError> {
         &args.multicast_device,
         args.multicast_subscribe_port,
         args.multicast_bind_ip,
-    );
+    )
+    .inspect(|mcast_socket| info!("Multicast listeners found: {mcast_socket:?}."));
     let forwarder_hdls = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_addr,

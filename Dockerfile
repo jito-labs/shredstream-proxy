@@ -17,7 +17,8 @@ RUN --mount=type=cache,mode=0777,target=/home/root/app/target \
 
 ################################################################################
 FROM --platform=linux/amd64 debian:bullseye-slim as base_image
-RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl1.1 && rm -rf /var/lib/apt/lists/*
+# keep iproute2 for multicast route parsing
+RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl1.1 iproute2 && rm -rf /var/lib/apt/lists/*
 
 ################################################################################
 FROM base_image as shredstream_proxy
