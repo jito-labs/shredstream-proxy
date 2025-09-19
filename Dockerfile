@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.4.0
-FROM --platform=linux/amd64 rust:1.84-slim-bookworm as builder
+FROM --platform=linux/amd64 rust:1.84-slim-bullseye as builder
 
 RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl-dev protobuf-compiler pkg-config libudev-dev zlib1g-dev llvm clang cmake make libprotobuf-dev g++
 RUN rustup component add rustfmt && update-ca-certificates
@@ -16,7 +16,7 @@ RUN --mount=type=cache,mode=0777,target=/home/root/app/target \
     cargo build --release && cp target/release/jito-* ./
 
 ################################################################################
-FROM --platform=linux/amd64 debian:bookworm-slim as base_image
+FROM --platform=linux/amd64 debian:bullseye-slim as base_image
 # keep iproute2 for multicast route parsing
 RUN apt-get -qq update && apt-get install -qq -y ca-certificates libssl1.1 iproute2 && rm -rf /var/lib/apt/lists/*
 
