@@ -5,10 +5,10 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock,
     },
-    thread::{Builder, JoinHandle},
+    thread::{self, Builder, JoinHandle},
     time::{Duration, SystemTime},
 };
-
+use std::sync::atomic::Ordering::Relaxed;
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvError};
 use dashmap::DashMap;
@@ -31,7 +31,7 @@ use solana_streamer::{
     streamer::{self, StreamerReceiveStats},
 };
 use tokio::sync::broadcast::Sender;
-
+use crate::xdp::XdpSender;
 use crate::{
     deshred,
     deshred::{ComparableShred, ShredsStateTracker},
@@ -42,6 +42,9 @@ use crate::{
 pub const DEDUPER_FALSE_POSITIVE_RATE: f64 = 0.001;
 pub const DEDUPER_NUM_BITS: u64 = 637_534_199; // 76MB
 pub const DEDUPER_RESET_CYCLE: Duration = Duration::from_secs(5 * 60);
+
+// 4096 is the default value in solana
+pub const PACKET_BATCH_SIZE: usize = 4096;
 
 /// Bind to ports and start forwarding shreds
 #[allow(clippy::too_many_arguments)]
@@ -150,13 +153,14 @@ pub fn start_forwarder_threads(
                 false,
             );
 
+            
             let deduper = deduper.clone();
             let unioned_dest_sockets = unioned_dest_sockets.clone();
             let metrics = metrics.clone();
             let shutdown_receiver = shutdown_receiver.clone();
             let reconstruct_tx = reconstruct_tx.clone();
             let exit = exit.clone();
-
+            
             let send_thread = Builder::new()
                 .name(format!("ssPxyTx_{thread_id}"))
                 .spawn(move || {
@@ -212,6 +216,281 @@ pub fn start_forwarder_threads(
         .collect::<Vec<JoinHandle<()>>>()
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn start_forwarder_threads_new(
+    unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>, /* sockets shared between endpoint discovery thread and forwarders */
+    src_addr: IpAddr,
+    src_port: u16,
+    num_threads: usize,
+    deduper: Arc<RwLock<Deduper<2, [u8]>>>,
+    should_reconstruct_shreds: bool,
+    entry_sender: Arc<Sender<PbEntry>>,
+    debug_trace_shred: bool,
+    use_discovery_service: bool,
+    forward_stats: Arc<StreamerReceiveStats>,
+    metrics: Arc<ShredMetrics>,
+    refresh_signal_counter: Arc<AtomicU64>,
+    shutdown_receiver: Receiver<()>,
+    exit: Arc<AtomicBool>,
+    xdp_sender: Option<Arc<XdpSender>>,
+) -> Vec<JoinHandle<()>> {
+    // let num_threads = num_threads
+    //     .unwrap_or_else(|| usize::from(std::thread::available_parallelism().unwrap()).max(4));
+
+    let recycler: PacketBatchRecycler = Recycler::warmed(100, 1024);
+
+    // multi_bind_in_range returns (port, Vec<UdpSocket>)
+    let sockets = solana_net_utils::multi_bind_in_range_with_config(
+        src_addr,
+        (src_port, src_port + 1),
+        SocketConfig::default().reuseport(true),
+        num_threads,
+    )
+    .unwrap_or_else(|_| {
+        panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
+    });
+
+    let (reconstruct_tx, reconstruct_rx) = crossbeam_channel::bounded(1_024);
+    let mut thread_hdls = Vec::with_capacity(num_threads + 1);
+
+    if should_reconstruct_shreds {
+        let metrics = metrics.clone();
+        let exit = exit.clone();
+        // receives shreds from recv_from_channel_and_send_multiple_dest and calls deshred::reconstruct_shreds
+        let hdl = std::thread::Builder::new()
+            .name("shred_reconstructor".to_string())
+            .spawn(move || {
+                let mut all_shreds = ahash::HashMap::<
+                    Slot,
+                    (
+                        ahash::HashMap<u32, HashSet<ComparableShred>>,
+                        ShredsStateTracker,
+                    ),
+                >::default();
+                let mut slot_fec_indexes_to_iterate = Vec::<(Slot, u32)>::new();
+                let mut deshredded_entries =
+                    Vec::<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>::new();
+                let mut highest_slot_seen: Slot = 0;
+                let rs_cache = ReedSolomonCache::default();
+
+                while !exit.load(Ordering::Relaxed) {
+                    match reconstruct_rx.recv_timeout(Duration::from_millis(100)) {
+                        Ok(pkt_batch) => {
+                            deshred::reconstruct_shreds(
+                                pkt_batch,
+                                &mut all_shreds,
+                                &mut slot_fec_indexes_to_iterate,
+                                &mut deshredded_entries,
+                                &mut highest_slot_seen,
+                                &rs_cache,
+                                &metrics,
+                            );
+
+                            deshredded_entries.drain(..).for_each(
+                                |(slot, _entries, entries_bytes)| {
+                                    let _ = entry_sender.send(PbEntry {
+                                        slot,
+                                        entries: entries_bytes,
+                                    });
+                                },
+                            );
+                        }
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {} // do nothing
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            })
+            .unwrap();
+        thread_hdls.push(hdl);
+    };
+
+    sockets
+        .1
+        .into_iter()
+        .enumerate()
+        .flat_map(|(thread_id, incoming_shred_socket)| {
+            let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
+
+            let xdp_sender = xdp_sender.clone();
+
+            log::info!("🔍 FORWARDER: Started listen thread={} on socket={:?}", thread_id, incoming_shred_socket.local_addr().unwrap_or_else(|_| "unknown".parse().unwrap()));
+            
+            let listen_thread = streamer::receiver(
+                format!("ssListen{thread_id}"),
+                Arc::new(incoming_shred_socket),
+                exit.clone(),
+                packet_sender,
+                recycler.clone(),
+                forward_stats.clone(),
+                Duration::default(),
+                false,
+                None,
+                false,
+            );
+
+            let deduper = deduper.clone();
+            let unioned_dest_sockets = unioned_dest_sockets.clone();
+            let shutdown_receiver = shutdown_receiver.clone();
+            let metrics = metrics.clone();
+            let reconstruct_tx = reconstruct_tx.clone();
+            let refresh_signal_counter = refresh_signal_counter.clone();
+            let exit = exit.clone();
+
+            let refresh_subscribers_tick = if use_discovery_service {
+                crossbeam_channel::tick(Duration::from_secs(30))
+            } else {
+                crossbeam_channel::tick(Duration::MAX)
+            };
+
+            let mut local_dest_sockets = unioned_dest_sockets.load();
+
+            let mut packet_batches_vec = Vec::with_capacity(PACKET_BATCH_SIZE);
+
+            let send_thread = Builder::new()
+                .name(format!("ssPxyTx_{thread_id}"))
+                .spawn(move || {
+                    let metrics = metrics.clone();
+                    if let Some(sender) = xdp_sender {
+                        let thread_pool = {
+                            let num_threads = local_dest_sockets.len();
+                            rayon::ThreadPoolBuilder::new()
+                                .num_threads(num_threads)
+                                .thread_name(|idx| format!("shreadStreamProxyTx_{idx}"))
+                                .build()
+                                .unwrap()
+                        };
+
+                        // let send_batches = |socket_addrs: Arc<Vec<SocketAddr>>, batches_arc: Arc<PacketBatch>| {
+                        //    log::debug!("XDP: Sending batch with {} packets to {} destinations", batches_arc.len(), socket_addrs.len());
+                        //    sender.try_send_batch(socket_addrs.as_ref().into(), &batches_arc).is_ok()
+                        // };
+
+                        let mut seen_ver =  refresh_signal_counter.load(Relaxed);
+                        // todo: this is a hack to avoid loading the full unioned_dest_sockets
+                        let mut local_dests_arc = unioned_dest_sockets.load();
+
+                        while !exit.load(Ordering::Relaxed) {
+                            // Fast shutdown path: break out if signalled
+                            if shutdown_receiver.try_recv().is_ok() {
+                                break;
+                            }
+                            let ver = refresh_signal_counter.load(Relaxed);
+                            // refresh the local destination sockets only if the refresh_signal_counter has changed
+                            if ver != seen_ver {
+                                local_dests_arc = unioned_dest_sockets.load();
+                                seen_ver = ver;
+                            }
+
+                            match packet_receiver.try_recv() {
+                                Ok(packet_batch) => {
+                                    let metrics = metrics.clone();
+                                    let Ok((num_deduped, _trace_shred_received_time)) = preprocess_batch_xdp(
+                                        packet_batch,
+                                        &deduper,
+                                        should_reconstruct_shreds,
+                                        &reconstruct_tx,
+                                        debug_trace_shred,
+                                        &metrics,
+                                        &mut packet_batches_vec,
+                                    ) else {
+                                        error!("Failed to preprocess packet batch (fast_dedup)");
+                                        break;
+                                    };
+                                    let total_pkts_after: usize = packet_batches_vec.iter().map(|b| b.len()).sum();
+                                    log::info!(
+                                        "XDP dedup removed {} packets; remaining {} packets across {} batches",
+                                        num_deduped,
+                                        total_pkts_after,
+                                        packet_batches_vec.len()
+                                    );
+                                    // Record duplicates here too so both branches contribute
+                                    metrics.duplicate.fetch_add(num_deduped, Ordering::Relaxed);
+                                }
+                                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                                    break;
+                                }
+                                Err(crossbeam_channel::TryRecvError::Empty) => {
+                                    thread::sleep(Duration::from_millis(1));
+                                }
+                            }
+
+                            //takes 4096 packet batches from the receiver channel
+                            for packet_batch in packet_receiver.try_iter().take(PACKET_BATCH_SIZE - 1) {
+                                let metrics = metrics.clone();
+                                // preprocess the packet batch, dedup redudant packets and store the deduped packet batches in the packet_batches_vec
+                                let Ok((num_deduped, _trace_shred_received_time)) = preprocess_batch_xdp(
+                                    packet_batch,
+                                    &deduper,
+                                    should_reconstruct_shreds,
+                                    &reconstruct_tx,
+                                    debug_trace_shred,
+                                    &metrics,
+                                    &mut packet_batches_vec,
+                                ) else {
+                                    error!("Failed to preprocess packet batch (fast_dedup)");
+                                    break;
+                                };
+                                // dedup every packet batch and record metrics
+                                let total_pkts_after: usize = packet_batches_vec.iter().map(|b| b.len()).sum();
+                                log::info!(
+                                    "XDP dedup removed {} packets; remaining {} packets across {} batches",
+                                    num_deduped,
+                                    total_pkts_after,
+                                    packet_batches_vec.len()
+                                );
+
+                                // Update duplicate metrics (was missing in XDP path)
+                                metrics.duplicate.fetch_add(num_deduped, Ordering::Relaxed);
+
+                                let _ = sender.batch_send_xdp(&thread_pool, &mut packet_batches_vec, &local_dests_arc, metrics);
+                            }
+                        }
+                        drop(sender);
+                    } else {
+                        log::info!("FORWARDER: Thread {} using UDP socket forwarding mode", thread_id);
+                        let send_socket = UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
+                                .expect("to bind to udp port for forwarding");
+                        log::info!("UDP: Created forwarding socket bound to {:?}", send_socket.local_addr().unwrap());
+        
+                            while !exit.load(Ordering::Relaxed) {
+                                crossbeam_channel::select! {
+                                    recv(packet_receiver) -> maybe_packet_batch => {
+                                        let res = recv_from_channel_and_send_multiple_dest(
+                                            maybe_packet_batch,
+                                            &deduper,
+                                            &send_socket,
+                                            &local_dest_sockets,
+                                            should_reconstruct_shreds,
+                                            &reconstruct_tx,
+                                            debug_trace_shred,
+                                            &metrics,
+                                        );
+
+                                        if res.is_err() {
+                                            break;
+                                        }
+                                    },
+                                    recv(refresh_subscribers_tick) -> _ => {
+                                        local_dest_sockets = unioned_dest_sockets.load();
+                                    }
+                                    recv(shutdown_receiver) -> _ => {
+                                        break;
+                                    }
+
+                                }
+                            }
+                        }
+
+                })
+                .unwrap();
+
+            vec![listen_thread, send_thread]
+        })
+        .for_each(|hdl| thread_hdls.push(hdl));
+    thread_hdls
+}
+
+
 /// Broadcasts the same packet to multiple recipients, parses it into a Shred if possible,
 /// and stores that shred in `all_shreds`.
 #[allow(clippy::too_many_arguments)]
@@ -225,56 +504,33 @@ fn recv_from_channel_and_send_multiple_dest(
     debug_trace_shred: bool,
     metrics: &ShredMetrics,
 ) -> Result<(), ShredstreamProxyError> {
-    let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
-    let trace_shred_received_time = SystemTime::now();
-    metrics
-        .received
-        .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
-    debug!(
-        "Got batch of {} packets, total size in bytes: {}",
-        packet_batch.len(),
-        packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
-    );
-
-    if should_reconstruct_shreds {
-        let _ = reconstruct_tx.try_send(packet_batch.clone());
+    let packet_batch_result = maybe_packet_batch?;
+    if packet_batch_result.len() > 0 {
+        let first_packet = &packet_batch_result[0];
+        log::debug!("📥 RECEIVED: {} packets from {}", packet_batch_result.len(), first_packet.meta().addr);
     }
-
-    let mut packet_batch_vec = vec![packet_batch];
-
-    let num_deduped = solana_perf::deduper::dedup_packets_and_count_discards(
-        &deduper.read().unwrap(),
-        &mut packet_batch_vec,
-    );
-    // Store stats for each Packet
-    packet_batch_vec.iter().for_each(|batch| {
-        batch.iter().for_each(|packet| {
-            metrics
-                .packets_received
-                .entry(packet.meta().addr)
-                .and_modify(|(discarded, not_discarded)| {
-                    *discarded += packet.meta().discard() as u64;
-                    *not_discarded += (!packet.meta().discard()) as u64;
-                })
-                .or_insert_with(|| {
-                    (
-                        packet.meta().discard() as u64,
-                        (!packet.meta().discard()) as u64,
-                    )
-                });
-        });
-    });
+    
+    let (packet_batch, num_deduped, trace_shred_received_time) = preprocess_batch(
+        Ok(packet_batch_result),
+        deduper,
+        should_reconstruct_shreds,
+        reconstruct_tx,
+        metrics,
+    )?;
 
     // send out to RPCs
     local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
-        let packets_with_dest = packet_batch_vec[0]
+        let mut packets_with_dest = Vec::with_capacity(packet_batch.len());
+        packet_batch
             .iter()
             .filter_map(|pkt| {
-                let data = pkt.data(..)?;
+                let data: &[u8] = pkt.data(..)?;
                 let addr = outgoing_socketaddr;
                 Some((data, addr))
             })
-            .collect::<Vec<(&[u8], &SocketAddr)>>();
+            .for_each(|(data, addr)| {
+                packets_with_dest.push((data, addr));
+            });
 
         match batch_send(send_socket, &packets_with_dest) {
             Ok(_) => {
@@ -301,7 +557,7 @@ fn recv_from_channel_and_send_multiple_dest(
 
     // Count TraceShred shreds
     if debug_trace_shred {
-        packet_batch_vec[0]
+        packet_batch
             .iter()
             .filter_map(|p| TraceShred::decode(p.data(..)?).ok())
             .filter(|t| t.created_at.is_some())
@@ -323,12 +579,15 @@ fn recv_from_channel_and_send_multiple_dest(
 }
 
 /// Starts a thread that updates our destinations used by the forwarder threads
+/// This is the control plane for the forwarder threads.
+/// added refresh_signal_counter to signal the data-plane to reload once every 30s if discovery is on.
 pub fn start_destination_refresh_thread(
     endpoint_discovery_url: String,
     discovered_endpoints_port: u16,
     static_dest_sockets: Vec<(SocketAddr, String)>,
     unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>,
     shutdown_receiver: Receiver<()>,
+    refresh_signal_counter: Arc<AtomicU64>,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     Builder::new().name("ssPxyDstRefresh".to_string()).spawn(move || {
@@ -360,6 +619,7 @@ pub fn start_destination_refresh_thread(
                         };
                         socket_count = new_sockets.len();
                         unioned_dest_sockets.store(Arc::new(new_sockets));
+                        refresh_signal_counter.fetch_add(1, Ordering::Relaxed);
                     }
                     recv(metrics_tick) -> _ => {
                         datapoint_info!("shredstream_proxy-destination_refresh_stats",
@@ -449,6 +709,122 @@ pub fn start_forwarder_accessory_thread(
             }
         })
         .unwrap()
+}
+
+#[inline(always)]
+fn preprocess_batch(
+    maybe_packet_batch: Result<PacketBatch, RecvError>,
+    deduper: &RwLock<Deduper<2, [u8]>>,
+    should_reconstruct_shreds: bool,
+    reconstruct_tx: &crossbeam_channel::Sender<PacketBatch>,
+    metrics: &ShredMetrics,
+) -> Result<(PacketBatch, u64, SystemTime), ShredstreamProxyError> {
+    let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
+    let trace_shred_received_time = SystemTime::now();
+    metrics
+        .received
+        .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
+
+    debug!(
+        "Got batch of {} packets, total size in bytes: {}",
+        packet_batch.len(),
+        packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
+    );
+  
+    if should_reconstruct_shreds {
+        let _ = reconstruct_tx.try_send(packet_batch.clone());
+    }
+
+    let mut packet_batch_vec = vec![packet_batch];
+
+    let num_deduped = solana_perf::deduper::dedup_packets_and_count_discards(
+        &deduper.read().unwrap(),
+        &mut packet_batch_vec,
+    );
+    
+    packet_batch_vec.iter().for_each(|batch| {
+        batch.iter().for_each(|packet| {
+            metrics.packets_received.entry(packet.meta().addr).and_modify(|(discarded, not_discarded)| {
+                *discarded += packet.meta().discard() as u64;
+                *not_discarded += (!packet.meta().discard()) as u64;
+            }).or_insert_with(|| {
+                (packet.meta().discard() as u64, (!packet.meta().discard()) as u64)
+            });
+        })
+    });
+
+    Ok((packet_batch_vec[0].clone(), num_deduped, trace_shred_received_time))
+}
+
+
+// this fn only does shred deduplication and metrics recording
+#[inline(always)]
+fn preprocess_batch_xdp(
+    packet_batch: PacketBatch,
+    deduper: &RwLock<Deduper<2, [u8]>>,
+    should_reconstruct_shreds: bool,
+    reconstruct_tx: &crossbeam_channel::Sender<PacketBatch>,
+    debug_trace_shred: bool,
+    metrics: &ShredMetrics,
+    packet_batch_vec: &mut Vec<PacketBatch>,
+) -> Result<(u64, SystemTime), ShredstreamProxyError> {
+    let trace_shred_received_time = SystemTime::now();
+    metrics
+        .received
+        .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
+
+    debug!(
+        "Got batch of {} packets, total size in bytes: {}",
+        packet_batch.len(),
+        packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
+    );
+
+    if should_reconstruct_shreds {
+        let _ = reconstruct_tx.try_send(packet_batch.clone());
+    }
+
+    packet_batch_vec.push(packet_batch);
+
+    // core part of the function
+    let num_deduped = solana_perf::deduper::dedup_packets_and_count_discards(
+        &deduper.read().unwrap(),
+        packet_batch_vec,
+    );
+    
+    packet_batch_vec.iter().for_each(|batch| {
+        batch.iter().for_each(|packet| {
+            metrics.packets_received.entry(packet.meta().addr).and_modify(|(discarded, not_discarded)| {
+                *discarded += packet.meta().discard() as u64;
+                *not_discarded += (!packet.meta().discard()) as u64;
+            }).or_insert_with(|| {
+                (packet.meta().discard() as u64, (!packet.meta().discard()) as u64)
+            });
+        })
+    });
+
+    // Count TraceShred shreds (same as UDP path)
+    if debug_trace_shred {
+        packet_batch_vec.iter().for_each(|batch| {
+            batch
+                .iter()
+                .filter_map(|p| TraceShred::decode(p.data(..)?).ok())
+                .filter(|t| t.created_at.is_some())
+                .for_each(|trace_shred| {
+                    let elapsed = trace_shred_received_time
+                        .duration_since(SystemTime::try_from(trace_shred.created_at.unwrap()).unwrap())
+                        .unwrap_or_default();
+
+                    datapoint_info!(
+                        "shredstream_proxy-trace_shred_latency",
+                        "trace_region" => trace_shred.region,
+                        ("trace_seq_num", trace_shred.seq_num as i64, i64),
+                        ("elapsed_micros", elapsed.as_micros(), i64),
+                    );
+                });
+        });
+    }
+
+    Ok((num_deduped, trace_shred_received_time))
 }
 
 pub struct ShredMetrics {

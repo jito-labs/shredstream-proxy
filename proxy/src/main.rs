@@ -1,22 +1,22 @@
 use std::{
-    collections::HashMap,
-    io,
-    io::{Error, ErrorKind},
+    collections::{BTreeSet, HashMap},
+    fs,
+    io::{self, Error, ErrorKind},
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     panic,
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock,
     },
-    thread,
-    thread::{sleep, spawn, JoinHandle},
+    thread::{self, sleep, spawn, JoinHandle},
     time::Duration,
 };
 
+use agave_xdp::set_cpu_affinity;
 use arc_swap::ArcSwap;
-use clap::{arg, Parser};
+use clap::{arg, Parser, ValueEnum};
 use crossbeam_channel::{Receiver, RecvError, Sender};
 use log::*;
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -32,7 +32,7 @@ use tonic::Status;
 
 use crate::{
     forwarder::ShredMetrics, multicast_config::create_multicast_socket_on_device,
-    token_authenticator::BlockEngineConnectionError,
+    token_authenticator::BlockEngineConnectionError, xdp::PacketTransmitter,
 };
 mod deshred;
 pub mod forwarder;
@@ -40,10 +40,13 @@ mod heartbeat;
 mod multicast_config;
 mod server;
 mod token_authenticator;
+mod xdp;
+
+#[cfg(target_os = "linux")]
+use xdp::XdpConfig;
 
 #[derive(Clone, Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
-// https://docs.rs/clap/latest/clap/_derive/_cookbook/git_derive/index.html
 struct Args {
     #[command(subcommand)]
     shredstream_args: ProxySubcommands,
@@ -51,17 +54,25 @@ struct Args {
 
 #[derive(Clone, Debug, clap::Subcommand)]
 enum ProxySubcommands {
-    /// Requests shreds from Jito and sends to all destinations.
     Shredstream(ShredstreamArgs),
-
-    /// Does not request shreds from Jito. Sends anything received on `src-bind-addr`:`src-bind-port` to all destinations.
     ForwardOnly(CommonArgs),
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum PacketTransmissionMode {
+    Xdp,
+    Udp,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum XdpCpuMode {
+    Auto,
+    Manual,
 }
 
 #[derive(clap::Args, Clone, Debug)]
 struct ShredstreamArgs {
     /// Address for Jito Block Engine.
-    /// See https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
     #[arg(long, env)]
     block_engine_url: String,
 
@@ -74,7 +85,6 @@ struct ShredstreamArgs {
     auth_keypair: PathBuf,
 
     /// Desired regions to receive heartbeats from.
-    /// Receives `n` different streams. Requires at least 1 region, comma separated.
     #[arg(long, env, value_delimiter = ',', required(true))]
     desired_regions: Vec<String>,
 
@@ -110,17 +120,15 @@ struct CommonArgs {
     /// Static set of IP:Port where Shredstream proxy forwards shreds to, comma separated.
     /// Eg. `127.0.0.1:8001,10.0.0.1:8001`.
     // Note: store the original string, so we can do hostname resolution when refreshing destinations
+    /// Static set of IP:Port to forward to, comma separated.
     #[arg(long, env, value_delimiter = ',', value_parser = resolve_hostname_port)]
     dest_ip_ports: Vec<(SocketAddr, String)>,
 
-    /// Http JSON endpoint to dynamically get IPs for Shredstream proxy to forward shreds.
-    /// Endpoints are then set-union with `dest-ip-ports`.
+    /// JSON endpoint to dynamically get IPs for forwarding.
     #[arg(long, env)]
     endpoint_discovery_url: Option<String>,
 
-    /// Port to send shreds to for hosts fetched via `endpoint-discovery-url`.
-    /// Port can be found using `scripts/get_tvu_port.sh`.
-    /// See https://jito-labs.gitbook.io/mev/searcher-services/shredstream#running-shredstream
+    /// Port to send shreds to for hosts fetched via discovery URL.
     #[arg(long, env)]
     discovered_endpoints_port: Option<u16>,
 
@@ -136,14 +144,25 @@ struct CommonArgs {
     #[arg(long, env)]
     grpc_service_port: Option<u16>,
 
-    /// Public IP address to use.
-    /// Overrides value fetched from `ifconfig.me`.
+    /// Public IP address override.
     #[arg(long, env)]
     public_ip: Option<IpAddr>,
 
-    /// Number of threads to use. Defaults to use up to 4.
+    /// Packet transmission mode: XDP or UDP
+    #[arg(long, env, value_enum, default_value_t = PacketTransmissionMode::Udp)]
+    packet_transmission_mode: PacketTransmissionMode,
+
+    /// Network interface used for XDP and auto CPU discovery
+    #[arg(long, env, default_value = "enp1s0f1")]
+    iface: String,
+
+    /// CPU selection mode for XDP TX threads
+    #[arg(long, env, value_enum, default_value_t = XdpCpuMode::Auto)]
+    xdp_cpu_mode: XdpCpuMode,
+
+    /// CPUs (ranges) for manual mode, e.g. "8-11" or "0,2,4,6"
     #[arg(long, env)]
-    num_threads: Option<usize>,
+    xdp_cpus: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -175,7 +194,6 @@ fn resolve_hostname_port(hostname_port: &str) -> io::Result<(SocketAddr, String)
             format!("Could not find destination {hostname_port}"),
         )
     })?;
-
     Ok((socketaddr, hostname_port.to_string()))
 }
 
@@ -188,11 +206,9 @@ pub fn get_public_ip() -> reqwest::Result<IpAddr> {
     let response = client.get("https://ifconfig.me/ip").send()?.text()?;
     let public_ip = IpAddr::from_str(&response).unwrap();
     info!("Retrieved public ip: {public_ip:?}");
-
     Ok(public_ip)
 }
 
-// Creates a channel that gets a message every time `SIGINT` is signalled.
 fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<()>)> {
     let (s, r) = crossbeam_channel::bounded(256);
     let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?;
@@ -201,32 +217,32 @@ fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<
     thread::spawn(move || {
         for _ in signals.forever() {
             exit.store(true, Ordering::SeqCst);
-            // send shutdown signal multiple times since crossbeam doesn't have broadcast channels
-            // each thread will consume a shutdown signal
+            // broadcast-ish: push many tokens so all threads can drain one
             for _ in 0..256 {
-                if s_thread.send(()).is_err() {
+                if s_thread.try_send(()).is_err() {
                     break;
                 }
             }
         }
     });
-
     Ok((s, r))
 }
 
 pub type ReconstructedShredsMap = HashMap<Slot, HashMap<u32 /* fec_set_index */, Vec<Shred>>>;
+
 fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder().init();
 
     let all_args: Args = Args::parse();
 
     let shredstream_args = all_args.shredstream_args.clone();
-    // common args
     let args = match all_args.shredstream_args {
         ProxySubcommands::Shredstream(x) => x.common_args,
         ProxySubcommands::ForwardOnly(x) => x,
     };
+
     set_host_id(hostname::get()?.into_string().unwrap());
+
     if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
         || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
     {
@@ -239,9 +255,84 @@ fn main() -> Result<(), ShredstreamProxyError> {
         return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")));
     }
 
+    let num_threads: usize;
+
+    let (transmitter_threads, xdp_sender) = if matches!(
+        args.packet_transmission_mode,
+        PacketTransmissionMode::Xdp
+    ) {
+        // Choose CPUs for XDP TX threads
+        let xdp_cpus: Vec<usize> = match args.xdp_cpu_mode {
+            XdpCpuMode::Auto => match discover_nic_queue_cpus(&args.iface) {
+                Ok(v) if !v.is_empty() => {
+                    info!(
+                        "XDP auto: discovered queue CPUs for {}: {:?}",
+                        &args.iface, v
+                    );
+                    v
+                }
+                _ => {
+                    let fallback = vec![8, 9, 10, 11];
+                    warn!(
+                        "XDP auto: could not discover CPUs for {}, falling back to default {:?}",
+                        &args.iface, fallback
+                    );
+                    fallback
+                }
+            },
+            XdpCpuMode::Manual => {
+                if let Some(s) = args.xdp_cpus.as_deref() {
+                    parse_cpu_ranges(s).expect("failed to parse --xdp-cpus")
+                } else {
+                    let fallback = vec![8, 9, 10, 11];
+                    warn!(
+                        "XDP manual: --xdp-cpus not provided, using default {:?}",
+                        fallback
+                    );
+                    fallback
+                }
+            }
+        };
+
+        // Reserve those CPUs for XDP; pin other threads to the complement
+        let all: BTreeSet<usize> = core_affinity::get_core_ids()
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .map(|c| c.id)
+            .collect();
+        let reserved: BTreeSet<usize> = xdp_cpus.iter().copied().collect();
+        let available: Vec<usize> = all.difference(&reserved).copied().collect();
+
+        info!("Reserved (XDP) CPUs: {:?}", xdp_cpus);
+        info!("Available CPUs for other threads: {:?}", available);
+
+        if !available.is_empty() {
+            set_cpu_affinity(available.clone()).unwrap();
+        }
+
+        num_threads = available.len().max(1);
+
+        let xdp_config = XdpConfig {
+            device_name: Some(args.iface.clone()),
+            cpus: xdp_cpus.clone(),
+            zero_copy_enabled: true,
+            rtx_channel_cap: 1_000_000,
+        };
+
+        let (transmitter_threads, xdp_sender) =
+            PacketTransmitter::new(xdp_config, args.src_bind_port)
+                .expect("Failed to create xdp transmitter");
+        (transmitter_threads, Some(Arc::new(xdp_sender)))
+    } else {
+        num_threads = usize::from(std::thread::available_parallelism().unwrap()).min(4);
+        (PacketTransmitter::default(), None)
+    };
+
     let exit = Arc::new(AtomicBool::new(false));
     let (shutdown_sender, shutdown_receiver) =
         shutdown_notifier(exit.clone()).expect("Failed to set up signal handler");
+
     let panic_hook = panic::take_hook();
     {
         let exit = exit.clone();
@@ -250,7 +341,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
             let _ = shutdown_sender.send(());
             error!("exiting process");
             sleep(Duration::from_secs(1));
-            // invoke the default handler and exit the process
             panic_hook(panic_info);
         }));
     }
@@ -259,6 +349,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let runtime = Runtime::new()?;
     let mut thread_handles = vec![];
+
     if let ProxySubcommands::Shredstream(args) = shredstream_args {
         if args.desired_regions.len() > 2 {
             warn!(
@@ -271,7 +362,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
         thread_handles.push(heartbeat_hdl);
     }
 
-    // share sockets between refresh and forwarder thread
     let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(
         args.dest_ip_ports
             .iter()
@@ -279,8 +369,6 @@ fn main() -> Result<(), ShredstreamProxyError> {
             .collect::<Vec<SocketAddr>>(),
     ));
 
-    // share deduper + metrics between forwarder <-> accessory thread
-    // use mutex since metrics are write heavy. cheaper than rwlock
     let deduper = Arc::new(RwLock::new(Deduper::<2, [u8]>::new(
         &mut rand::thread_rng(),
         forwarder::DEDUPER_NUM_BITS,
@@ -288,6 +376,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let entry_sender = Arc::new(BroadcastSender::new(100));
     let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
+    let refresh_signal_counter = Arc::new(AtomicU64::new(0));
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
     let maybe_multicast_socket = create_multicast_socket_on_device(
@@ -296,12 +385,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.multicast_bind_ip,
     )
     .inspect(|mcast_socket| info!("Multicast listeners found: {mcast_socket:?}."));
-    let forwarder_hdls = forwarder::start_forwarder_threads(
+
+    let forwarder_hdls = forwarder::start_forwarder_threads_new(
         unioned_dest_sockets.clone(),
         args.src_bind_addr,
         args.src_bind_port,
-        maybe_multicast_socket,
-        args.num_threads,
+        num_threads,
         deduper.clone(),
         args.grpc_service_port.is_some(),
         entry_sender.clone(),
@@ -309,8 +398,10 @@ fn main() -> Result<(), ShredstreamProxyError> {
         use_discovery_service,
         forward_stats.clone(),
         metrics.clone(),
+        refresh_signal_counter.clone(),
         shutdown_receiver.clone(),
         exit.clone(),
+        xdp_sender.clone(),
     );
     thread_handles.extend(forwarder_hdls);
 
@@ -333,6 +424,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         exit.clone(),
     );
     thread_handles.push(metrics_hdl);
+
     if use_discovery_service {
         let refresh_handle = forwarder::start_destination_refresh_thread(
             args.endpoint_discovery_url.unwrap(),
@@ -340,6 +432,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
             args.dest_ip_ports,
             unioned_dest_sockets,
             shutdown_receiver.clone(),
+            refresh_signal_counter.clone(),
             exit.clone(),
         );
         thread_handles.push(refresh_handle);
@@ -355,14 +448,18 @@ fn main() -> Result<(), ShredstreamProxyError> {
         thread_handles.push(server_hdl);
     }
 
-    info!(
-        "Shredstream started, listening on {}:{}/udp.",
-        args.src_bind_addr, args.src_bind_port
-    );
+    // Proactively drop the XDP sender before waiting on other threads
+    if let Some(sender) = xdp_sender {
+        drop(sender);
+    }
 
     for thread in thread_handles {
         thread.join().expect("thread panicked");
     }
+
+    transmitter_threads
+        .join()
+        .expect("xdp worker threads panicked");
 
     info!(
         "Exiting Shredstream, {} received , {} sent successfully, {} failed, {} duplicate shreds.",
@@ -409,4 +506,68 @@ fn start_heartbeat(
         shutdown_receiver.clone(),
         exit.clone(),
     )
+}
+
+/// YOUR helper: parse comma/range list like "8-11" or "0,2,4,6"
+pub fn parse_cpu_ranges(data: &str) -> Result<Vec<usize>, std::io::Error> {
+    use std::num::ParseIntError;
+    data.split(',')
+        .map(|range| {
+            let mut iter = range
+                .split('-')
+                .map(|s| s.parse::<usize>().map_err(|ParseIntError { .. }| range));
+            let start = iter.next().unwrap()?; // str::split always returns at least one element.
+            let end = match iter.next() {
+                None => start,
+                Some(end) => {
+                    if iter.next().is_some() {
+                        return Err(range);
+                    }
+                    end?
+                }
+            };
+            Ok(start..=end)
+        })
+        .try_fold(Vec::new(), |mut cpus, range| {
+            let range = range.map_err(|range| io::Error::new(io::ErrorKind::InvalidData, range))?;
+            cpus.extend(range);
+            Ok(cpus)
+        })
+}
+
+/// Read /proc/interrupts and return IRQs for `iface` TxRx queues
+fn find_iface_queue_irqs(iface: &str) -> io::Result<Vec<u32>> {
+    let data = fs::read_to_string("/proc/interrupts")?;
+    let mut irqs = Vec::new();
+    for line in data.lines() {
+        if line.contains(iface) && line.contains("TxRx") {
+            if let Some((left, _)) = line.split_once(':') {
+                if let Ok(irq) = left.trim().parse::<u32>() {
+                    irqs.push(irq);
+                }
+            }
+        }
+    }
+    Ok(irqs)
+}
+
+/// Read /proc/irq/<IRQ>/smp_affinity_list and parse using parse_cpu_ranges
+fn read_irq_affinity_list(irq: u32) -> io::Result<Vec<usize>> {
+    let path = format!("/proc/irq/{}/smp_affinity_list", irq);
+    let s = fs::read_to_string(&path)?.trim().to_string();
+    parse_cpu_ranges(&s)
+}
+
+/// Discover NIC queue CPUs for `iface`
+fn discover_nic_queue_cpus(iface: &str) -> io::Result<Vec<usize>> {
+    let irqs = find_iface_queue_irqs(iface)?;
+    let mut cpus = Vec::new();
+    for irq in irqs {
+        if let Ok(mut v) = read_irq_affinity_list(irq) {
+            cpus.append(&mut v);
+        }
+    }
+    cpus.sort_unstable();
+    cpus.dedup();
+    Ok(cpus)
 }

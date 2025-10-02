@@ -14,6 +14,9 @@ ahash = "0.8"
 arc-swap = "1.6"
 bincode = "1.3.3"
 borsh = "1.5.3"
+agave-xdp = "3.0.0"
+aya = "0.13"
+caps = "0.5.5"
 clap = { version = "4", features = ["derive", "env"] }
 crossbeam-channel = "0.5.8"
 dashmap = "5"
@@ -25,6 +28,7 @@ log = "0.4"
 prost = "0.13"
 prost-types = "0.13"
 rand = "0.8"
+rayon = "1.11.0"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

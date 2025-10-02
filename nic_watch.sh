@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+IF=enp1s0f1; while :; do t1=$(< /sys/class/net/$IF/statistics/tx_packets); b1=$(< /sys/class/net/$IF/statistics/tx_bytes); sleep 1; t2=$(< /sys/class/net/$IF/statistics/tx_packets); b2=$(< /sys/class/net/$IF/statistics/tx_bytes); echo "[$(date +%T)] $IF tx pps=$((t2-t1))  tx Mbps=$((8*(b2-b1)/1000000))"; done
