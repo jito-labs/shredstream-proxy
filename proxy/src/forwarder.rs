@@ -50,6 +50,7 @@ pub fn start_forwarder_threads(
     src_addr: IpAddr,
     src_port: u16,
     maybe_multicast_socket: Option<Vec<UdpSocket>>,
+    maybe_triton_multicast_socket: Option<(IpAddr, Vec<UdpSocket>)>,
     num_threads: Option<usize>,
     deduper: Arc<RwLock<Deduper<2, [u8]>>>,
     should_reconstruct_shreds: bool,
@@ -131,15 +132,15 @@ pub fn start_forwarder_threads(
         thread_hdls.push(hdl);
     };
 
-    sockets
+    let mut ret =  sockets
         .into_iter()
-        .chain(maybe_multicast_socket.into_iter().flatten())
+        .chain(maybe_multicast_socket.unwrap_or_default())
         .enumerate()
-        .flat_map(|(thread_id, incoming_shred_socket)| {
+        .flat_map(|(thread_id, source)| {
             let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
             let listen_thread = streamer::receiver(
                 format!("ssListen{thread_id}"),
-                Arc::new(incoming_shred_socket),
+                Arc::new(source),
                 exit.clone(),
                 packet_sender,
                 recycler.clone(),
@@ -180,6 +181,7 @@ pub fn start_forwarder_threads(
                                     &deduper,
                                     &send_socket,
                                     &local_dest_sockets,
+                                    accept_all,
                                     should_reconstruct_shreds,
                                     &reconstruct_tx,
                                     debug_trace_shred,
@@ -209,22 +211,153 @@ pub fn start_forwarder_threads(
 
             vec![listen_thread, send_thread]
         })
-        .collect::<Vec<JoinHandle<()>>>()
+        .collect::<Vec<JoinHandle<()>>>();
+
+    if let Some((multicast_origin, multicast_socket)) = maybe_triton_multicast_socket {
+        start_multicast_forwarder_thread(
+            multicast_origin, 
+            multicast_socket, 
+            recycler, 
+            reconstruct_tx, 
+            unioned_dest_sockets, 
+            deduper, 
+            forward_stats, 
+            metrics, 
+            debug_trace_shred, 
+            should_reconstruct_shreds, 
+            use_discovery_service, 
+            shutdown_receiver, 
+            exit, 
+            &mut ret
+        );
+    }
+    ret
+}
+
+
+pub struct MulticastSource {
+    pub socket: Arc<UdpSocket>,
+    pub group: IpAddr,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn start_multicast_forwarder_thread(
+    multicast_origin: IpAddr,
+    sockets: Vec<UdpSocket>,
+    recycler: PacketBatchRecycler,
+    reconstruct_tx: crossbeam_channel::Sender<PacketBatch>,
+    unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>,
+    deduper: Arc<RwLock<Deduper<2, [u8]>>>,
+    forward_stats: Arc<StreamerReceiveStats>,
+    metrics: Arc<ShredMetrics>,
+    debug_trace_shred: bool,
+    should_reconstruct_shreds: bool,
+    use_discovery_service: bool,
+    shutdown_receiver: Receiver<()>,
+    exit: Arc<AtomicBool>,
+    out: &mut Vec<JoinHandle<()>>,
+) {
+    for (thread_id, socket) in sockets.into_iter().enumerate() {
+        let (packet_sender, packet_receiver) = crossbeam_channel::unbounded();
+        let listen_thread = streamer::receiver(
+            format!("ssListenMulticast{thread_id}"),
+            Arc::new(socket),
+            exit.clone(),
+            packet_sender,
+            recycler.clone(),
+            forward_stats.clone(),
+            Duration::default(),
+            false,
+            None,
+            false,
+        );
+
+        out.push(listen_thread);
+        let deduper = deduper.clone();
+        let unioned_dest_sockets = unioned_dest_sockets.clone();
+        let metrics = metrics.clone();
+        let shutdown_receiver = shutdown_receiver.clone();
+        let reconstruct_tx = reconstruct_tx.clone();
+        let exit = exit.clone();
+
+        let dont_send_to_origin = move |dest: &SocketAddr| dest.ip() == multicast_origin;
+
+        let send_thread = Builder::new()
+            .name(format!("ssPxyTxMulticast_{thread_id}"))
+            .spawn(move || {
+                let send_socket =
+                    UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
+                        .expect("to bind to udp port for forwarding");
+                let mut local_dest_sockets = unioned_dest_sockets.load();
+
+                let refresh_subscribers_tick = if use_discovery_service {
+                    crossbeam_channel::tick(Duration::from_secs(30))
+                } else {
+                    crossbeam_channel::tick(Duration::MAX)
+                };
+
+                while !exit.load(Ordering::Relaxed) {
+                    crossbeam_channel::select! {
+                        // forward packets
+                        recv(packet_receiver) -> maybe_packet_batch => {
+                            let res = recv_from_channel_and_send_multiple_dest(
+                                maybe_packet_batch,
+                                &deduper,
+                                &send_socket,
+                                &local_dest_sockets,
+                                dont_send_to_origin,
+                                should_reconstruct_shreds,
+                                &reconstruct_tx,
+                                debug_trace_shred,
+                                &metrics,
+                            );
+
+                            // If the channel is closed or error, break out
+                            if res.is_err() {
+                                break;
+                            }
+                        }
+
+                        // refresh thread-local subscribers
+                        recv(refresh_subscribers_tick) -> _ => {
+                            local_dest_sockets = unioned_dest_sockets.load();
+                        }
+
+                        // handle shutdown (avoid using sleep since it can hang)
+                        recv(shutdown_receiver) -> _ => {
+                            break;
+                        }
+                    }
+                }
+                info!("Exiting forwarder thread {thread_id}.");
+            })
+            .unwrap();
+
+        out.push(send_thread);
+    }
+}
+
+fn accept_all(_: &SocketAddr) -> bool {
+    true
 }
 
 /// Broadcasts the same packet to multiple recipients, parses it into a Shred if possible,
 /// and stores that shred in `all_shreds`.
 #[allow(clippy::too_many_arguments)]
-fn recv_from_channel_and_send_multiple_dest(
+fn recv_from_channel_and_send_multiple_dest<F>(
     maybe_packet_batch: Result<PacketBatch, RecvError>,
     deduper: &RwLock<Deduper<2, [u8]>>,
     send_socket: &UdpSocket,
     local_dest_sockets: &[SocketAddr],
+    local_dest_socket_filter: F,
     should_reconstruct_shreds: bool,
     reconstruct_tx: &crossbeam_channel::Sender<PacketBatch>,
     debug_trace_shred: bool,
     metrics: &ShredMetrics,
-) -> Result<(), ShredstreamProxyError> {
+) -> Result<(), ShredstreamProxyError> 
+where
+    F: Fn(&SocketAddr) -> bool,
+{
     let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
     metrics
@@ -267,6 +400,9 @@ fn recv_from_channel_and_send_multiple_dest(
 
     // send out to RPCs
     local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
+        if !local_dest_socket_filter(outgoing_socketaddr) {
+            return;
+        }
         let packets_with_dest = packet_batch_vec[0]
             .iter()
             .filter_map(|pkt| {
@@ -618,7 +754,7 @@ mod tests {
     };
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
 
-    use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
+    use crate::forwarder::{accept_all, recv_from_channel_and_send_multiple_dest, ShredMetrics};
 
     fn listen_and_collect(listen_socket: UdpSocket, received_packets: Arc<Mutex<Vec<Vec<u8>>>>) {
         let mut buf = [0u8; PACKET_DATA_SIZE];
@@ -692,6 +828,7 @@ mod tests {
             ))),
             &udp_sender,
             &Arc::new(dest_socketaddrs),
+            accept_all,
             true,
             &reconstruct_tx,
             false,
@@ -723,6 +860,112 @@ mod tests {
                 .iter()
                 .fold(0, |acc, elem| acc + elem.lock().unwrap().len()),
             6
+        );
+    }
+
+    #[test]
+    fn test_dest_filter() {
+        let packet_batch = PacketBatch::new(vec![
+            Packet::new(
+                [1; PACKET_DATA_SIZE],
+                Meta {
+                    size: PACKET_DATA_SIZE,
+                    addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    port: 48289, // received on random port
+                    flags: PacketFlags::empty(),
+                },
+            ),
+            Packet::new(
+                [2; PACKET_DATA_SIZE],
+                Meta {
+                    size: PACKET_DATA_SIZE,
+                    addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    port: 9999,
+                    flags: PacketFlags::empty(),
+                },
+            ),
+        ]);
+        let (packet_sender, packet_receiver) = crossbeam_channel::unbounded::<PacketBatch>();
+        packet_sender.send(packet_batch).unwrap();
+
+        let dest_socketaddrs = vec![
+            SocketAddr::from_str("0.0.0.0:32881").unwrap(),
+            SocketAddr::from_str("0.0.0.0:33881").unwrap(),
+            SocketAddr::from_str("0.0.0.0:34881").unwrap(),
+        ];
+
+        let blacklisted = SocketAddr::from_str("0.0.0.0:34881").unwrap(); // none blacklisted
+
+        let test_listeners = dest_socketaddrs
+            .iter()
+            .map(|socketaddr| {
+                (
+                    UdpSocket::bind(socketaddr).unwrap(),
+                    *socketaddr,
+                    // store results in vec of packet, where packet is Vec<u8>
+                    Arc::new(Mutex::new(vec![])),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let udp_sender = UdpSocket::bind("0.0.0.0:10000").unwrap();
+
+        // spawn listeners
+        test_listeners
+            .iter()
+            .for_each(|(listen_socket, _socketaddr, to_receive)| {
+                let socket = listen_socket.try_clone().unwrap();
+                let to_receive = to_receive.to_owned();
+                thread::spawn(move || listen_and_collect(socket, to_receive));
+            });
+
+        let (reconstruct_tx, _reconstruct_rx) = crossbeam_channel::bounded(1_024);
+        // send packets
+        recv_from_channel_and_send_multiple_dest(
+            packet_receiver.recv(),
+            &Arc::new(RwLock::new(Deduper::<2, [u8]>::new(
+                &mut rand::thread_rng(),
+                crate::forwarder::DEDUPER_NUM_BITS,
+            ))),
+            &udp_sender,
+            &Arc::new(dest_socketaddrs),
+            move |dest: &SocketAddr| *dest != blacklisted,
+            true,
+            &reconstruct_tx,
+            false,
+            &Arc::new(ShredMetrics::default()),
+        )
+        .unwrap();
+
+        // allow packets to be received
+        sleep(Duration::from_millis(500));
+
+        let received = test_listeners
+            .iter()
+            .take(test_listeners.len() - 1) // ignore blacklisted
+            .map(|(_, _, results)| results.clone())
+            .collect::<Vec<_>>();
+
+        // check results
+        for received in received.iter() {
+            let received = received.lock().unwrap();
+            assert_eq!(received.len(), 2);
+            assert!(received
+                .iter()
+                .all(|packet| packet.len() == PACKET_DATA_SIZE));
+            assert_eq!(received[0], [1; PACKET_DATA_SIZE]);
+            assert_eq!(received[1], [2; PACKET_DATA_SIZE]);
+        }
+
+        {
+            let received = test_listeners[2].2.lock().unwrap(); // ensure blacklisted received nothing
+            assert_eq!(received.len(), 0);
+        }
+        assert_eq!(
+            received
+                .iter()
+                .fold(0, |acc, elem| acc + elem.lock().unwrap().len()),
+            4
         );
     }
 }
