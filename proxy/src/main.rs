@@ -72,24 +72,6 @@ struct ShredstreamArgs {
     common_args: CommonArgs,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum MulticastProto {
-    Ipv4,
-    Ipv6,
-}
-
-impl FromStr for MulticastProto {
-    type Err = String;
-
-    fn from_str(input: &str) -> Result<MulticastProto, Self::Err> {
-        match input.to_lowercase().as_str() {
-            "ipv4" | "4" | "v4" => Ok(MulticastProto::Ipv4),
-            "ipv6" | "6" | "v6" => Ok(MulticastProto::Ipv6),
-            _ => Err(format!("Invalid multicast protocol: {}", input)),
-        }
-    }
-}
-
 #[derive(clap::Args, Clone, Debug)]
 struct CommonArgs {
     /// Address where Shredstream proxy listens.
