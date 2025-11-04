@@ -158,9 +158,13 @@ pub fn start_forwarder_threads(
             let reconstruct_tx = reconstruct_tx.clone();
             let exit = exit.clone();
 
+
             let send_thread = Builder::new()
                 .name(format!("ssPxyTx_{thread_id}"))
                 .spawn(move || {
+                    let dont_send_to_origin = move |origin: IpAddr, dest: SocketAddr| {
+                        origin != dest.ip()
+                    };
                     let send_socket =
                         UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
                             .expect("to bind to udp port for forwarding");
@@ -181,7 +185,7 @@ pub fn start_forwarder_threads(
                                     &deduper,
                                     &send_socket,
                                     &local_dest_sockets,
-                                    accept_all,
+                                    dont_send_to_origin,
                                     should_reconstruct_shreds,
                                     &reconstruct_tx,
                                     debug_trace_shred,
@@ -280,11 +284,14 @@ pub fn start_multicast_forwarder_thread(
         let reconstruct_tx = reconstruct_tx.clone();
         let exit = exit.clone();
 
-        let dont_send_to_origin = move |dest: &SocketAddr| dest.ip() == multicast_origin;
+        
 
         let send_thread = Builder::new()
             .name(format!("ssPxyTxMulticast_{thread_id}"))
             .spawn(move || {
+                let dont_send_to_mc_origin = move |_origin, dest: SocketAddr| {
+                    dest.ip() != multicast_origin
+                };
                 let send_socket =
                     UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
                         .expect("to bind to udp port for forwarding");
@@ -305,7 +312,7 @@ pub fn start_multicast_forwarder_thread(
                                 &deduper,
                                 &send_socket,
                                 &local_dest_sockets,
-                                dont_send_to_origin,
+                                dont_send_to_mc_origin,
                                 should_reconstruct_shreds,
                                 &reconstruct_tx,
                                 debug_trace_shred,
@@ -337,7 +344,8 @@ pub fn start_multicast_forwarder_thread(
     }
 }
 
-fn accept_all(_: &SocketAddr) -> bool {
+#[allow(dead_code)]
+fn accept_all(_origin: IpAddr, _dest: SocketAddr) -> bool {
     true
 }
 
@@ -356,7 +364,7 @@ fn recv_from_channel_and_send_multiple_dest<F>(
     metrics: &ShredMetrics,
 ) -> Result<(), ShredstreamProxyError> 
 where
-    F: Fn(&SocketAddr) -> bool,
+    F: Fn(IpAddr, SocketAddr) -> bool,
 {
     let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
@@ -400,11 +408,16 @@ where
 
     // send out to RPCs
     local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
-        if !local_dest_socket_filter(outgoing_socketaddr) {
-            return;
-        }
         let packets_with_dest = packet_batch_vec[0]
             .iter()
+            .filter_map(|pkt| {
+                let addr = pkt.meta().addr;
+                if local_dest_socket_filter(addr, *outgoing_socketaddr) {
+                    Some(pkt)
+                } else {
+                    None
+                }
+            })
             .filter_map(|pkt| {
                 let data = pkt.data(..)?;
                 let addr = outgoing_socketaddr;
@@ -929,7 +942,7 @@ mod tests {
             ))),
             &udp_sender,
             &Arc::new(dest_socketaddrs),
-            move |dest: &SocketAddr| *dest != blacklisted,
+            move |_origin, dest: SocketAddr| dest != blacklisted,
             true,
             &reconstruct_tx,
             false,
