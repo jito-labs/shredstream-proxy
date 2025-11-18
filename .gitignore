@@ -8,3 +8,7 @@
 .idea/
 
 .env
+
+.local
+
+.vscode
