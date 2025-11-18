@@ -17,6 +17,7 @@ use jito_protos::shredstream::{Entry as PbEntry, TraceShred};
 use log::{debug, error, info, warn};
 use libc;
 use prost::Message;
+use socket2::{Domain, Protocol, Socket, Type};
 use solana_client::client_error::reqwest;
 use solana_ledger::shred::ReedSolomonCache;
 use solana_metrics::{datapoint_info, datapoint_warn};
@@ -43,6 +44,7 @@ use crate::{
 pub const DEDUPER_FALSE_POSITIVE_RATE: f64 = 0.001;
 pub const DEDUPER_NUM_BITS: u64 = 637_534_199; // 76MB
 pub const DEDUPER_RESET_CYCLE: Duration = Duration::from_secs(5 * 60);
+pub const IP_MULTICAST_TTL: u32 = 8;
 
 /// Bind to ports and start forwarding shreds
 #[allow(clippy::too_many_arguments)]
@@ -168,7 +170,7 @@ pub fn start_forwarder_threads(
                     };
                     let send_socket = {
                         let ipv6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0);
-                        match UdpSocket::bind(ipv6_addr) {
+                        match try_create_ipv6_socket(ipv6_addr) {
                             Ok(socket) => {
                                 info!("Successfully bound send socket to IPv6 dual-stack address.");
                                 socket
@@ -256,6 +258,15 @@ pub fn start_forwarder_threads(
     ret
 }
 
+///
+/// Try to create an IPv6 UDP socket bound to the given address.
+/// 
+fn try_create_ipv6_socket(addr: SocketAddr) -> Result<UdpSocket, std::io::Error> {
+    let ipv6_socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    ipv6_socket.set_multicast_hops_v6(IP_MULTICAST_TTL)?;
+    ipv6_socket.bind(&addr.into())?;
+    Ok(ipv6_socket.into())
+}
 
 pub struct MulticastSource {
     pub socket: Arc<UdpSocket>,
@@ -312,7 +323,7 @@ pub fn start_multicast_forwarder_thread(
                 };
                 let send_socket = {
                     let ipv6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0);
-                    match UdpSocket::bind(ipv6_addr) {
+                    match try_create_ipv6_socket(ipv6_addr) {
                         Ok(socket) => {
                             info!("Successfully bound send socket to IPv6 dual-stack address.");
                             socket
@@ -321,8 +332,10 @@ pub fn start_multicast_forwarder_thread(
                             // This error (code 97 on Linux) means IPv6 is not supported.
                             warn!("IPv6 not available. Falling back to IPv4-only for sending.");
                             let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
-                            UdpSocket::bind(ipv4_addr)
-                                .expect("Failed to bind to IPv4 socket after IPv6 failed")
+                            let socket = UdpSocket::bind(ipv4_addr)
+                                .expect("Failed to bind to IPv4 socket after IPv6 failed");
+                            socket.set_multicast_ttl_v4(IP_MULTICAST_TTL).expect("IP_MULTICAST_TTL_V4");
+                            socket
                         }
                         Err(e) => {
                             // For any other error (e.g., port in use), panic.

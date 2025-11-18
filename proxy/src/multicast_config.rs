@@ -290,7 +290,6 @@ pub fn create_multicast_sockets_triton_v6(
     first_socket.bind(&SockAddr::from(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)))?;
     first_socket.join_multicast_v6(&config.multicast_ip, ifindex)?;
     let local_port = first_socket.local_addr()?.as_socket().unwrap().port();
-
     // Step 2: Create N-1 additional sockets on the same port for load balancing
     let mut sockets = Vec::with_capacity(num_threads.get());
     sockets.push(first_socket.into());

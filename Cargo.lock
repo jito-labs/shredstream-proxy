@@ -2770,6 +2770,7 @@ dependencies = [
  "hostname",
  "itertools 0.14.0",
  "jito-protos",
+ "libc",
  "log",
  "prost 0.13.5",
  "prost-types 0.13.5",
