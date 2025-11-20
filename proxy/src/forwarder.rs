@@ -237,7 +237,7 @@ fn recv_from_channel_and_send_multiple_dest(
     );
 
     if should_reconstruct_shreds {
-        let _ = reconstruct_tx.try_send(packet_batch.clone());
+        let _ = reconstruct_tx.send(packet_batch.clone());
     }
 
     let mut packet_batch_vec = vec![packet_batch];

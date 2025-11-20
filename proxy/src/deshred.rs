@@ -73,6 +73,7 @@ pub fn reconstruct_shreds(
 ) -> usize {
     deshredded_entries.clear();
     slot_fec_indexes_to_iterate.clear();
+    let mut data_fec_indexes_to_reconstruct = Vec::new();
     // ingest all packets
     for packet in packet_batch.iter().filter_map(|p| p.data(..)) {
         match solana_ledger::shred::Shred::new_from_serialized_shred(packet.to_vec())
@@ -95,7 +96,7 @@ pub fn reconstruct_shreds(
                     debug!("Already completed slot: {slot}, fec_set_index: {fec_set_index}, index: {index}");
                     continue;
                 }
-                let Some(_shred_index) = update_state_tracker(&shred, state_tracker) else {
+                let Some(_shred_index) = update_state_tracker(&shred, state_tracker, &mut data_fec_indexes_to_reconstruct) else {
                     continue;
                 };
 
@@ -159,7 +160,7 @@ pub fn reconstruct_shreds(
         for shred in recovered {
             match shred {
                 Ok(shred) => {
-                    if update_state_tracker(&shred, state_tracker).is_none() {
+                    if update_state_tracker(&shred, state_tracker, &mut data_fec_indexes_to_reconstruct).is_none() {
                         continue; // already seen before in state tracker
                     }
                     // shreds.insert(ComparableShred(shred)); // optional since all data shreds are in state_tracker
@@ -178,20 +179,17 @@ pub fn reconstruct_shreds(
             shreds.clear();
         }
     }
+    data_fec_indexes_to_reconstruct.sort_unstable();
+    data_fec_indexes_to_reconstruct.dedup();
 
     // deshred and bincode deserialize
-    for (slot, fec_set_index) in slot_fec_indexes_to_iterate.iter() {
+    for (slot, fec_set_index) in data_fec_indexes_to_reconstruct.iter() {
         let (_all_shreds, state_tracker) = all_shreds.entry(*slot).or_default();
-        let Some((start_data_complete_idx, end_data_complete_idx, unknown_start)) =
+        let Some((start_data_complete_idx, end_data_complete_idx)) =
             get_indexes(state_tracker, *fec_set_index as usize)
         else {
             continue;
         };
-        if unknown_start {
-            metrics
-                .unknown_start_position_count
-                .fetch_add(1, Ordering::Relaxed);
-        }
 
         let to_deshred =
             &state_tracker.data_shreds[start_data_complete_idx..=end_data_complete_idx];
@@ -204,11 +202,6 @@ pub fn reconstruct_shreds(
                 metrics
                     .fec_recovery_error_count
                     .fetch_add(1, Ordering::Relaxed);
-                if unknown_start {
-                    metrics
-                        .unknown_start_position_error_count
-                        .fetch_add(1, Ordering::Relaxed);
-                }
                 continue;
             }
         };
@@ -219,17 +212,12 @@ pub fn reconstruct_shreds(
             Ok(entries) => entries,
             Err(e) => {
                 debug!(
-                        "Failed to deserialize bincode payload of size {} for slot {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}, unknown_start: {unknown_start}. Err: {e}",
+                        "Failed to deserialize bincode payload of size {} for slot {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}. Err: {e}",
                         deshredded_payload.len()
                     );
                 metrics
                     .bincode_deserialize_error_count
                     .fetch_add(1, Ordering::Relaxed);
-                if unknown_start {
-                    metrics
-                        .unknown_start_position_error_count
-                        .fetch_add(1, Ordering::Relaxed);
-                }
                 continue;
             }
         };
@@ -369,7 +357,6 @@ fn get_indexes(
 ) -> Option<(
     usize, /* start_data_complete_idx */
     usize, /* end_data_complete_idx */
-    bool,  /* unknown start index */
 )> {
     if index >= tracker.data_status.len() {
         return None;
@@ -392,10 +379,10 @@ fn get_indexes(
     }
 
     if end == 0 {
-        return Some((0, 0, false)); // the vec *starts* with DataComplete
+        return Some((0, 0)); // the vec *starts* with DataComplete
     }
     if index == 0 {
-        return Some((0, end, false));
+        return Some((0, end));
     }
 
     // find the left boundary (prev DataComplete + 1)
@@ -408,20 +395,20 @@ fn get_indexes(
                     return None; // already covered by some other iteration
                 }
                 if next == 0 {
-                    return Some((0, end, false)); // no earlier DataComplete
+                    return Some((0, end)); // no earlier DataComplete
                 }
                 start = next;
                 next -= 1;
             }
-            ShredStatus::DataComplete => return Some((start, end, false)),
-            ShredStatus::Unknown => return Some((start, end, true)), // sometimes we don't have the previous starting shreds, make best guess
+            ShredStatus::DataComplete => return Some((start, end)),
+            ShredStatus::Unknown => return Some((start, end)), // sometimes we don't have the previous starting shreds, make best guess
         }
     }
 }
 
 /// Upon receiving a new shred (either from recovery or receiving a UDP packet), update the state tracker
 /// Returns shred index on new insert, None if already exists
-fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker) -> Option<usize> {
+fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker, data_fec_indexes_to_reconstruct: &mut Vec<(Slot, usize)>) -> Option<usize> {
     let index = shred.index() as usize;
     if state_tracker.already_recovered_fec_sets[shred.fec_set_index() as usize] {
         return None;
@@ -434,6 +421,18 @@ fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker) -
     }
     if let Shred::ShredData(s) = &shred {
         state_tracker.data_shreds[index] = Some(shred.clone());
+        if !s.last_in_slot() {
+            // If we received the next fec index before the current one, we could have perpetually
+            // failed to reconstruct the entries from the index due to never finding the start data boundary.
+            // To deal with this possible out-of-order scenario, we retry rebuilding the entrie(s) for the next
+            // fec index whenever we encounter a data complete boundary.
+            if let Some(next_slot) = &state_tracker.data_shreds[index + 1] {
+                data_fec_indexes_to_reconstruct.push((
+                    next_slot.common_header().slot,
+                    next_slot.fec_set_index() as usize,
+                ));
+            }
+        }
         if s.data_complete() || s.last_in_slot() {
             state_tracker.data_status[index] = ShredStatus::DataComplete;
         } else {
@@ -1082,7 +1081,7 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 0), Some((0, 2, false)));
+        assert_eq!(get_indexes(&tracker, 0), Some((0, 2)));
 
         let s = [
             ShredStatus::DataComplete,
@@ -1090,7 +1089,7 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 0), Some((0, 0, false)));
+        assert_eq!(get_indexes(&tracker, 0), Some((0, 0)));
 
         let s = [
             ShredStatus::Unknown,
@@ -1110,7 +1109,7 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), Some((1, 3, false)));
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 3)));
     }
 
     #[test]
@@ -1121,7 +1120,7 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), Some((1, 2, false)));
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 2)));
     }
 
     #[test]
@@ -1132,8 +1131,8 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), Some((0, 1, false)));
-        assert_eq!(get_indexes(&tracker, 2), Some((2, 2, false)));
+        assert_eq!(get_indexes(&tracker, 1), Some((0, 1)));
+        assert_eq!(get_indexes(&tracker, 2), Some((2, 2)));
     }
 
     #[test]
@@ -1146,9 +1145,9 @@ mod get_indexes_tests {
             ShredStatus::NotDataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), Some((0, 1, false)));
-        assert_eq!(get_indexes(&tracker, 2), Some((2, 2, false)));
-        assert_eq!(get_indexes(&tracker, 3), Some((3, 3, false)));
+        assert_eq!(get_indexes(&tracker, 1), Some((0, 1)));
+        assert_eq!(get_indexes(&tracker, 2), Some((2, 2)));
+        assert_eq!(get_indexes(&tracker, 3), Some((3, 3)));
     }
 
     #[test]
@@ -1167,7 +1166,7 @@ mod get_indexes_tests {
             ShredStatus::DataComplete,
         ];
         let tracker = make_test_statustracker(&s);
-        assert_eq!(get_indexes(&tracker, 1), Some((1, 2, true)));
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 2)));
     }
 
     #[test]
@@ -1181,8 +1180,8 @@ mod get_indexes_tests {
         ];
         let tracker = make_test_statustracker(&s);
         assert_eq!(get_indexes(&tracker, 0), None);
-        assert_eq!(get_indexes(&tracker, 1), Some((1, 1, true)));
-        assert_eq!(get_indexes(&tracker, 2), Some((2, 2, false)));
-        assert_eq!(get_indexes(&tracker, 3), Some((3, 4, false)));
+        assert_eq!(get_indexes(&tracker, 1), Some((1, 1)));
+        assert_eq!(get_indexes(&tracker, 2), Some((2, 2)));
+        assert_eq!(get_indexes(&tracker, 3), Some((3, 4)));
     }
 }
