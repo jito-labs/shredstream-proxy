@@ -682,7 +682,7 @@ mod tests {
                 thread::spawn(move || listen_and_collect(socket, to_receive));
             });
 
-        let (reconstruct_tx, _reconstruct_rx) = crossbeam_channel::bounded(1_024);
+        let (reconstruct_tx, _reconstruct_rx) = crossbeam_channel::bounded(10_240);
         // send packets
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
