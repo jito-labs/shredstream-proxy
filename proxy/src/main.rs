@@ -153,7 +153,7 @@ struct CommonArgs {
     packet_transmission_mode: PacketTransmissionMode,
 
     /// Network interface used for XDP and auto CPU discovery
-    #[arg(long, env, default_value = "enp1s0f1")]
+    #[arg(long, env, default_value = "enp13s0u5")]
     iface: String,
 
     /// CPU selection mode for XDP TX threads
@@ -257,77 +257,75 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let num_threads: usize;
 
-    let (transmitter_threads, xdp_sender) = if matches!(
-        args.packet_transmission_mode,
-        PacketTransmissionMode::Xdp
-    ) {
-        // Choose CPUs for XDP TX threads
-        let xdp_cpus: Vec<usize> = match args.xdp_cpu_mode {
-            XdpCpuMode::Auto => match discover_nic_queue_cpus(&args.iface) {
-                Ok(v) if !v.is_empty() => {
-                    info!(
-                        "XDP auto: discovered queue CPUs for {}: {:?}",
-                        &args.iface, v
-                    );
-                    v
-                }
-                _ => {
-                    let fallback = vec![8, 9, 10, 11];
-                    warn!(
+    let (transmitter_threads, xdp_sender) =
+        if matches!(args.packet_transmission_mode, PacketTransmissionMode::Xdp) {
+            // Choose CPUs for XDP TX threads
+            let xdp_cpus: Vec<usize> = match args.xdp_cpu_mode {
+                XdpCpuMode::Auto => match discover_nic_queue_cpus(&args.iface) {
+                    Ok(v) if !v.is_empty() => {
+                        info!(
+                            "XDP auto: discovered queue CPUs for {}: {:?}",
+                            &args.iface, v
+                        );
+                        v
+                    }
+                    _ => {
+                        let fallback = vec![8, 9, 10, 11];
+                        warn!(
                         "XDP auto: could not discover CPUs for {}, falling back to default {:?}",
                         &args.iface, fallback
                     );
-                    fallback
-                }
-            },
-            XdpCpuMode::Manual => {
-                if let Some(s) = args.xdp_cpus.as_deref() {
-                    parse_cpu_ranges(s).expect("failed to parse --xdp-cpus")
-                } else {
-                    let fallback = vec![8, 9, 10, 11];
-                    warn!(
-                        "XDP manual: --xdp-cpus not provided, using default {:?}",
                         fallback
-                    );
-                    fallback
+                    }
+                },
+                XdpCpuMode::Manual => {
+                    if let Some(s) = args.xdp_cpus.as_deref() {
+                        parse_cpu_ranges(s).expect("failed to parse --xdp-cpus")
+                    } else {
+                        let fallback = vec![8, 9, 10, 11];
+                        warn!(
+                            "XDP manual: --xdp-cpus not provided, using default {:?}",
+                            fallback
+                        );
+                        fallback
+                    }
                 }
+            };
+
+            // Reserve those CPUs for XDP; pin other threads to the complement
+            let all: BTreeSet<usize> = core_affinity::get_core_ids()
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|c| c.id)
+                .collect();
+            let reserved: BTreeSet<usize> = xdp_cpus.iter().copied().collect();
+            let available: Vec<usize> = all.difference(&reserved).copied().collect();
+
+            info!("Reserved (XDP) CPUs: {:?}", xdp_cpus);
+            info!("Available CPUs for other threads: {:?}", available);
+
+            if !available.is_empty() {
+                set_cpu_affinity(available.clone()).unwrap();
             }
+
+            num_threads = available.len().max(1);
+
+            let xdp_config = XdpConfig {
+                device_name: Some(args.iface.clone()),
+                cpus: xdp_cpus.clone(),
+                zero_copy_enabled: false,
+                rtx_channel_cap: 1_000_000,
+            };
+
+            let (transmitter_threads, xdp_sender) =
+                PacketTransmitter::new(xdp_config, args.src_bind_port)
+                    .expect("Failed to create xdp transmitter");
+            (transmitter_threads, Some(Arc::new(xdp_sender)))
+        } else {
+            num_threads = usize::from(std::thread::available_parallelism().unwrap()).min(4);
+            (PacketTransmitter::default(), None)
         };
-
-        // Reserve those CPUs for XDP; pin other threads to the complement
-        let all: BTreeSet<usize> = core_affinity::get_core_ids()
-            .as_ref()
-            .into_iter()
-            .flatten()
-            .map(|c| c.id)
-            .collect();
-        let reserved: BTreeSet<usize> = xdp_cpus.iter().copied().collect();
-        let available: Vec<usize> = all.difference(&reserved).copied().collect();
-
-        info!("Reserved (XDP) CPUs: {:?}", xdp_cpus);
-        info!("Available CPUs for other threads: {:?}", available);
-
-        if !available.is_empty() {
-            set_cpu_affinity(available.clone()).unwrap();
-        }
-
-        num_threads = available.len().max(1);
-
-        let xdp_config = XdpConfig {
-            device_name: Some(args.iface.clone()),
-            cpus: xdp_cpus.clone(),
-            zero_copy_enabled: true,
-            rtx_channel_cap: 1_000_000,
-        };
-
-        let (transmitter_threads, xdp_sender) =
-            PacketTransmitter::new(xdp_config, args.src_bind_port)
-                .expect("Failed to create xdp transmitter");
-        (transmitter_threads, Some(Arc::new(xdp_sender)))
-    } else {
-        num_threads = usize::from(std::thread::available_parallelism().unwrap()).min(4);
-        (PacketTransmitter::default(), None)
-    };
 
     let exit = Arc::new(AtomicBool::new(false));
     let (shutdown_sender, shutdown_receiver) =
