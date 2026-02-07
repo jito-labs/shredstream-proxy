@@ -63,7 +63,7 @@ impl Default for ShredsStateTracker {
 
 const BINCODE_DESERIALIZE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Returns the number of shreds reconstructed
+/// Returns the number of **data** shreds reconstructed via FEC recovery.
 /// Updates all_shreds with current state, and deshredded_entries with returned values
 /// receive shreds per FEC set, attempting to recover the other shreds in the fec set so you do not have to wait until all data shreds have arrived.
 /// every time a fec is recovered, scan for neighbouring DATA_COMPLETE_SHRED flags in the shreds, attempting to deserialize into solana entries when there are no missing shreds between the DATA_COMPLETE_SHRED flags.
@@ -137,9 +137,10 @@ pub fn reconstruct_shreds(
     slot_fec_indexes_to_iterate.sort_unstable();
     slot_fec_indexes_to_iterate.dedup();
 
-    // try recovering by FEC set
-    // already checked if FEC set is completed or deserialized
-    let mut total_recovered_count = 0;
+    // Try recovering by FEC set.
+    // Note: `merkle::recover` can return both recovered data and coding shreds; we only
+    // care about recovered *data* shreds for decoding entries.
+    let mut total_recovered_data_shreds = 0usize;
     for (slot, fec_set_index) in slot_fec_indexes_to_iterate.iter() {
         let (all_shreds, state_tracker) = all_shreds.entry(*slot).or_default();
         let shreds = all_shreds.entry(*fec_set_index).or_default();
@@ -150,11 +151,26 @@ pub fn reconstruct_shreds(
             num_coding_shreds,
         ) = get_data_shred_info(shreds);
 
-        // haven't received last data shred, haven't seen any coding shreds, so wait until more arrive
+        // If we already have all expected data shreds for this FEC set, mark it complete and
+        // drop stored shards to cap memory.
+        if num_expected_data_shreds > 0
+            && has_all_data_shreds_for_fec_set(
+                state_tracker,
+                *fec_set_index,
+                num_expected_data_shreds,
+            )
+        {
+            state_tracker.already_recovered_fec_sets[*fec_set_index as usize] = true;
+            shreds.clear();
+            continue;
+        }
+
+        // Haven't received enough shards yet, or don't have coding shreds to recover with.
+        // `merkle::recover` requires at least one coding shred.
         let min_shreds_needed_to_recover = num_expected_data_shreds as usize;
         if num_expected_data_shreds == 0
+            || num_coding_shreds == 0
             || shreds.len() < min_shreds_needed_to_recover
-            || num_data_shreds == num_expected_data_shreds
         {
             continue;
         }
@@ -172,16 +188,19 @@ pub fn reconstruct_shreds(
             }
         };
 
-        let mut fec_set_recovered_count = 0;
+        let mut fec_set_recovered_data_shreds = 0usize;
         for shred in recovered {
             match shred {
                 Ok(shred) => {
+                    let is_data = shred.shred_type() == ShredType::Data;
                     if update_state_tracker(&shred, state_tracker).is_none() {
                         continue; // already seen before in state tracker
                     }
-                    // shreds.insert(ComparableShred(shred)); // optional since all data shreds are in state_tracker
-                    total_recovered_count += 1;
-                    fec_set_recovered_count += 1;
+                    if is_data {
+                        // shreds.insert(ComparableShred(shred)); // optional since all data shreds are in state_tracker
+                        total_recovered_data_shreds += 1;
+                        fec_set_recovered_data_shreds += 1;
+                    }
                 }
                 Err(e) => warn!(
                     "Failed to recover shred for slot {slot}, fec set: {fec_set_index}. Err: {e}"
@@ -189,8 +208,21 @@ pub fn reconstruct_shreds(
             }
         }
 
-        if fec_set_recovered_count > 0 {
-            debug!("recovered slot: {slot}, fec_index: {fec_set_index}, recovered count: {fec_set_recovered_count}");
+        if fec_set_recovered_data_shreds > 0 {
+            debug!(
+                "recovered slot: {slot}, fec_index: {fec_set_index}, recovered data count: {fec_set_recovered_data_shreds}"
+            );
+        }
+
+        // If recovery completed the data-shred set for this erasure batch, mark as complete and
+        // drop stored shards. Otherwise, keep them so we can retry as new shreds arrive.
+        if num_expected_data_shreds > 0
+            && has_all_data_shreds_for_fec_set(
+                state_tracker,
+                *fec_set_index,
+                num_expected_data_shreds,
+            )
+        {
             state_tracker.already_recovered_fec_sets[*fec_set_index as usize] = true;
             shreds.clear();
         }
@@ -316,14 +348,10 @@ pub fn reconstruct_shreds(
                     if !trailing.is_empty() {
                         // The Solana deshredder can emit a buffer with extra trailing bytes for
                         // empty entry vectors (backward compat), and some producers may include
-                        // zero-padding in the last shred's `size`. Accept trailing zeros for known
-                        // boundaries; be stricter when the start boundary is inferred.
+                        // zero-padding in the last shred's `size`. Accept trailing zeros; reject
+                        // non-zero trailing bytes as likely corruption or a boundary mismatch.
                         let trailing_all_zeros = trailing.iter().all(|&b| b == 0);
-                        if entries.is_empty() {
-                            // Always accept empty vectors; consumers must allow trailing bytes.
-                        } else if !unknown_start && trailing_all_zeros {
-                            // Accept non-empty vectors only when the trailing bytes are padding.
-                        } else {
+                        if !trailing_all_zeros {
                             debug!(
                                 "Rejecting deserialized entries with trailing bytes for slot {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}, unknown_start: {unknown_start}. trailing_len: {}",
                                 trailing.len(),
@@ -429,13 +457,13 @@ pub fn reconstruct_shreds(
         }
     }
 
-    if total_recovered_count > 0 {
+    if total_recovered_data_shreds > 0 {
         metrics
             .recovered_count
-            .fetch_add(total_recovered_count as u64, Ordering::Relaxed);
+            .fetch_add(total_recovered_data_shreds as u64, Ordering::Relaxed);
     }
 
-    total_recovered_count
+    total_recovered_data_shreds
 }
 
 #[allow(unused)]
@@ -576,6 +604,22 @@ fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker) -
 }
 
 const SLOT_LOOKBACK: Slot = 50;
+
+fn has_all_data_shreds_for_fec_set(
+    tracker: &ShredsStateTracker,
+    fec_set_index: u32,
+    num_expected_data_shreds: u16,
+) -> bool {
+    let start = fec_set_index as usize;
+    let Some(end) = start.checked_add(num_expected_data_shreds as usize).and_then(|v| v.checked_sub(1)) else {
+        return false;
+    };
+    if end >= tracker.data_shreds.len() {
+        return false;
+    }
+
+    (start..=end).all(|idx| tracker.data_shreds[idx].is_some() || tracker.already_deshredded[idx])
+}
 
 /// check if we can reconstruct (having minimum number of data + coding shreds)
 fn get_data_shred_info(
@@ -996,6 +1040,144 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_recovered_count_counts_only_data_shreds() {
+        let slot = 222_222;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        // One entry group => one FEC set (32 data + 32 coding in fixed-FEC mode).
+        let entries = make_slot_entries_with_transactions(64);
+        let (data_shreds, coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            true,
+            None, // chained_merkle_root
+            0,    // next_shred_index
+            0,    // next_code_index
+            true, // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert_eq!(data_shreds.len(), 32);
+        assert_eq!(coding_shreds.len(), 32);
+
+        // Drop some data and some coding shreds, but keep >= 32 total shards so recovery is
+        // possible. We expect the recovered_count to include only the missing *data* shreds.
+        const DROP_DATA: usize = 5;
+        const DROP_CODE: usize = 7;
+        let missing_data_indices = (0..DROP_DATA).collect::<HashSet<_>>();
+        let missing_code_indices = (0..DROP_CODE).collect::<HashSet<_>>();
+
+        let packets = data_shreds
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !missing_data_indices.contains(i))
+            .map(|(_, s)| s)
+            .chain(
+                coding_shreds
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !missing_code_indices.contains(i))
+                    .map(|(_, s)| s),
+            )
+            .map(|s| {
+                let mut p = Packet::default();
+                s.copy_to_packet(&mut p);
+                p
+            })
+            .collect_vec();
+        assert!(packets.len() >= 32);
+
+        let metrics = Arc::new(ShredMetrics::default());
+        let rs_cache = ReedSolomonCache::default();
+
+        let mut all_shreds = ahash::HashMap::default();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
+        let recovered_count = reconstruct_shreds(
+            PacketBatch::new(packets),
+            &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
+            &mut deshredded_entries,
+            &mut highest_slot_seen,
+            &rs_cache,
+            &metrics,
+        );
+
+        assert_eq!(
+            recovered_count, DROP_DATA,
+            "expected to count only recovered data shreds"
+        );
+        // We should still be able to decode the entries.
+        assert_eq!(
+            deshredded_entries
+                .iter()
+                .map(|(_slot, entries, _entries_bytes)| entries.len())
+                .sum::<usize>(),
+            entries.len()
+        );
+    }
+
+    #[test]
+    fn test_marks_fec_set_complete_without_recovery() {
+        let slot = 333_333;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        let entries = make_slot_entries_with_transactions(64);
+        let (data_shreds, coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            true,
+            None, // chained_merkle_root
+            0,    // next_shred_index
+            0,    // next_code_index
+            true, // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert_eq!(data_shreds.len(), 32);
+        assert_eq!(coding_shreds.len(), 32);
+
+        let packets = data_shreds
+            .iter()
+            .chain(coding_shreds.iter())
+            .map(|s| {
+                let mut p = Packet::default();
+                s.copy_to_packet(&mut p);
+                p
+            })
+            .collect_vec();
+
+        let metrics = Arc::new(ShredMetrics::default());
+        let rs_cache = ReedSolomonCache::default();
+
+        let mut all_shreds = ahash::HashMap::default();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
+        let recovered_count = reconstruct_shreds(
+            PacketBatch::new(packets),
+            &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
+            &mut deshredded_entries,
+            &mut highest_slot_seen,
+            &rs_cache,
+            &metrics,
+        );
+
+        assert_eq!(recovered_count, 0);
+        let (_fec_sets, tracker) = all_shreds.get(&slot).expect("slot entry should exist");
+        assert!(
+            tracker.already_recovered_fec_sets[0],
+            "expected fec_set_index=0 to be marked complete once all data shreds are present"
+        );
     }
 
     #[test]
