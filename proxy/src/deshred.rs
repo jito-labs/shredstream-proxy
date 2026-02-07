@@ -1,9 +1,10 @@
-use std::{collections::HashSet, hash::Hash, sync::atomic::Ordering};
+use std::{collections::BTreeSet, collections::HashSet, hash::Hash, sync::atomic::Ordering};
 
 use itertools::Itertools;
 use jito_protos::shredstream::TraceShred;
 use log::{debug, warn};
 use prost::Message;
+use bincode::Options as _;
 use solana_ledger::{
     blockstore::MAX_DATA_SHREDS_PER_SLOT,
     shred::{
@@ -35,6 +36,9 @@ pub struct ShredsStateTracker {
     data_status: Vec<ShredStatus>,
     /// Data shreds received for the slot (not coding!)
     data_shreds: Vec<Option<Shred>>,
+    /// Indices for which a shred exists and is `DATA_COMPLETE_SHRED` (or `LAST_SHRED_IN_SLOT`).
+    /// This is used to find completed deshred ranges quickly.
+    data_complete_idxs: BTreeSet<usize>,
     /// array of bools that track which FEC set indexes have been already recovered
     already_recovered_fec_sets: Vec<bool>,
     /// array of bools that track which data shred indexes have been already deshredded
@@ -45,11 +49,14 @@ impl Default for ShredsStateTracker {
         Self {
             data_status: vec![ShredStatus::Unknown; MAX_DATA_SHREDS_PER_SLOT],
             data_shreds: vec![None; MAX_DATA_SHREDS_PER_SLOT],
+            data_complete_idxs: BTreeSet::new(),
             already_recovered_fec_sets: vec![false; MAX_DATA_SHREDS_PER_SLOT],
             already_deshredded: vec![false; MAX_DATA_SHREDS_PER_SLOT],
         }
     }
 }
+
+const BINCODE_DESERIALIZE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Returns the number of shreds reconstructed
 /// Updates all_shreds with current state, and deshredded_entries with returned values
@@ -180,77 +187,167 @@ pub fn reconstruct_shreds(
     }
 
     // deshred and bincode deserialize
-    for (slot, fec_set_index) in slot_fec_indexes_to_iterate.iter() {
-        let (_all_shreds, state_tracker) = all_shreds.entry(*slot).or_default();
-        let Some((start_data_complete_idx, end_data_complete_idx, unknown_start)) =
-            get_indexes(state_tracker, *fec_set_index as usize)
-        else {
-            continue;
-        };
-        if unknown_start {
-            metrics
-                .unknown_start_position_count
-                .fetch_add(1, Ordering::Relaxed);
-        }
+    for slot in slot_fec_indexes_to_iterate
+        .iter()
+        .map(|(slot, _fec_set_index)| *slot)
+        .dedup()
+    {
+        let (_all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
 
-        let to_deshred =
-            &state_tracker.data_shreds[start_data_complete_idx..=end_data_complete_idx];
-        let deshredded_payload = match Shredder::deshred(
-            to_deshred.iter().map(|s| s.as_ref().unwrap().payload()),
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("slot {slot} failed to deshred slot: {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}. Err: {e}");
-                metrics
-                    .fec_recovery_error_count
-                    .fetch_add(1, Ordering::Relaxed);
-                if unknown_start {
-                    metrics
-                        .unknown_start_position_error_count
-                        .fetch_add(1, Ordering::Relaxed);
-                }
+        // Snapshot so we can mutate tracker while iterating.
+        let data_complete_idxs = state_tracker
+            .data_complete_idxs
+            .iter()
+            .copied()
+            .collect_vec();
+        for end_data_complete_idx in data_complete_idxs {
+            if end_data_complete_idx >= state_tracker.data_status.len() {
                 continue;
             }
-        };
-
-        let entries = match bincode::deserialize::<Vec<solana_entry::entry::Entry>>(
-            &deshredded_payload,
-        ) {
-            Ok(entries) => entries,
-            Err(e) => {
-                debug!(
-                        "Failed to deserialize bincode payload of size {} for slot {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}, unknown_start: {unknown_start}. Err: {e}",
-                        deshredded_payload.len()
-                    );
-                metrics
-                    .bincode_deserialize_error_count
-                    .fetch_add(1, Ordering::Relaxed);
-                if unknown_start {
-                    metrics
-                        .unknown_start_position_error_count
-                        .fetch_add(1, Ordering::Relaxed);
-                }
+            if state_tracker.already_deshredded[end_data_complete_idx] {
                 continue;
             }
-        };
-        metrics
-            .entry_count
-            .fetch_add(entries.len() as u64, Ordering::Relaxed);
-        let txn_count = entries.iter().map(|e| e.transactions.len() as u64).sum();
-        metrics.txn_count.fetch_add(txn_count, Ordering::Relaxed);
-        debug!(
-            "Successfully decoded slot: {slot} start_data_complete_idx: {start_data_complete_idx} end_data_complete_idx: {end_data_complete_idx} with entry count: {}, txn count: {txn_count}",
-            entries.len(),
-        );
+            if !matches!(
+                state_tracker.data_status[end_data_complete_idx],
+                ShredStatus::DataComplete
+            ) {
+                continue;
+            }
 
-        deshredded_entries.push((*slot, entries, deshredded_payload));
-        to_deshred.iter().for_each(|shred| {
-            let Some(shred) = shred.as_ref() else {
-                return;
+            // Find start boundary:
+            // - If we have a previous DATA_COMPLETE_SHRED, start right after it.
+            // - Otherwise, start at 0.
+            // - If there's a gap (missing shreds), allow an "unknown start" at the first present
+            //   shred after the gap (best-effort).
+            let (start_data_complete_idx, unknown_start) = {
+                let mut start = end_data_complete_idx;
+                let mut unknown = false;
+                let mut i = end_data_complete_idx;
+                while i > 0 {
+                    let prev = i - 1;
+                    if matches!(state_tracker.data_status[prev], ShredStatus::DataComplete) {
+                        start = i;
+                        break;
+                    }
+                    // Treat missing shreds as a boundary only if they haven't already been
+                    // consumed (we may have dropped payloads for already-deshredded indices).
+                    if state_tracker.data_shreds[prev].is_none()
+                        && !state_tracker.already_deshredded[prev]
+                    {
+                        start = i;
+                        unknown = true;
+                        break;
+                    }
+                    i = prev;
+                }
+                if i == 0 {
+                    start = 0;
+                }
+                (start, unknown)
             };
-            state_tracker.already_recovered_fec_sets[shred.fec_set_index() as usize] = true;
-            state_tracker.already_deshredded[shred.index() as usize] = true;
-        })
+
+            if unknown_start {
+                metrics
+                    .unknown_start_position_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+
+            // Require all shreds in the candidate range.
+            if (start_data_complete_idx..=end_data_complete_idx).any(|idx| {
+                state_tracker.already_deshredded[idx] || state_tracker.data_shreds[idx].is_none()
+            }) {
+                continue;
+            }
+
+            let to_deshred =
+                &state_tracker.data_shreds[start_data_complete_idx..=end_data_complete_idx];
+            let deshredded_payload = match Shredder::deshred(
+                to_deshred.iter().map(|s| s.as_ref().unwrap().payload()),
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("slot {slot} failed to deshred slot: {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}. Err: {e}");
+                    metrics
+                        .fec_recovery_error_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    if unknown_start {
+                        metrics
+                            .unknown_start_position_error_count
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    continue;
+                }
+            };
+
+            // Deserialization should normally consume all bytes exactly; allow trailing bytes
+            // only for the empty-output backward-compat case.
+            let bincode_opts = bincode::DefaultOptions::new()
+                .with_fixint_encoding()
+                .with_limit(BINCODE_DESERIALIZE_LIMIT_BYTES);
+            let entries = match bincode_opts
+                .reject_trailing_bytes()
+                .deserialize::<Vec<solana_entry::entry::Entry>>(&deshredded_payload)
+            {
+                Ok(entries) => entries,
+                Err(e_strict) => {
+                    let entries = match bincode_opts
+                        .allow_trailing_bytes()
+                        .deserialize::<Vec<solana_entry::entry::Entry>>(&deshredded_payload)
+                    {
+                        Ok(entries) => entries,
+                        Err(e_allow) => {
+                            debug!(
+                                "Failed to deserialize bincode payload of size {} for slot {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}, unknown_start: {unknown_start}. Err: {e_allow}",
+                                deshredded_payload.len()
+                            );
+                            metrics
+                                .bincode_deserialize_error_count
+                                .fetch_add(1, Ordering::Relaxed);
+                            if unknown_start {
+                                metrics
+                                    .unknown_start_position_error_count
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            continue;
+                        }
+                    };
+                    if entries.is_empty() {
+                        entries
+                    } else {
+                        debug!(
+                            "Rejecting deserialized entries with trailing bytes for slot {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}, unknown_start: {unknown_start}. Err: {e_strict}",
+                        );
+                        metrics
+                            .bincode_deserialize_error_count
+                            .fetch_add(1, Ordering::Relaxed);
+                        if unknown_start {
+                            metrics
+                                .unknown_start_position_error_count
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        continue;
+                    }
+                }
+            };
+
+            metrics
+                .entry_count
+                .fetch_add(entries.len() as u64, Ordering::Relaxed);
+            let txn_count = entries.iter().map(|e| e.transactions.len() as u64).sum();
+            metrics.txn_count.fetch_add(txn_count, Ordering::Relaxed);
+            debug!(
+                "Successfully decoded slot: {slot} start_data_complete_idx: {start_data_complete_idx} end_data_complete_idx: {end_data_complete_idx} with entry count: {}, txn count: {txn_count}",
+                entries.len(),
+            );
+
+            deshredded_entries.push((slot, entries, deshredded_payload));
+
+            // Mark as consumed and drop payloads to cap memory.
+            for idx in start_data_complete_idx..=end_data_complete_idx {
+                state_tracker.already_deshredded[idx] = true;
+                state_tracker.data_shreds[idx] = None;
+            }
+        }
     }
 
     if all_shreds.len() > MAX_PROCESSING_AGE {
@@ -436,6 +533,7 @@ fn update_state_tracker(shred: &Shred, state_tracker: &mut ShredsStateTracker) -
         state_tracker.data_shreds[index] = Some(shred.clone());
         if s.data_complete() || s.last_in_slot() {
             state_tracker.data_status[index] = ShredStatus::DataComplete;
+            state_tracker.data_complete_idxs.insert(index);
         } else {
             state_tracker.data_status[index] = ShredStatus::NotDataComplete;
         }
