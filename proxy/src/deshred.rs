@@ -109,8 +109,11 @@ pub fn reconstruct_shreds(
                     );
                     continue;
                 }
+                // Only skip data shreds that we've already deshredded. Coding shreds can still
+                // help recover missing data shreds in the same FEC set.
                 if state_tracker.already_recovered_fec_sets[fec_set_index as usize]
-                    || state_tracker.already_deshredded[index]
+                    || (shred.shred_type() == ShredType::Data
+                        && state_tracker.already_deshredded[index])
                 {
                     debug!("Already completed slot: {slot}, fec_set_index: {fec_set_index}, index: {index}");
                     continue;
@@ -294,19 +297,6 @@ pub fn reconstruct_shreds(
                     .fetch_add(1, Ordering::Relaxed);
             }
 
-            // For best-effort decoding when we don't know the true start boundary, require that the
-            // chosen start index is at the beginning of an erasure batch. This reduces accidental
-            // decodes when there are gaps within a data set.
-            if unknown_start {
-                let Some(start_shred) = state_tracker.data_shreds[start_data_complete_idx].as_ref()
-                else {
-                    continue;
-                };
-                if start_shred.fec_set_index() as usize != start_data_complete_idx {
-                    continue;
-                }
-            }
-
             // Require all shreds in the candidate range.
             if (start_data_complete_idx..=end_data_complete_idx).any(|idx| {
                 state_tracker.already_deshredded[idx] || state_tracker.data_shreds[idx].is_none()
@@ -345,7 +335,7 @@ pub fn reconstruct_shreds(
                 Ok(entries) => {
                     let consumed = cursor.position() as usize;
                     let trailing = &deshredded_payload[consumed..];
-                    if !trailing.is_empty() {
+                    if unknown_start && !trailing.is_empty() {
                         // The Solana deshredder can emit a buffer with extra trailing bytes for
                         // empty entry vectors (backward compat), and some producers may include
                         // zero-padding in the last shred's `size`. Accept trailing zeros; reject
@@ -1120,6 +1110,104 @@ mod tests {
                 .map(|(_slot, entries, _entries_bytes)| entries.len())
                 .sum::<usize>(),
             entries.len()
+        );
+    }
+
+    #[test]
+    fn test_accepts_non_zero_trailing_bytes_when_boundary_known() {
+        let slot = 444_444;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        let entries = make_slot_entries_with_transactions(8);
+        let (data_shreds, _coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            true,
+            None, // chained_merkle_root
+            0,    // next_shred_index
+            0,    // next_code_index
+            true, // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert!(!data_shreds.is_empty());
+
+        let last_data_shred = data_shreds
+            .iter()
+            .filter(|s| s.is_data())
+            .max_by_key(|s| s.index())
+            .expect("must have at least one data shred");
+
+        // Append non-zero trailing bytes within the allowed data buffer by increasing the `size`
+        // field in the last data shred payload.
+        let mut last_payload = last_data_shred.payload().to_vec();
+        let variant = solana_ledger::shred::layout::get_shred_variant(&last_payload).unwrap();
+        let max_size = match variant {
+            solana_ledger::shred::ShredVariant::MerkleData {
+                proof_size,
+                chained,
+                resigned,
+            } => {
+                let cap = solana_ledger::shred::ShredData::capacity(Some((
+                    proof_size, chained, resigned,
+                )))
+                .unwrap();
+                88 + cap // SIZE_OF_DATA_HEADERS (88) + capacity
+            }
+            _ => panic!("expected MerkleData shred variant"),
+        };
+        let orig_size = u16::from_le_bytes(last_payload[86..88].try_into().unwrap()) as usize;
+        let new_size = std::cmp::min(orig_size + 8, max_size);
+        assert!(
+            new_size > orig_size,
+            "last shred already at max size; can't append trailing bytes"
+        );
+        last_payload[86..88].copy_from_slice(&(new_size as u16).to_le_bytes());
+        last_payload[orig_size..new_size].fill(0xAB);
+
+        let packets = data_shreds
+            .iter()
+            .map(|s| {
+                let bytes = if s.index() == last_data_shred.index() {
+                    last_payload.as_slice()
+                } else {
+                    s.payload()
+                };
+                let mut p = Packet::default();
+                p.buffer_mut()[..bytes.len()].copy_from_slice(bytes);
+                p.meta_mut().size = bytes.len();
+                p
+            })
+            .collect_vec();
+
+        let metrics = Arc::new(ShredMetrics::default());
+        let rs_cache = ReedSolomonCache::default();
+
+        let mut all_shreds = ahash::HashMap::default();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
+        let recovered_count = reconstruct_shreds(
+            PacketBatch::new(packets),
+            &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
+            &mut deshredded_entries,
+            &mut highest_slot_seen,
+            &rs_cache,
+            &metrics,
+        );
+        assert_eq!(recovered_count, 0);
+        assert_eq!(deshredded_entries.len(), 1);
+        assert_eq!(deshredded_entries[0].0, slot);
+        assert_eq!(deshredded_entries[0].1.len(), entries.len());
+
+        let decoded_bytes = &deshredded_entries[0].2;
+        assert!(decoded_bytes.len() >= 8);
+        assert!(
+            decoded_bytes[decoded_bytes.len() - 8..].iter().all(|&b| b == 0xAB),
+            "expected non-zero trailing bytes appended to deshredded payload"
         );
     }
 
