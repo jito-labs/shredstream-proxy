@@ -604,8 +604,7 @@ impl ShredMetrics {
 #[cfg(test)]
 mod tests {
     use std::{
-        net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
-        str::FromStr,
+        net::{IpAddr, Ipv4Addr, UdpSocket},
         sync::{Arc, Mutex, RwLock},
         thread,
         thread::sleep,
@@ -653,25 +652,33 @@ mod tests {
         let (packet_sender, packet_receiver) = crossbeam_channel::unbounded::<PacketBatch>();
         packet_sender.send(packet_batch).unwrap();
 
-        let dest_socketaddrs = vec![
-            SocketAddr::from_str("0.0.0.0:32881").unwrap(),
-            SocketAddr::from_str("0.0.0.0:33881").unwrap(),
-            SocketAddr::from_str("0.0.0.0:34881").unwrap(),
-        ];
-
-        let test_listeners = dest_socketaddrs
+        // This test uses UDP sockets. In some sandboxed environments, creating sockets is not
+        // permitted; skip the test in that case.
+        let mut test_listeners = Vec::with_capacity(3);
+        for _ in 0..3 {
+            let listen_socket = match UdpSocket::bind("127.0.0.1:0") {
+                Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return,
+                Err(e) => panic!("Failed to bind UDP listener socket: {e}"),
+            };
+            let socketaddr = listen_socket.local_addr().unwrap();
+            test_listeners.push((
+                listen_socket,
+                socketaddr,
+                // store results in vec of packet, where packet is Vec<u8>
+                Arc::new(Mutex::new(vec![])),
+            ));
+        }
+        let dest_socketaddrs = test_listeners
             .iter()
-            .map(|socketaddr| {
-                (
-                    UdpSocket::bind(socketaddr).unwrap(),
-                    *socketaddr,
-                    // store results in vec of packet, where packet is Vec<u8>
-                    Arc::new(Mutex::new(vec![])),
-                )
-            })
+            .map(|(_listen_socket, socketaddr, _)| *socketaddr)
             .collect::<Vec<_>>();
 
-        let udp_sender = UdpSocket::bind("0.0.0.0:10000").unwrap();
+        let udp_sender = match UdpSocket::bind("127.0.0.1:0") {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(e) => panic!("Failed to bind UDP sender socket: {e}"),
+        };
 
         // spawn listeners
         test_listeners
