@@ -238,9 +238,7 @@ fn recv_from_channel_and_send_multiple_dest(
 
     if should_reconstruct_shreds {
         // Avoid cloning the packet batch if the queue is already full.
-        if reconstruct_tx.is_full()
-            || reconstruct_tx.try_send(packet_batch.clone()).is_err()
-        {
+        if reconstruct_tx.is_full() || reconstruct_tx.try_send(packet_batch.clone()).is_err() {
             metrics
                 .reconstruct_packet_drop_count
                 .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
@@ -555,7 +553,8 @@ impl ShredMetrics {
                 "shredstream_proxy-service_metrics",
                 (
                     "reconstruct_packet_drop_count",
-                    self.reconstruct_packet_drop_count.swap(0, Ordering::Relaxed),
+                    self.reconstruct_packet_drop_count
+                        .swap(0, Ordering::Relaxed),
                     i64
                 ),
                 (

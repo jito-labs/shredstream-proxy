@@ -1895,7 +1895,7 @@ mod tests {
                 chained_merkle_root,
                 next_shred_index,
                 next_code_index,
-                true,         // merkle_variant
+                true, // merkle_variant
                 &reed_solomon_cache,
                 &mut ProcessShredsStats::default(),
             );
