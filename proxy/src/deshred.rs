@@ -225,11 +225,10 @@ pub fn reconstruct_shreds(
         for shred in recovered {
             match shred {
                 Ok(shred) => {
-                    let is_data = shred.shred_type() == ShredType::Data;
                     if update_state_tracker(&shred, state_tracker).is_none() {
                         continue; // already seen before in state tracker
                     }
-                    if is_data {
+                    if shred.shred_type() == ShredType::Data {
                         // shreds.insert(ComparableShred(shred)); // optional since all data shreds are in state_tracker
                         total_recovered_data_shreds += 1;
                         fec_set_recovered_data_shreds += 1;
@@ -797,6 +796,17 @@ mod tests {
         forwarder::ShredMetrics,
     };
 
+    // Fixture expectations: these are regression baselines. If decoding improves, bump them.
+    const FIXTURE_SERIALIZED_SHREDS_TOTAL_ENTRIES: usize = 13_580;
+    const FIXTURE_SERIALIZED_SHREDS_DECODED_SLOTS: usize = 29;
+    const FIXTURE_SERIALIZED_SHREDS_DECODED_SETS: usize = 609;
+    const FIXTURE_SERIALIZED_SHREDS_DECODED_DATA_SHREDS: usize = 22_087;
+
+    const FIXTURE_DATA_COMPLETE_TOTAL_ENTRIES: usize = 43_170;
+    const FIXTURE_DATA_COMPLETE_DECODED_SLOTS: usize = 61;
+    const FIXTURE_DATA_COMPLETE_DECODED_SETS: usize = 1_419;
+    const FIXTURE_DATA_COMPLETE_DECODED_DATA_SHREDS: usize = 54_316;
+
     /// For serializing packets to disk
     #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, PartialEq, Debug)]
     struct Packets {
@@ -908,18 +918,38 @@ mod tests {
         );
 
         // debug_to_disk(&mut deshredded_entries);
-        assert!(recovered_count < deshredded_entries.len());
+        let decoded_data_shreds = all_shreds
+            .values()
+            .map(|(_fec_sets, tracker)| tracker.already_deshredded.iter().filter(|&&b| b).count())
+            .sum::<usize>();
         assert_decoded_entries_sane(&deshredded_entries);
         let total_entries = deshredded_entries
             .iter()
             .map(|(_slot, entries, _entries_bytes)| entries.len())
             .sum::<usize>();
-        assert!(total_entries >= 13580, "total_entries: {total_entries}");
-        assert_eq!(all_shreds.len(), 30);
-
         let slot_to_entry = deshredded_entries
             .iter()
             .into_group_map_by(|(slot, _entries, _entries_bytes)| *slot);
+        assert!(
+            total_entries >= FIXTURE_SERIALIZED_SHREDS_TOTAL_ENTRIES,
+            "total_entries: {total_entries}"
+        );
+        assert!(
+            slot_to_entry.len() >= FIXTURE_SERIALIZED_SHREDS_DECODED_SLOTS,
+            "slot_to_entry.len(): {}",
+            slot_to_entry.len()
+        );
+        assert!(
+            deshredded_entries.len() >= FIXTURE_SERIALIZED_SHREDS_DECODED_SETS,
+            "deshredded_entries.len(): {}",
+            deshredded_entries.len()
+        );
+        assert!(
+            decoded_data_shreds >= FIXTURE_SERIALIZED_SHREDS_DECODED_DATA_SHREDS,
+            "decoded_data_shreds: {decoded_data_shreds}"
+        );
+        assert_eq!(all_shreds.len(), 30);
+
         // slot_to_entry
         //     .iter()
         //     .sorted_by_key(|(slot, _)| *slot)
@@ -933,18 +963,13 @@ mod tests {
         //                 .sum::<usize>()
         //         );
         //     });
-        assert!(
-            slot_to_entry.len() >= 29,
-            "slot_to_entry.len(): {}",
-            slot_to_entry.len()
-        );
 
         // Test 2: 33% of shreds missing
         let mut all_shreds = ahash::HashMap::default();
         let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
-        let recovered_count = reconstruct_shreds(
+        let _recovered_count = reconstruct_shreds(
             PacketBatch::new(
                 packets
                     .packets
@@ -968,23 +993,38 @@ mod tests {
         );
 
         // debug_to_disk(&deshredded_entries, "new.txt");
+        let decoded_data_shreds = all_shreds
+            .values()
+            .map(|(_fec_sets, tracker)| tracker.already_deshredded.iter().filter(|&&b| b).count())
+            .sum::<usize>();
         assert!(recovered_count > 0);
         assert_decoded_entries_sane(&deshredded_entries);
         let total_entries = deshredded_entries
             .iter()
             .map(|(_slot, entries, _entries_bytes)| entries.len())
             .sum::<usize>();
-        assert!(total_entries >= 13580, "total_entries: {total_entries}");
-        assert!(all_shreds.len() > 15);
-
         let slot_to_entry = deshredded_entries
             .iter()
             .into_group_map_by(|(slot, _entries, _entries_bytes)| *slot);
         assert!(
-            slot_to_entry.len() >= 29,
+            total_entries >= FIXTURE_SERIALIZED_SHREDS_TOTAL_ENTRIES,
+            "total_entries: {total_entries}"
+        );
+        assert!(
+            slot_to_entry.len() >= FIXTURE_SERIALIZED_SHREDS_DECODED_SLOTS,
             "slot_to_entry.len(): {}",
             slot_to_entry.len()
         );
+        assert!(
+            deshredded_entries.len() >= FIXTURE_SERIALIZED_SHREDS_DECODED_SETS,
+            "deshredded_entries.len(): {}",
+            deshredded_entries.len()
+        );
+        assert!(
+            decoded_data_shreds >= FIXTURE_SERIALIZED_SHREDS_DECODED_DATA_SHREDS,
+            "decoded_data_shreds: {decoded_data_shreds}"
+        );
+        assert_eq!(all_shreds.len(), 29, "slots_tracked: {}", all_shreds.len());
     }
 
     /// Helper function to compare all shred output
@@ -1696,7 +1736,7 @@ mod tests {
         let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
         let mut deshredded_entries = Vec::new();
         let mut highest_slot_seen = 0;
-        let recovered_count = reconstruct_shreds(
+        let _recovered_count = reconstruct_shreds(
             PacketBatch::new(
                 packets
                     .packets
@@ -1718,18 +1758,38 @@ mod tests {
         );
 
         // debug_to_disk(&mut deshredded_entries);
-        assert!(recovered_count < deshredded_entries.len());
+        let decoded_data_shreds = all_shreds
+            .values()
+            .map(|(_fec_sets, tracker)| tracker.already_deshredded.iter().filter(|&&b| b).count())
+            .sum::<usize>();
         assert_decoded_entries_sane(&deshredded_entries);
         let total_entries = deshredded_entries
             .iter()
             .map(|(_slot, entries, _entries_bytes)| entries.len())
             .sum::<usize>();
-        assert!(total_entries >= 43170, "total_entries: {total_entries}");
-        assert_eq!(all_shreds.len(), 61);
-
         let slot_to_entry = deshredded_entries
             .iter()
             .into_group_map_by(|(slot, _entries, _entries_bytes)| *slot);
+        assert!(
+            total_entries >= FIXTURE_DATA_COMPLETE_TOTAL_ENTRIES,
+            "total_entries: {total_entries}"
+        );
+        assert!(
+            slot_to_entry.len() >= FIXTURE_DATA_COMPLETE_DECODED_SLOTS,
+            "slot_to_entry.len(): {}",
+            slot_to_entry.len()
+        );
+        assert!(
+            deshredded_entries.len() >= FIXTURE_DATA_COMPLETE_DECODED_SETS,
+            "deshredded_entries.len(): {}",
+            deshredded_entries.len()
+        );
+        assert!(
+            decoded_data_shreds >= FIXTURE_DATA_COMPLETE_DECODED_DATA_SHREDS,
+            "decoded_data_shreds: {decoded_data_shreds}"
+        );
+        assert_eq!(all_shreds.len(), 61);
+
         // slot_to_entry
         //     .iter()
         //     .sorted_by_key(|(slot, _)| *slot)
@@ -1743,11 +1803,6 @@ mod tests {
         //                 .sum::<usize>()
         //         );
         //     });
-        assert!(
-            slot_to_entry.len() >= 61,
-            "slot_to_entry.len(): {}",
-            slot_to_entry.len()
-        );
 
         // Test 2: 33% of shreds missing
         let mut all_shreds = ahash::HashMap::default();
@@ -1778,23 +1833,38 @@ mod tests {
         );
 
         // debug_to_disk(&deshredded_entries, "new.txt");
+        let decoded_data_shreds = all_shreds
+            .values()
+            .map(|(_fec_sets, tracker)| tracker.already_deshredded.iter().filter(|&&b| b).count())
+            .sum::<usize>();
         assert!(recovered_count > 0);
         assert_decoded_entries_sane(&deshredded_entries);
         let total_entries = deshredded_entries
             .iter()
             .map(|(_slot, entries, _entries_bytes)| entries.len())
             .sum::<usize>();
-        assert!(total_entries >= 43170, "total_entries: {total_entries}");
-        assert!(all_shreds.len() > 15);
-
         let slot_to_entry = deshredded_entries
             .iter()
             .into_group_map_by(|(slot, _entries, _entries_bytes)| *slot);
         assert!(
-            slot_to_entry.len() >= 61,
+            total_entries >= FIXTURE_DATA_COMPLETE_TOTAL_ENTRIES,
+            "total_entries: {total_entries}"
+        );
+        assert!(
+            slot_to_entry.len() >= FIXTURE_DATA_COMPLETE_DECODED_SLOTS,
             "slot_to_entry.len(): {}",
             slot_to_entry.len()
         );
+        assert!(
+            deshredded_entries.len() >= FIXTURE_DATA_COMPLETE_DECODED_SETS,
+            "deshredded_entries.len(): {}",
+            deshredded_entries.len()
+        );
+        assert!(
+            decoded_data_shreds >= FIXTURE_DATA_COMPLETE_DECODED_DATA_SHREDS,
+            "decoded_data_shreds: {decoded_data_shreds}"
+        );
+        assert_eq!(all_shreds.len(), 61, "slots_tracked: {}", all_shreds.len());
     }
 
     #[test]
@@ -1811,21 +1881,26 @@ mod tests {
         let mut data_shreds = Vec::new();
         let mut coding_shreds = Vec::new();
 
-        let mut index = 0;
-        (0..num_entry_groups).for_each(|_i| {
+        // Model a real leader producing multiple completed data sets within one slot: only the
+        // final entry group should set `LAST_SHRED_IN_SLOT`.
+        let mut next_shred_index: u32 = 0;
+        let mut next_code_index: u32 = 0;
+        (0..num_entry_groups).for_each(|i| {
+            let is_last_in_slot = i + 1 == num_entry_groups;
             let _entries = make_slot_entries_with_transactions(num_entries);
             let (_data_shreds, _coding_shreds) = shredder.entries_to_shreds(
                 &leader_keypair,
                 _entries.as_slice(),
-                true,
+                is_last_in_slot,
                 chained_merkle_root,
-                index as u32, // next_shred_index
-                index as u32, // next_code_index,
+                next_shred_index,
+                next_code_index,
                 true,         // merkle_variant
                 &reed_solomon_cache,
                 &mut ProcessShredsStats::default(),
             );
-            index += _data_shreds.len();
+            next_shred_index += _data_shreds.len() as u32;
+            next_code_index += _coding_shreds.len() as u32;
             entries.extend(_entries);
             data_shreds.extend(_data_shreds);
             coding_shreds.extend(_coding_shreds);
@@ -1840,14 +1915,27 @@ mod tests {
                 p
             })
             .collect_vec();
-        assert_eq!(data_shreds.len(), 320);
+        assert_eq!(
+            data_shreds.iter().filter(|s| s.last_in_slot()).count(),
+            1,
+            "expected exactly one LAST_SHRED_IN_SLOT in the slot"
+        );
+        assert_eq!(
+            data_shreds
+                .iter()
+                .filter(|s| s.data_complete() || s.last_in_slot())
+                .count(),
+            num_entry_groups,
+            "expected exactly one DATA_COMPLETE_SHRED boundary per entry group"
+        );
         assert_eq!(
             data_shreds
                 .iter()
                 .map(|s| s.fec_set_index())
                 .dedup()
                 .count(),
-            num_entry_groups
+            num_entry_groups,
+            "expected one FEC set per entry group in this test setup"
         );
 
         let metrics = Arc::new(ShredMetrics::default());
