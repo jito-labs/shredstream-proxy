@@ -63,6 +63,32 @@ impl Default for ShredsStateTracker {
 
 const BINCODE_DESERIALIZE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
+fn entries_pass_basic_sanity(entries: &[solana_entry::entry::Entry]) -> bool {
+    // Only do cheap checks: this is called on best-effort (unknown-start) decodes.
+    if entries.len() < 2 {
+        return true;
+    }
+
+    // Prefix transition.
+    if !entries[1].verify(&entries[0].hash) {
+        return false;
+    }
+
+    // Middle transition.
+    let mid = entries.len() / 2;
+    if mid > 0 && !entries[mid].verify(&entries[mid - 1].hash) {
+        return false;
+    }
+
+    // Suffix transition.
+    let last = entries.len() - 1;
+    if !entries[last].verify(&entries[last - 1].hash) {
+        return false;
+    }
+
+    true
+}
+
 /// Returns the number of **data** shreds reconstructed via FEC recovery.
 /// Updates all_shreds with current state, and deshredded_entries with returned values
 /// receive shreds per FEC set, attempting to recover the other shreds in the fec set so you do not have to wait until all data shreds have arrived.
@@ -102,13 +128,14 @@ pub fn reconstruct_shreds(
                     );
                     continue;
                 }
-                let (all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
                 if highest_slot_seen.saturating_sub(SLOT_LOOKBACK) > slot {
                     debug!(
                         "Old shred slot: {slot}, fec_set_index: {fec_set_index}, index: {index}"
                     );
                     continue;
                 }
+
+                let (all_shreds, state_tracker) = all_shreds.entry(slot).or_default();
                 // Only skip data shreds that we've already deshredded. Coding shreds can still
                 // help recover missing data shreds in the same FEC set.
                 if state_tracker.already_recovered_fec_sets[fec_set_index as usize]
@@ -187,6 +214,9 @@ pub fn reconstruct_shreds(
                 warn!(
                     "Failed to recover shreds for slot {slot} fec_set_index {fec_set_index}. num_expected_data_shreds: {num_expected_data_shreds}, num_data_shreds: {num_data_shreds} num_expected_coding_shreds: {num_expected_coding_shreds} num_coding_shreds: {num_coding_shreds} Err: {e}",
                 );
+                metrics
+                    .fec_recovery_error_count
+                    .fetch_add(1, Ordering::Relaxed);
                 continue;
             }
         };
@@ -312,9 +342,7 @@ pub fn reconstruct_shreds(
                 Ok(v) => v,
                 Err(e) => {
                     warn!("slot {slot} failed to deshred slot: {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}. Err: {e}");
-                    metrics
-                        .fec_recovery_error_count
-                        .fetch_add(1, Ordering::Relaxed);
+                    metrics.deshred_error_count.fetch_add(1, Ordering::Relaxed);
                     if unknown_start {
                         metrics
                             .unknown_start_position_error_count
@@ -356,6 +384,19 @@ pub fn reconstruct_shreds(
                             }
                             continue;
                         }
+                    }
+                    if unknown_start && !entries_pass_basic_sanity(&entries) {
+                        debug!(
+                            "Rejecting unknown-start decode with invalid entry hash chain for slot {slot}, start_data_complete_idx: {start_data_complete_idx}, end_data_complete_idx: {end_data_complete_idx}. entries_len: {}",
+                            entries.len(),
+                        );
+                        metrics
+                            .entry_sanity_error_count
+                            .fetch_add(1, Ordering::Relaxed);
+                        metrics
+                            .unknown_start_position_error_count
+                            .fetch_add(1, Ordering::Relaxed);
+                        continue;
                     }
                     entries
                 }
@@ -601,7 +642,10 @@ fn has_all_data_shreds_for_fec_set(
     num_expected_data_shreds: u16,
 ) -> bool {
     let start = fec_set_index as usize;
-    let Some(end) = start.checked_add(num_expected_data_shreds as usize).and_then(|v| v.checked_sub(1)) else {
+    let Some(end) = start
+        .checked_add(num_expected_data_shreds as usize)
+        .and_then(|v| v.checked_sub(1))
+    else {
         return false;
     };
     if end >= tracker.data_shreds.len() {
@@ -731,11 +775,12 @@ impl PartialEq for ComparableShred {
 mod tests {
     use std::{
         collections::{hash_map::Entry, HashSet},
-        io::{Read, Write},
+        io::{Cursor, Read, Write},
         net::UdpSocket,
         sync::Arc,
     };
 
+    use bincode::Options as _;
     use borsh::BorshDeserialize;
     use itertools::Itertools;
     use rand::Rng;
@@ -746,6 +791,7 @@ mod tests {
     use solana_perf::packet::{Packet, PacketBatch};
     use solana_sdk::{clock::Slot, hash::Hash, signature::Keypair};
 
+    use super::BINCODE_DESERIALIZE_LIMIT_BYTES;
     use crate::{
         deshred::{reconstruct_shreds, ComparableShred},
         forwarder::ShredMetrics,
@@ -1032,6 +1078,255 @@ mod tests {
         }
     }
 
+    fn deserialize_entries_allow_trailing(
+        deshredded_payload: &[u8],
+    ) -> Vec<solana_entry::entry::Entry> {
+        let bincode_opts = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(BINCODE_DESERIALIZE_LIMIT_BYTES);
+        let mut cursor = Cursor::new(deshredded_payload);
+        bincode_opts
+            .allow_trailing_bytes()
+            .deserialize_from::<_, Vec<solana_entry::entry::Entry>>(&mut cursor)
+            .unwrap()
+    }
+
+    // Spec conformance tests for the minute-detail deshred behavior described in `shred_spec.md`.
+    // These target `solana_ledger::shred::Shredder::deshred` directly so failures are easy to
+    // interpret.
+
+    #[test]
+    fn test_spec_happy_path_roundtrip() {
+        let slot = 111_000;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        let entries = make_slot_entries_with_transactions(16);
+        let (data_shreds, _coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            false,
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert!(!data_shreds.is_empty());
+
+        let payloads = data_shreds
+            .iter()
+            .sorted_by_key(|s| s.index())
+            .map(|s| s.payload())
+            .collect_vec();
+
+        let deshredded_payload = Shredder::deshred(payloads).unwrap();
+        // Deshred output should match the serialized `Vec<Entry>` bytes.
+        let expected_bytes = bincode::serialize(&entries).unwrap();
+        assert_eq!(deshredded_payload, expected_bytes);
+
+        // And the bytes should be decodable into our local Entry type with trailing tolerance.
+        let decoded = deserialize_entries_allow_trailing(&deshredded_payload);
+        assert_eq!(decoded.len(), entries.len());
+    }
+
+    #[test]
+    fn test_spec_missing_index_fails_as_incomplete() {
+        let slot = 111_001;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        // Use enough entries to ensure multiple data shreds.
+        let entries = make_slot_entries_with_transactions(64);
+        let (data_shreds, _coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            false,
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert!(data_shreds.len() >= 3);
+
+        let mut payloads = data_shreds
+            .iter()
+            .sorted_by_key(|s| s.index())
+            .map(|s| s.payload().to_vec())
+            .collect_vec();
+
+        // Remove a shred from the middle so indices are no longer strictly consecutive.
+        payloads.remove(payloads.len() / 2);
+
+        let err = Shredder::deshred(payloads.iter()).unwrap_err();
+        assert!(
+            matches!(err, solana_ledger::shred::Error::ErasureError(_)),
+            "expected an incomplete/too-few-data-shards error; got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_spec_non_consecutive_indices_fails_as_incomplete() {
+        let slot = 111_002;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        let entries = make_slot_entries_with_transactions(64);
+        let (data_shreds, _coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            false,
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert!(data_shreds.len() >= 3);
+
+        // Feed shreds out of order, producing a non-consecutive index sequence.
+        let mut payloads = data_shreds
+            .iter()
+            .sorted_by_key(|s| s.index())
+            .map(|s| s.payload().to_vec())
+            .collect_vec();
+        payloads.swap(0, 1);
+
+        let err = Shredder::deshred(payloads.iter()).unwrap_err();
+        assert!(
+            matches!(err, solana_ledger::shred::Error::ErasureError(_)),
+            "expected an incomplete/too-few-data-shards error; got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_spec_trailing_shred_after_completion_fails_invalid_set() {
+        let slot = 111_003;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        let entries = make_slot_entries_with_transactions(16);
+        let (data_shreds, _coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            false,
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert!(!data_shreds.is_empty());
+
+        let mut payloads = data_shreds
+            .iter()
+            .sorted_by_key(|s| s.index())
+            .map(|s| s.payload().to_vec())
+            .collect_vec();
+        // Append an extra shred after the DATA_COMPLETE_SHRED.
+        payloads.push(payloads[0].clone());
+
+        let err = Shredder::deshred(payloads.iter()).unwrap_err();
+        assert!(
+            matches!(err, solana_ledger::shred::Error::InvalidDeshredSet),
+            "expected invalid deshred set error; got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_spec_invalid_size_field_fails() {
+        let slot = 111_004;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        let entries = make_slot_entries_with_transactions(16);
+        let (data_shreds, _coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            false,
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert!(!data_shreds.is_empty());
+
+        let mut payload = data_shreds[0].payload().to_vec();
+        // size < 88 (SIZE_OF_DATA_HEADERS) is invalid per spec.
+        payload[86..88].copy_from_slice(&0u16.to_le_bytes());
+        let err = Shredder::deshred(std::iter::once(payload.as_slice())).unwrap_err();
+        assert!(
+            matches!(err, solana_ledger::shred::Error::InvalidDataSize { .. }),
+            "expected invalid data size error; got: {err:?}"
+        );
+
+        let mut payload = data_shreds[0].payload().to_vec();
+        // size > 88 + capacity(...) is invalid per spec. Use u16::MAX to force invalidity.
+        payload[86..88].copy_from_slice(&u16::MAX.to_le_bytes());
+        let err = Shredder::deshred(std::iter::once(payload.as_slice())).unwrap_err();
+        assert!(
+            matches!(err, solana_ledger::shred::Error::InvalidDataSize { .. }),
+            "expected invalid data size error; got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_spec_empty_output_behavior_deserializes_empty_entries() {
+        let slot = 111_005;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        let entries = make_slot_entries_with_transactions(16);
+        let (data_shreds, _coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            false,
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert!(!data_shreds.is_empty());
+
+        // Force the shred to contribute 0 bytes by setting size == 88 (SIZE_OF_DATA_HEADERS).
+        // With DATA_COMPLETE_SHRED set, this exercises the spec's backward-compat empty-output
+        // behavior (deshred returns a non-empty zero-filled buffer).
+        let mut payload = data_shreds
+            .iter()
+            .max_by_key(|s| s.index())
+            .unwrap()
+            .payload()
+            .to_vec();
+        payload[86..88].copy_from_slice(&(88u16).to_le_bytes());
+
+        let deshredded_payload = Shredder::deshred(std::iter::once(payload.as_slice())).unwrap();
+        assert!(
+            !deshredded_payload.is_empty(),
+            "expected non-empty zero-filled buffer"
+        );
+
+        let decoded = deserialize_entries_allow_trailing(&deshredded_payload);
+        assert!(
+            decoded.is_empty(),
+            "expected deserialization to yield an empty Vec<Entry>"
+        );
+    }
+
     #[test]
     fn test_recovered_count_counts_only_data_shreds() {
         let slot = 222_222;
@@ -1045,10 +1340,10 @@ mod tests {
             &leader_keypair,
             entries.as_slice(),
             true,
-            None, // chained_merkle_root
-            0,    // next_shred_index
-            0,    // next_code_index
-            true, // merkle_variant
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
             &reed_solomon_cache,
             &mut ProcessShredsStats::default(),
         );
@@ -1124,11 +1419,11 @@ mod tests {
         let (data_shreds, _coding_shreds) = shredder.entries_to_shreds(
             &leader_keypair,
             entries.as_slice(),
-            true,
-            None, // chained_merkle_root
-            0,    // next_shred_index
-            0,    // next_code_index
-            true, // merkle_variant
+            false,
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
             &reed_solomon_cache,
             &mut ProcessShredsStats::default(),
         );
@@ -1206,8 +1501,96 @@ mod tests {
         let decoded_bytes = &deshredded_entries[0].2;
         assert!(decoded_bytes.len() >= 8);
         assert!(
-            decoded_bytes[decoded_bytes.len() - 8..].iter().all(|&b| b == 0xAB),
+            decoded_bytes[decoded_bytes.len() - 8..]
+                .iter()
+                .all(|&b| b == 0xAB),
             "expected non-zero trailing bytes appended to deshredded payload"
+        );
+    }
+
+    #[test]
+    fn test_ignores_trailing_packet_bytes_for_recovery_and_deshred() {
+        let slot = 555_555;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
+
+        let entries = make_slot_entries_with_transactions(64);
+        let (data_shreds, coding_shreds) = shredder.entries_to_shreds(
+            &leader_keypair,
+            entries.as_slice(),
+            true,
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
+        assert_eq!(data_shreds.len(), 32);
+        assert_eq!(coding_shreds.len(), 32);
+
+        // Drop some data and some coding shreds so recovery is required.
+        const DROP_DATA: usize = 5;
+        const DROP_CODE: usize = 7;
+        let missing_data_indices = (0..DROP_DATA).collect::<HashSet<_>>();
+        let missing_code_indices = (0..DROP_CODE).collect::<HashSet<_>>();
+
+        // Add trailing packet bytes beyond the shred payload size; the decoder should ignore
+        // them per spec.
+        const TRAILING_LEN: usize = 4; // fits for both data (1203) and code (1228) within PACKET_DATA_SIZE
+        const TRAILING_BYTE: u8 = 0xCC;
+
+        let packets = data_shreds
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !missing_data_indices.contains(i))
+            .map(|(_, s)| s)
+            .chain(
+                coding_shreds
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !missing_code_indices.contains(i))
+                    .map(|(_, s)| s),
+            )
+            .map(|s| {
+                let payload = s.payload();
+                let mut p = Packet::default();
+                p.buffer_mut()[..payload.len()].copy_from_slice(payload);
+                p.buffer_mut()[payload.len()..payload.len() + TRAILING_LEN].fill(TRAILING_BYTE);
+                p.meta_mut().size = payload.len() + TRAILING_LEN;
+                p
+            })
+            .collect_vec();
+        assert!(packets.len() >= 32);
+
+        let metrics = Arc::new(ShredMetrics::default());
+        let rs_cache = ReedSolomonCache::default();
+
+        let mut all_shreds = ahash::HashMap::default();
+        let mut slot_fec_indexes_to_iterate: Vec<(Slot, u32)> = Vec::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
+        let recovered_count = reconstruct_shreds(
+            PacketBatch::new(packets),
+            &mut all_shreds,
+            &mut slot_fec_indexes_to_iterate,
+            &mut deshredded_entries,
+            &mut highest_slot_seen,
+            &rs_cache,
+            &metrics,
+        );
+
+        assert_eq!(
+            recovered_count, DROP_DATA,
+            "expected to recover the missing data shreds even with trailing packet bytes"
+        );
+        assert_eq!(
+            deshredded_entries
+                .iter()
+                .map(|(_slot, e, _bytes)| e.len())
+                .sum::<usize>(),
+            entries.len()
         );
     }
 
@@ -1223,10 +1606,10 @@ mod tests {
             &leader_keypair,
             entries.as_slice(),
             true,
-            None, // chained_merkle_root
-            0,    // next_shred_index
-            0,    // next_code_index
-            true, // merkle_variant
+            Some(Hash::new_from_array([1u8; 32])), // chained_merkle_root
+            0,                                     // next_shred_index
+            0,                                     // next_code_index
+            true,                                  // merkle_variant
             &reed_solomon_cache,
             &mut ProcessShredsStats::default(),
         );

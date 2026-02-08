@@ -77,7 +77,7 @@ pub fn start_forwarder_threads(
         panic!("Failed to bind listener sockets. Check that port {src_port} is not in use.")
     });
 
-    let (reconstruct_tx, reconstruct_rx) = crossbeam_channel::bounded(1_024);
+    let (reconstruct_tx, reconstruct_rx) = crossbeam_channel::bounded(10_240);
     let mut thread_hdls = Vec::with_capacity(num_threads + 1);
 
     if should_reconstruct_shreds {
@@ -237,7 +237,14 @@ fn recv_from_channel_and_send_multiple_dest(
     );
 
     if should_reconstruct_shreds {
-        let _ = reconstruct_tx.try_send(packet_batch.clone());
+        // Avoid cloning the packet batch if the queue is already full.
+        if reconstruct_tx.is_full()
+            || reconstruct_tx.try_send(packet_batch.clone()).is_err()
+        {
+            metrics
+                .reconstruct_packet_drop_count
+                .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
+        }
     }
 
     let mut packet_batch_vec = vec![packet_batch];
@@ -466,8 +473,12 @@ pub struct ShredMetrics {
 
     // service metrics
     pub enabled_grpc_service: bool,
+    /// Number of shreds dropped because the reconstruction queue was full
+    pub reconstruct_packet_drop_count: AtomicU64,
     /// Number of data shreds recovered using coding shreds
     pub recovered_count: AtomicU64,
+    /// Number of deshred errors (Shredder::deshred failures)
+    pub deshred_error_count: AtomicU64,
     /// Number of Solana entries decoded from shreds
     pub entry_count: AtomicU64,
     /// Number of transactions decoded from shreds
@@ -478,6 +489,8 @@ pub struct ShredMetrics {
     pub fec_recovery_error_count: AtomicU64,
     /// Number of bincode Entry deserialization errors
     pub bincode_deserialize_error_count: AtomicU64,
+    /// Number of decoded entry sets rejected by sanity checks
+    pub entry_sanity_error_count: AtomicU64,
     /// Number of times we couldn't find the previous DATA_COMPLETE_SHRED flag but tried to deshred+deserialize, and failed
     pub unknown_start_position_error_count: AtomicU64,
 
@@ -503,12 +516,15 @@ impl ShredMetrics {
             fail_forward: Default::default(),
             duplicate: Default::default(),
             packets_received: DashMap::with_capacity(10),
+            reconstruct_packet_drop_count: Default::default(),
             recovered_count: Default::default(),
+            deshred_error_count: Default::default(),
             entry_count: Default::default(),
             txn_count: Default::default(),
             unknown_start_position_count: Default::default(),
             fec_recovery_error_count: Default::default(),
             bincode_deserialize_error_count: Default::default(),
+            entry_sanity_error_count: Default::default(),
             unknown_start_position_error_count: Default::default(),
             agg_received_cumulative: Default::default(),
             agg_success_forward_cumulative: Default::default(),
@@ -538,8 +554,18 @@ impl ShredMetrics {
             datapoint_info!(
                 "shredstream_proxy-service_metrics",
                 (
+                    "reconstruct_packet_drop_count",
+                    self.reconstruct_packet_drop_count.swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
                     "recovered_count",
                     self.recovered_count.swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "deshred_error_count",
+                    self.deshred_error_count.swap(0, Ordering::Relaxed),
                     i64
                 ),
                 (
@@ -562,6 +588,11 @@ impl ShredMetrics {
                     "bincode_deserialize_error_count",
                     self.bincode_deserialize_error_count
                         .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "entry_sanity_error_count",
+                    self.entry_sanity_error_count.swap(0, Ordering::Relaxed),
                     i64
                 ),
                 (
