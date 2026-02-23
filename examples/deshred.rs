@@ -1,3 +1,4 @@
+use bincode::Options;
 use jito_protos::shredstream::{
     shredstream_proxy_client::ShredstreamProxyClient, SubscribeEntriesRequest,
 };
@@ -12,16 +13,19 @@ async fn main() -> Result<(), std::io::Error> {
         .await
         .unwrap()
         .into_inner();
+    let bincode_opts = bincode::DefaultOptions::new().with_fixint_encoding();
 
     while let Some(slot_entry) = stream.message().await.unwrap() {
-        let entries =
-            match bincode::deserialize::<Vec<solana_entry::entry::Entry>>(&slot_entry.entries) {
-                Ok(e) => e,
-                Err(e) => {
-                    println!("Deserialization failed with err: {e}");
-                    continue;
-                }
-            };
+        let entries = match bincode_opts
+            .allow_trailing_bytes()
+            .deserialize::<Vec<solana_entry::entry::Entry>>(&slot_entry.entries)
+        {
+            Ok(e) => e,
+            Err(e) => {
+                println!("Deserialization failed with err: {e}");
+                continue;
+            }
+        };
         println!(
             "slot {}, entries: {}, transactions: {}",
             slot_entry.slot,

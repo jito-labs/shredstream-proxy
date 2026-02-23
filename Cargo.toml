@@ -3,7 +3,7 @@ members = ["examples", "jito_protos", "proxy"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.13"
+version = "0.2.14"
 description = "Fast path to receive shreds from Jito, forwarding to local consumers. See https://docs.jito.wtf/lowlatencytxnfeed/ for details."
 authors = ["Jito Team <team@jito.wtf>"]
 homepage = "https://jito.wtf/"
@@ -13,6 +13,7 @@ edition = "2021"
 ahash = "0.8"
 arc-swap = "1.6"
 bincode = "1.3.3"
+bitvec = "1"
 borsh = "1.5.3"
 clap = { version = "4", features = ["derive", "env"] }
 crossbeam-channel = "0.5.8"

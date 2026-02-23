@@ -144,6 +144,22 @@ struct CommonArgs {
     /// Number of threads to use. Defaults to use up to 4.
     #[arg(long, env)]
     num_threads: Option<usize>,
+
+    /// Slot window lookback for reconstruction (in slots).
+    /// Only used when `--grpc-service-port` is set.
+    #[arg(long, env, default_value_t = 75)]
+    reconstruct_slot_lookback: Slot,
+
+    /// Slot window future bound for reconstruction (in slots).
+    /// Only used when `--grpc-service-port` is set.
+    #[arg(long, env, default_value_t = 75)]
+    reconstruct_slot_future: Slot,
+
+    /// Max unknown-start positions to try per DATA_COMPLETE end boundary during deshred.
+    /// Higher values can improve best-effort decode yield when boundary shreds are missing, at
+    /// the cost of extra CPU in the reconstruction thread.
+    #[arg(long, env, default_value_t = 8)]
+    reconstruct_unknown_start_max_positions: u16,
 }
 
 #[derive(Debug, Error)]
@@ -180,13 +196,19 @@ fn resolve_hostname_port(hostname_port: &str) -> io::Result<(SocketAddr, String)
 }
 
 /// Returns public-facing IPV4 address
-pub fn get_public_ip() -> reqwest::Result<IpAddr> {
+pub fn get_public_ip() -> Result<IpAddr, ShredstreamProxyError> {
     info!("Requesting public ip from ifconfig.me...");
     let client = reqwest::blocking::Client::builder()
         .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
         .build()?;
     let response = client.get("https://ifconfig.me/ip").send()?.text()?;
-    let public_ip = IpAddr::from_str(&response).unwrap();
+    let trimmed = response.trim();
+    let public_ip = IpAddr::from_str(trimmed).map_err(|e| {
+        ShredstreamProxyError::IoError(io::Error::new(
+            ErrorKind::InvalidData,
+            format!("Failed to parse public ip from ifconfig.me response {trimmed:?}: {e}"),
+        ))
+    })?;
     info!("Retrieved public ip: {public_ip:?}");
 
     Ok(public_ip)
@@ -257,19 +279,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let metrics = Arc::new(ShredMetrics::new(args.grpc_service_port.is_some()));
 
-    let runtime = Runtime::new()?;
     let mut thread_handles = vec![];
-    if let ProxySubcommands::Shredstream(args) = shredstream_args {
-        if args.desired_regions.len() > 2 {
-            warn!(
-                "Too many regions requested, only regions: {:?} will be used",
-                &args.desired_regions[..2]
-            );
-        }
-        let heartbeat_hdl =
-            start_heartbeat(args, &exit, &shutdown_receiver, runtime, metrics.clone());
-        thread_handles.push(heartbeat_hdl);
-    }
 
     // share sockets between refresh and forwarder thread
     let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(
@@ -296,7 +306,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.multicast_bind_ip,
     )
     .inspect(|mcast_socket| info!("Multicast listeners found: {mcast_socket:?}."));
-    let forwarder_hdls = forwarder::start_forwarder_threads(
+    let (bound_port, forwarder_hdls) = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_addr,
         args.src_bind_port,
@@ -304,6 +314,9 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.num_threads,
         deduper.clone(),
         args.grpc_service_port.is_some(),
+        args.reconstruct_slot_lookback,
+        args.reconstruct_slot_future,
+        args.reconstruct_unknown_start_max_positions,
         entry_sender.clone(),
         args.debug_trace_shred,
         use_discovery_service,
@@ -313,6 +326,25 @@ fn main() -> Result<(), ShredstreamProxyError> {
         exit.clone(),
     );
     thread_handles.extend(forwarder_hdls);
+
+    if let ProxySubcommands::Shredstream(args) = shredstream_args {
+        if args.desired_regions.len() > 2 {
+            warn!(
+                "Too many regions requested, only regions: {:?} will be used",
+                &args.desired_regions[..2]
+            );
+        }
+        let runtime = Runtime::new()?;
+        let heartbeat_hdl = start_heartbeat(
+            args,
+            bound_port,
+            &exit,
+            &shutdown_receiver,
+            runtime,
+            metrics.clone(),
+        )?;
+        thread_handles.push(heartbeat_hdl);
+    }
 
     let report_metrics_thread = {
         let exit = exit.clone();
@@ -357,7 +389,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     info!(
         "Shredstream started, listening on {}:{}/udp.",
-        args.src_bind_addr, args.src_bind_port
+        args.src_bind_addr, bound_port
     );
 
     for thread in thread_handles {
@@ -378,11 +410,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
 fn start_heartbeat(
     args: ShredstreamArgs,
+    recv_port: u16,
     exit: &Arc<AtomicBool>,
     shutdown_receiver: &Receiver<()>,
     runtime: Runtime,
     metrics: Arc<ShredMetrics>,
-) -> JoinHandle<()> {
+) -> Result<JoinHandle<()>, ShredstreamProxyError> {
     let auth_keypair = Arc::new(
         read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
             panic!(
@@ -392,21 +425,22 @@ fn start_heartbeat(
         }),
     );
 
-    heartbeat::heartbeat_loop_thread(
+    let public_ip = args
+        .common_args
+        .public_ip
+        .map(Ok)
+        .unwrap_or_else(get_public_ip)?;
+
+    Ok(heartbeat::heartbeat_loop_thread(
         args.block_engine_url.clone(),
         args.auth_url.unwrap_or(args.block_engine_url),
         auth_keypair,
         args.desired_regions,
-        SocketAddr::new(
-            args.common_args
-                .public_ip
-                .unwrap_or_else(|| get_public_ip().unwrap()),
-            args.common_args.src_bind_port,
-        ),
+        SocketAddr::new(public_ip, recv_port),
         runtime,
         "shredstream_proxy".to_string(),
         metrics,
         shutdown_receiver.clone(),
         exit.clone(),
-    )
+    ))
 }

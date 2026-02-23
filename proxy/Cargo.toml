@@ -10,6 +10,7 @@ edition = { workspace = true }
 ahash = { workspace = true }
 arc-swap = { workspace = true }
 bincode = { workspace = true }
+bitvec = { workspace = true }
 borsh = { workspace = true }
 clap = { workspace = true }
 crossbeam-channel = { workspace = true }
