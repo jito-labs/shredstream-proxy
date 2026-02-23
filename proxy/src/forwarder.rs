@@ -89,6 +89,10 @@ pub fn start_forwarder_threads(
     reconstruct_slot_lookback: Slot,
     reconstruct_slot_future: Slot,
     reconstruct_unknown_start_max_positions: u16,
+    reconstruct_known_start_parity_scrub_enabled: bool,
+    reconstruct_known_start_parity_scrub_max_fec_sets_per_failure: u16,
+    reconstruct_known_start_parity_scrub_max_indices_per_fec: u16,
+    reconstruct_known_start_parity_scrub_max_attempts_per_fec_generation: u8,
     entry_sender: Arc<Sender<PbEntry>>,
     debug_trace_shred: bool,
     use_discovery_service: bool,
@@ -122,6 +126,13 @@ pub fn start_forwarder_threads(
             slot_lookback: reconstruct_slot_lookback,
             slot_future: reconstruct_slot_future,
             unknown_start_max_positions: reconstruct_unknown_start_max_positions,
+            known_start_parity_scrub_enabled: reconstruct_known_start_parity_scrub_enabled,
+            known_start_parity_scrub_max_fec_sets_per_failure:
+                reconstruct_known_start_parity_scrub_max_fec_sets_per_failure,
+            known_start_parity_scrub_max_indices_per_fec:
+                reconstruct_known_start_parity_scrub_max_indices_per_fec,
+            known_start_parity_scrub_max_attempts_per_fec_generation:
+                reconstruct_known_start_parity_scrub_max_attempts_per_fec_generation,
         };
         let metrics = metrics.clone();
         let exit = exit.clone();
@@ -635,6 +646,16 @@ pub struct ShredMetrics {
     /// Number of finalized FEC identities that reached both unknown-start and
     /// known-start completion at different times.
     pub fec_set_decode_both_start_modes_count: AtomicU64,
+    /// Number of known-start parity scrub attempts (forced-missing recover probes).
+    pub known_start_parity_scrub_attempt_count: AtomicU64,
+    /// Number of known-start parity scrub attempts that recovered at least one data shred.
+    pub known_start_parity_scrub_success_count: AtomicU64,
+    /// Number of known-start decode retries that succeeded after parity scrub.
+    pub known_start_parity_scrub_decode_retry_success_count: AtomicU64,
+    /// Number of known-start parity scrub attempts skipped due per-generation budget.
+    pub known_start_parity_scrub_skip_budget_count: AtomicU64,
+    /// Number of known-start parity scrub attempts that ended in recovery errors.
+    pub known_start_parity_scrub_error_count: AtomicU64,
 
     // cumulative metrics (persist after reset)
     pub agg_received_cumulative: AtomicU64,
@@ -686,6 +707,11 @@ impl ShredMetrics {
             fec_set_decode_unknown_start_only_count: Default::default(),
             fec_set_decode_known_start_only_count: Default::default(),
             fec_set_decode_both_start_modes_count: Default::default(),
+            known_start_parity_scrub_attempt_count: Default::default(),
+            known_start_parity_scrub_success_count: Default::default(),
+            known_start_parity_scrub_decode_retry_success_count: Default::default(),
+            known_start_parity_scrub_skip_budget_count: Default::default(),
+            known_start_parity_scrub_error_count: Default::default(),
             agg_received_cumulative: Default::default(),
             agg_success_forward_cumulative: Default::default(),
             agg_fail_forward_cumulative: Default::default(),
@@ -864,6 +890,36 @@ impl ShredMetrics {
                 (
                     "fec_set_decode_both_start_modes_count",
                     self.fec_set_decode_both_start_modes_count
+                        .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "known_start_parity_scrub_attempt_count",
+                    self.known_start_parity_scrub_attempt_count
+                        .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "known_start_parity_scrub_success_count",
+                    self.known_start_parity_scrub_success_count
+                        .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "known_start_parity_scrub_decode_retry_success_count",
+                    self.known_start_parity_scrub_decode_retry_success_count
+                        .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "known_start_parity_scrub_skip_budget_count",
+                    self.known_start_parity_scrub_skip_budget_count
+                        .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "known_start_parity_scrub_error_count",
+                    self.known_start_parity_scrub_error_count
                         .swap(0, Ordering::Relaxed),
                     i64
                 ),

@@ -160,6 +160,25 @@ struct CommonArgs {
     /// the cost of extra CPU in the reconstruction thread.
     #[arg(long, env, default_value_t = 8)]
     reconstruct_unknown_start_max_positions: u16,
+
+    /// Enable a bounded parity scrub retry for known-start decode failures.
+    /// When enabled, reconstruction may force one data index missing in a complete FEC set and
+    /// attempt Reed-Solomon repair before retrying decode once.
+    #[arg(long, env, default_value_t = true)]
+    reconstruct_known_start_parity_scrub_enabled: bool,
+
+    /// Max overlapping FEC sets to parity-scrub per known-start decode failure.
+    #[arg(long, env, default_value_t = 1)]
+    reconstruct_known_start_parity_scrub_max_fec_sets_per_failure: u16,
+
+    /// Max forced-missing data indices to try per scrubbed FEC set.
+    /// Candidate order is start, middle, end within the failed decode overlap.
+    #[arg(long, env, default_value_t = 3)]
+    reconstruct_known_start_parity_scrub_max_indices_per_fec: u16,
+
+    /// Max parity scrub attempts per FEC identity generation.
+    #[arg(long, env, default_value_t = 1)]
+    reconstruct_known_start_parity_scrub_max_attempts_per_fec_generation: u8,
 }
 
 #[derive(Debug, Error)]
@@ -317,6 +336,10 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.reconstruct_slot_lookback,
         args.reconstruct_slot_future,
         args.reconstruct_unknown_start_max_positions,
+        args.reconstruct_known_start_parity_scrub_enabled,
+        args.reconstruct_known_start_parity_scrub_max_fec_sets_per_failure,
+        args.reconstruct_known_start_parity_scrub_max_indices_per_fec,
+        args.reconstruct_known_start_parity_scrub_max_attempts_per_fec_generation,
         entry_sender.clone(),
         args.debug_trace_shred,
         use_discovery_service,
