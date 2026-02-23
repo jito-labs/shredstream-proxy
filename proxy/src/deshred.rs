@@ -66,7 +66,7 @@ pub(crate) struct ReconstructShredsConfig {
     pub slot_lookback: Slot,
     /// Accept shreds this many slots ahead of the current slot anchor.
     pub slot_future: Slot,
-    /// Maximum number of unknown-start candidate positions to try per end boundary.
+    /// Maximum number of unknown-start candidate positions to try per end boundary per call.
     pub unknown_start_max_positions: u16,
     /// Enable known-start parity scrub after a known-boundary decode failure.
     pub known_start_parity_scrub_enabled: bool,
@@ -79,7 +79,6 @@ pub(crate) struct ReconstructShredsConfig {
 }
 
 /// Reusable allocation scratch for `reconstruct_shreds`.
-#[derive(Default)]
 pub(crate) struct ReconstructScratch {
     /// Version histogram used to select dominant ingress version per call.
     version_counts: ahash::HashMap<u16, u32>,
@@ -102,6 +101,22 @@ pub(crate) struct ReconstructScratch {
     known_start_scrub_fec_keys: Vec<FecSetKey>,
     /// Reused forced-missing candidate indices for one scrubbed FEC identity.
     known_start_scrub_candidate_indices: Vec<usize>,
+}
+
+impl Default for ReconstructScratch {
+    fn default() -> Self {
+        Self {
+            version_counts: ahash::HashMap::default(),
+            variant_profile_counts: ahash::HashMap::default(),
+            parsed_shreds: Vec::new(),
+            slot_samples: Vec::new(),
+            data_complete_idxs: Vec::with_capacity(MAX_DATA_SHREDS_PER_SLOT),
+            unknown_start_candidates: Vec::with_capacity(MAX_DATA_SHREDS_PER_SLOT),
+            unknown_start_missing_suffix: Vec::with_capacity(MAX_DATA_SHREDS_PER_SLOT),
+            known_start_scrub_fec_keys: Vec::new(),
+            known_start_scrub_candidate_indices: Vec::new(),
+        }
+    }
 }
 
 /// Narrow index type for shred positions bounded by `MAX_DATA_SHREDS_PER_SLOT`.
@@ -149,6 +164,19 @@ struct UnknownStartEmission {
     ///
     /// If this changes before canonical completion, we must re-decode on commit.
     range_generation: u16,
+}
+
+/// Resume state for unknown-start candidate scanning at one end boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UnknownStartScanState {
+    /// Current inferred start boundary for this unknown-start window.
+    start_data_complete_idx: ShredIndex,
+    /// Max per-index generation within the current candidate window.
+    range_generation: u16,
+    /// Next candidate offset to evaluate within the current ordered candidate list.
+    next_candidate_offset: usize,
+    /// True once every candidate in the current generation has been attempted.
+    exhausted: bool,
 }
 
 /// Count byte-level differences between two buffers (including length delta).
@@ -237,11 +265,11 @@ pub struct ShredsStateTracker {
     /// This prevents repeatedly emitting the same best-effort decode while still allowing a later
     /// correct decode (with a different start boundary) if/when the missing boundary shred arrives.
     unknown_start_emitted: ahash::HashMap<ShredIndex, UnknownStartEmission>,
-    /// Last data-range generation we attempted for each unknown-start end boundary.
+    /// Resume state for unknown-start candidate scanning per end boundary.
     ///
-    /// Used to skip repeating speculative decode attempts when no data payload in the candidate
-    /// range changed since the last attempt.
-    unknown_start_last_attempt_generation: ahash::HashMap<ShredIndex, u16>,
+    /// We scan unknown-start candidates in fixed-size chunks per call to bound CPU, then resume
+    /// from the next offset on subsequent calls until the candidate space is exhausted.
+    unknown_start_scan_state: ahash::HashMap<ShredIndex, UnknownStartScanState>,
     /// Monotonic counter bumped whenever any data shred payload for this slot is inserted/replaced.
     data_generation: u16,
     /// Per-index generation stamp for the last accepted payload at that data index.
@@ -255,7 +283,7 @@ impl Default for ShredsStateTracker {
             already_recovered_fec_sets: BitVec::repeat(false, MAX_DATA_SHREDS_PER_SLOT),
             already_deshredded: BitVec::repeat(false, MAX_DATA_SHREDS_PER_SLOT),
             unknown_start_emitted: ahash::HashMap::default(),
-            unknown_start_last_attempt_generation: ahash::HashMap::default(),
+            unknown_start_scan_state: ahash::HashMap::default(),
             data_generation: 0,
             data_index_generation: vec![0u16; MAX_DATA_SHREDS_PER_SLOT],
         }
@@ -758,13 +786,39 @@ fn commit_deshredded_range(
 
     // Drop data payloads for indices whose FEC set is now recovered.
     for idx in start_data_complete_idx..=end_data_complete_idx {
-        let should_drop = state_tracker.data_shreds[idx].as_ref().is_some_and(|s| {
-            state_tracker.already_recovered_fec_sets[s.fec_set_index() as usize]
-        });
+        let should_drop = state_tracker.data_shreds[idx]
+            .as_ref()
+            .is_some_and(|s| state_tracker.already_recovered_fec_sets[s.fec_set_index() as usize]);
         if should_drop {
             state_tracker.data_shreds[idx] = None;
         }
     }
+}
+
+#[inline]
+fn finalize_known_start_decode(
+    fec_sets: &mut ahash::HashMap<FecSetKey, FecSetState>,
+    state_tracker: &mut ShredsStateTracker,
+    metrics: &ShredMetrics,
+    start_data_complete_idx: ShredIndex,
+    end_data_complete_idx: ShredIndex,
+) {
+    observe_fec_set_decode_completion_latency(
+        fec_sets,
+        metrics,
+        &state_tracker.data_shreds
+            [usize::from(start_data_complete_idx)..=usize::from(end_data_complete_idx)],
+        DecodeCompletionKind::KnownStart,
+    );
+    commit_deshredded_range(
+        fec_sets,
+        state_tracker,
+        start_data_complete_idx,
+        end_data_complete_idx,
+    );
+    state_tracker
+        .unknown_start_emitted
+        .remove(&end_data_complete_idx);
 }
 
 fn decode_entries_from_shred_range(
@@ -828,6 +882,8 @@ fn record_decode_entries_error(
     } else {
         "known-start"
     };
+    let bump_unknown_start_position_error =
+        unknown_start && !matches!(err, DecodeEntriesError::MissingShred { .. });
 
     match err {
         DecodeEntriesError::Deshred(error) => {
@@ -838,9 +894,6 @@ fn record_decode_entries_error(
             if unknown_start {
                 metrics
                     .deshred_error_unknown_start_count
-                    .fetch_add(1, Ordering::Relaxed);
-                metrics
-                    .unknown_start_position_error_count
                     .fetch_add(1, Ordering::Relaxed);
             } else {
                 metrics
@@ -861,11 +914,6 @@ fn record_decode_entries_error(
             metrics
                 .bincode_deserialize_error_count
                 .fetch_add(1, Ordering::Relaxed);
-            if unknown_start {
-                metrics
-                    .unknown_start_position_error_count
-                    .fetch_add(1, Ordering::Relaxed);
-            }
         }
         DecodeEntriesError::EntrySanity { entries_len } => {
             debug!(
@@ -875,12 +923,13 @@ fn record_decode_entries_error(
             metrics
                 .entry_sanity_error_count
                 .fetch_add(1, Ordering::Relaxed);
-            if unknown_start {
-                metrics
-                    .unknown_start_position_error_count
-                    .fetch_add(1, Ordering::Relaxed);
-            }
         }
+    }
+
+    if bump_unknown_start_position_error {
+        metrics
+            .unknown_start_position_error_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1259,8 +1308,27 @@ fn try_known_start_parity_scrub(
         };
         fec_sets_considered = fec_sets_considered.saturating_add(1);
 
+        // Fast path: if this FEC generation has already exhausted scrub budget, skip early
+        // instead of rebuilding candidate indices only to reject in the inner loop.
+        let max_attempts = cfg.known_start_parity_scrub_max_attempts_per_fec_generation;
+        {
+            let Some(fec_state) = fec_sets.get_mut(&key) else {
+                continue;
+            };
+            if fec_state.known_start_scrub_generation != fec_state.generation {
+                fec_state.known_start_scrub_generation = fec_state.generation;
+                fec_state.known_start_scrub_attempts_in_generation = 0;
+            }
+            if fec_state.known_start_scrub_attempts_in_generation >= max_attempts {
+                metrics
+                    .known_start_parity_scrub_skip_budget_count
+                    .fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+        }
+
         let candidate_budget = usize::from(cfg.known_start_parity_scrub_max_indices_per_fec)
-            .min(cfg.known_start_parity_scrub_max_attempts_per_fec_generation as usize);
+            .min(max_attempts as usize);
         build_known_start_scrub_candidate_indices(
             overlap_start,
             overlap_end,
@@ -1277,9 +1345,7 @@ fn try_known_start_parity_scrub(
                 fec_state.known_start_scrub_generation = fec_state.generation;
                 fec_state.known_start_scrub_attempts_in_generation = 0;
             }
-            if fec_state.known_start_scrub_attempts_in_generation
-                >= cfg.known_start_parity_scrub_max_attempts_per_fec_generation
-            {
+            if fec_state.known_start_scrub_attempts_in_generation >= max_attempts {
                 metrics
                     .known_start_parity_scrub_skip_budget_count
                     .fetch_add(1, Ordering::Relaxed);
@@ -1365,8 +1431,13 @@ pub(crate) fn reconstruct_shreds(
     // single outlier slot (slot poisoning). Then only accept shreds within a bounded window
     // around that anchor.
     //
-    // Pass A: sample versions and pick the dominant shred version for ingress filtering.
+    // Parse once and collect sanitized shreds + version votes.
+    //
+    // Version voting is based only on successfully parsed/sanitized shreds, so malformed packets
+    // cannot bias dominant-version selection. We then apply dominant-version filtering on the
+    // parsed shred set.
     scratch.version_counts.clear();
+    let mut shred_fetch_stats = solana_ledger::shred::ShredFetchStats::default();
     for packet in packet_batches
         .iter()
         .flat_map(|b| b.iter())
@@ -1375,23 +1446,63 @@ pub(crate) fn reconstruct_shreds(
         let Some(packet_bytes) = packet.data(..) else {
             continue;
         };
-        if packet_bytes.len() <= solana_ledger::shred::SIZE_OF_SIGNATURE {
+        // Use the canonical payload prefix (drop packet trailing bytes, if any) before parsing.
+        let packet_prefix = if packet_bytes.len() <= solana_ledger::shred::SIZE_OF_SIGNATURE {
+            packet_bytes
+        } else {
+            match merkle_payload_size_from_tag(
+                packet_bytes[solana_ledger::shred::SIZE_OF_SIGNATURE],
+            ) {
+                Some(expected_len) if packet_bytes.len() >= expected_len => {
+                    &packet_bytes[..expected_len]
+                }
+                _ => packet_bytes,
+            }
+        };
+        let payload = solana_ledger::shred::Payload::from(Arc::new(packet_prefix.to_vec()));
+        let shred = match solana_ledger::shred::Shred::new_from_serialized_shred(payload)
+            .and_then(Shred::try_from)
+        {
+            Ok(shred) => shred,
+            Err(e) => {
+                if TraceShred::decode(packet_bytes).is_ok() {
+                    continue;
+                }
+                metrics
+                    .reconstruct_ingress_filter_drop_count
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!("Failed to decode shred. Err: {e:?}");
+                continue;
+            }
+        };
+        let version = shred.common_header().version;
+        // Preserve all non-version ingress checks from should_discard_shred by passing the parsed
+        // shred's own version as expected.
+        if solana_ledger::shred::should_discard_shred(
+            packet,
+            0, // root
+            Slot::MAX,
+            version,
+            |_| false, // keep unchained Merkle shreds for compatibility
+            &mut shred_fetch_stats,
+        ) {
+            metrics
+                .reconstruct_ingress_filter_drop_count
+                .fetch_add(1, Ordering::Relaxed);
             continue;
         }
-        let Some(expected_len) =
-            merkle_payload_size_from_tag(packet_bytes[solana_ledger::shred::SIZE_OF_SIGNATURE])
-        else {
-            continue;
-        };
-        if packet_bytes.len() < expected_len {
-            // Do not let truncated packets influence dominant-version selection.
-            continue;
-        }
-        let Some(version_bytes) = packet_bytes.get(77..79) else {
-            continue;
-        };
-        let version = u16::from_le_bytes([version_bytes[0], version_bytes[1]]);
         *scratch.version_counts.entry(version).or_default() += 1;
+        let slot = shred.common_header().slot;
+        let index = shred.index() as usize;
+        let fec_set_index = shred.fec_set_index();
+        let key = FecSetKey::from_shred(&shred);
+        if index >= MAX_DATA_SHREDS_PER_SLOT || (fec_set_index as usize) >= MAX_DATA_SHREDS_PER_SLOT
+        {
+            debug!("Out-of-bounds shred slot: {slot}, fec_set_index: {fec_set_index}, index: {index}");
+            continue;
+        }
+        let index = index as ShredIndex;
+        scratch.parsed_shreds.push((shred, slot, index, key));
     }
     // Deterministic tie-break by version value.
     let expected_shred_version = scratch
@@ -1399,70 +1510,25 @@ pub(crate) fn reconstruct_shreds(
         .iter()
         .max_by(|(va, ca), (vb, cb)| ca.cmp(cb).then_with(|| va.cmp(vb)))
         .map(|(version, _count)| *version);
-    // Pass B: apply ingress filtering + parse shreds.
-    let mut shred_fetch_stats = solana_ledger::shred::ShredFetchStats::default();
-    for packet in packet_batches
-        .iter()
-        .flat_map(|b| b.iter())
-        .filter(|p| !p.meta().discard())
-    {
-        if expected_shred_version.is_some_and(|expected_version| {
-            solana_ledger::shred::should_discard_shred(
-                packet,
-                0, // root
-                Slot::MAX,
-                expected_version,
-                |_| false, // keep unchained Merkle shreds for compatibility
-                &mut shred_fetch_stats,
-            )
-        }) {
-            metrics
-                .reconstruct_ingress_filter_drop_count
-                .fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        let Some(packet) = packet.data(..) else {
-            continue;
-        };
-        // Ignore trailing bytes beyond the canonical shred payload size (spec §3.1).
-        let packet_prefix = if packet.len() <= solana_ledger::shred::SIZE_OF_SIGNATURE {
-            packet
-        } else {
-            match merkle_payload_size_from_tag(packet[solana_ledger::shred::SIZE_OF_SIGNATURE]) {
-                Some(expected_len) if packet.len() >= expected_len => &packet[..expected_len],
-                _ => packet,
+    if let Some(expected_version) = expected_shred_version {
+        let mut dropped_mismatched_versions = 0u64;
+        scratch.parsed_shreds.retain(|(shred, _slot, _index, _key)| {
+            let keep = shred.common_header().version == expected_version;
+            if !keep {
+                dropped_mismatched_versions = dropped_mismatched_versions.saturating_add(1);
             }
-        };
-        // Wrap bytes in shared payload so later shred clones are cheap during recovery.
-        let payload = solana_ledger::shred::Payload::from(Arc::new(packet_prefix.to_vec()));
-        match solana_ledger::shred::Shred::new_from_serialized_shred(payload)
-            .and_then(Shred::try_from)
-        {
-            Ok(shred) => {
-                let slot = shred.common_header().slot;
-                let index = shred.index() as usize;
-                let fec_set_index = shred.fec_set_index();
-                let key = FecSetKey::from_shred(&shred);
-                if index >= MAX_DATA_SHREDS_PER_SLOT
-                    || (fec_set_index as usize) >= MAX_DATA_SHREDS_PER_SLOT
-                {
-                    debug!(
-                        "Out-of-bounds shred slot: {slot}, fec_set_index: {fec_set_index}, index: {index}"
-                    );
-                    continue;
-                }
-                let index = index as ShredIndex;
-                scratch.slot_samples.push(slot);
-                scratch.parsed_shreds.push((shred, slot, index, key));
-            }
-            Err(e) => {
-                if TraceShred::decode(packet).is_ok() {
-                    continue;
-                }
-                warn!("Failed to decode shred. Err: {e:?}");
-            }
+            keep
+        });
+        if dropped_mismatched_versions > 0 {
+            metrics.reconstruct_ingress_filter_drop_count.fetch_add(
+                dropped_mismatched_versions,
+                Ordering::Relaxed,
+            );
         }
     }
+    scratch
+        .slot_samples
+        .extend(scratch.parsed_shreds.iter().map(|(_shred, slot, _index, _key)| *slot));
 
     let slot_anchor = if scratch.slot_samples.is_empty() {
         *highest_slot_seen
@@ -1642,17 +1708,11 @@ pub(crate) fn reconstruct_shreds(
                 // Do not re-emit until a known boundary becomes available.
                 continue;
             }
-            if initial_unknown_start
-                && state_tracker
-                    .unknown_start_last_attempt_generation
-                    .get(&end_data_complete_idx)
-                    .is_some_and(|generation| *generation == initial_range_generation)
-            {
-                // No data payload changed in this candidate range since the last failed unknown-start
-                // attempt. Skip speculative rework.
-                continue;
-            }
             scratch.unknown_start_candidates.clear();
+            let candidate_budget = usize::from(cfg.unknown_start_max_positions.max(1));
+            let mut candidate_start_offset = 0usize;
+            let candidate_end_offset;
+            let mut scan_state_to_store: Option<UnknownStartScanState> = None;
             let mut end_dc_fec_start: Option<ShredIndex> = None;
             if initial_unknown_start {
                 // The backward scan may have crossed into an incomplete adjacent
@@ -1660,32 +1720,42 @@ pub(crate) fn reconstruct_shreds(
                 // Vec<Entry>. On mainnet every FEC set ends with
                 // DATA_COMPLETE_SHRED at its last data position, so each FEC set
                 // is a self-contained data set. Trying the fec_set_index of the
-                // end DC shred first gives us the true data-set boundary and
-                // avoids the bincode deserialization failures that occur when the
-                // range begins mid-data-set.
+                // end DC shred is a strong boundary signal and we rank it first
+                // among observed FEC starts.
                 if let Some(dc_shred) = &state_tracker.data_shreds[end_data_complete_idx_usize] {
                     let fec_start = dc_shred.fec_set_index() as ShredIndex;
-                    if fec_start > initial_start_data_complete_idx
+                    if fec_start >= initial_start_data_complete_idx
                         && fec_start <= end_data_complete_idx
                     {
                         end_dc_fec_start = Some(fec_start);
-                        scratch.unknown_start_candidates.push(fec_start);
                     }
                 }
-                for idx in initial_start_data_complete_idx
-                    ..=initial_start_data_complete_idx
-                        .saturating_add(cfg.unknown_start_max_positions.max(1) - 1)
-                        .min(end_data_complete_idx)
-                {
-                    if !scratch.unknown_start_candidates.contains(&idx) {
+
+                // Prioritize all observed FEC starts in-range, then fill with linear positions.
+                for idx in initial_start_data_complete_idx..=end_data_complete_idx {
+                    let idx_usize = idx as usize;
+                    if state_tracker.data_shreds[idx_usize]
+                        .as_ref()
+                        .is_some_and(|s| s.fec_set_index() as ShredIndex == idx)
+                    {
+                        scratch.unknown_start_candidates.push(idx);
+                    }
+                }
+                for idx in initial_start_data_complete_idx..=end_data_complete_idx {
+                    let idx_usize = idx as usize;
+                    if !state_tracker.data_shreds[idx_usize]
+                        .as_ref()
+                        .is_some_and(|s| s.fec_set_index() as ShredIndex == idx)
+                    {
                         scratch.unknown_start_candidates.push(idx);
                     }
                 }
 
                 // Rank unknown-start candidates by:
-                // 1) fewer missing shards in [candidate, end] (decode-feasibility signal),
-                // 2) stronger boundary signal (end-DC FEC start first, then generic FEC starts),
-                // 3) earlier index for maximal entry coverage when ties remain.
+                // 1) observed FEC starts before generic linear positions,
+                // 2) fewer missing shards in [candidate, end] (decode-feasibility signal),
+                // 3) stronger boundary signal (end-DC FEC start first within a tie),
+                // 4) earlier index for maximal entry coverage when ties remain.
                 let window_start = initial_start_data_complete_idx as usize;
                 let window_end = end_data_complete_idx_usize;
                 let window_len = window_end.saturating_sub(window_start).saturating_add(1);
@@ -1719,26 +1789,67 @@ pub(crate) fn reconstruct_shreds(
                             .checked_sub(window_start)
                             .and_then(|i| scratch.unknown_start_missing_suffix.get(i).copied())
                             .unwrap_or(u16::MAX);
-                        let boundary_rank = if Some(*candidate) == end_dc_fec_start {
-                            0u8
-                        } else if state_tracker.data_shreds[candidate_usize]
+                        let observed_fec_start = state_tracker.data_shreds[candidate_usize]
                             .as_ref()
                             .is_some_and(|s| s.fec_set_index() as ShredIndex == *candidate)
-                        {
-                            1u8
+                            as u8;
+                        let group_rank = if observed_fec_start > 0 { 0u8 } else { 1u8 };
+                        let boundary_rank = if Some(*candidate) == end_dc_fec_start {
+                            0u8
                         } else {
-                            2u8
+                            1u8
                         };
-                        (missing_suffix, boundary_rank, *candidate)
+                        (group_rank, missing_suffix, boundary_rank, *candidate)
                     });
+
+                let mut scan_state = state_tracker
+                    .unknown_start_scan_state
+                    .get(&end_data_complete_idx)
+                    .copied()
+                    .unwrap_or(UnknownStartScanState {
+                        start_data_complete_idx: initial_start_data_complete_idx,
+                        range_generation: initial_range_generation,
+                        next_candidate_offset: 0,
+                        exhausted: false,
+                    });
+                if scan_state.start_data_complete_idx != initial_start_data_complete_idx
+                    || scan_state.range_generation != initial_range_generation
+                {
+                    scan_state.start_data_complete_idx = initial_start_data_complete_idx;
+                    scan_state.range_generation = initial_range_generation;
+                    scan_state.next_candidate_offset = 0;
+                    scan_state.exhausted = false;
+                }
+                if scan_state.exhausted {
+                    continue;
+                }
+                candidate_start_offset = scan_state
+                    .next_candidate_offset
+                    .min(scratch.unknown_start_candidates.len());
+                candidate_end_offset = candidate_start_offset
+                    .saturating_add(candidate_budget)
+                    .min(scratch.unknown_start_candidates.len());
+                if candidate_start_offset >= candidate_end_offset {
+                    scan_state.next_candidate_offset = scratch.unknown_start_candidates.len();
+                    scan_state.exhausted = true;
+                    state_tracker
+                        .unknown_start_scan_state
+                        .insert(end_data_complete_idx, scan_state);
+                    continue;
+                }
+                scan_state.next_candidate_offset = candidate_end_offset;
+                scan_state.exhausted =
+                    candidate_end_offset >= scratch.unknown_start_candidates.len();
+                scan_state_to_store = Some(scan_state);
             } else {
                 scratch
                     .unknown_start_candidates
                     .push(initial_start_data_complete_idx);
+                candidate_end_offset = 1;
             }
             let mut unknown_start_succeeded = false;
 
-            'candidate_start: for candidate_idx in 0..scratch.unknown_start_candidates.len() {
+            'candidate_start: for candidate_idx in candidate_start_offset..candidate_end_offset {
                 let start_data_complete_idx = scratch.unknown_start_candidates[candidate_idx];
                 if initial_unknown_start {
                     metrics
@@ -1768,22 +1879,13 @@ pub(crate) fn reconstruct_shreds(
                     // We already emitted this exact range as an unknown-start decode. Now that the
                     // true boundary is present (known start), commit without re-emitting.
                     // If slot data changed after the provisional emit, we must re-decode.
-                    observe_fec_set_decode_completion_latency(
-                        fec_sets,
-                        metrics,
-                        &state_tracker.data_shreds
-                            [start_data_complete_idx_usize..=end_data_complete_idx_usize],
-                        DecodeCompletionKind::KnownStart,
-                    );
-                    commit_deshredded_range(
+                    finalize_known_start_decode(
                         fec_sets,
                         state_tracker,
+                        metrics,
                         start_data_complete_idx,
                         end_data_complete_idx,
                     );
-                    state_tracker
-                        .unknown_start_emitted
-                        .remove(&end_data_complete_idx);
                     break;
                 }
                 let mut scrub_retry_used = false;
@@ -1889,32 +1991,29 @@ pub(crate) fn reconstruct_shreds(
                 }
 
                 // Known start: mark as consumed.
-                observe_fec_set_decode_completion_latency(
-                    fec_sets,
-                    metrics,
-                    &state_tracker.data_shreds
-                        [start_data_complete_idx_usize..=end_data_complete_idx_usize],
-                    DecodeCompletionKind::KnownStart,
-                );
-                commit_deshredded_range(
+                finalize_known_start_decode(
                     fec_sets,
                     state_tracker,
+                    metrics,
                     start_data_complete_idx,
                     end_data_complete_idx,
                 );
-                state_tracker
-                    .unknown_start_emitted
-                    .remove(&end_data_complete_idx);
                 break;
             }
-            if !initial_unknown_start || unknown_start_succeeded {
-                state_tracker
-                    .unknown_start_last_attempt_generation
-                    .remove(&end_data_complete_idx);
+            if initial_unknown_start {
+                if unknown_start_succeeded {
+                    state_tracker
+                        .unknown_start_scan_state
+                        .remove(&end_data_complete_idx);
+                } else if let Some(scan_state) = scan_state_to_store {
+                    state_tracker
+                        .unknown_start_scan_state
+                        .insert(end_data_complete_idx, scan_state);
+                }
             } else {
                 state_tracker
-                    .unknown_start_last_attempt_generation
-                    .insert(end_data_complete_idx, initial_range_generation);
+                    .unknown_start_scan_state
+                    .remove(&end_data_complete_idx);
             }
         }
     }
@@ -1992,14 +2091,11 @@ pub(crate) fn reconstruct_shreds(
                 }
 
                 incomplete_fec_sets_count += 1;
-                incomplete_fec_sets
-                    .entry(*slot)
-                    .or_default()
-                    .push((
-                        fec_set_index.fec_set_index,
-                        num_expected_data_shreds,
-                        shards_present,
-                    ));
+                incomplete_fec_sets.entry(*slot).or_default().push((
+                    fec_set_index.fec_set_index,
+                    num_expected_data_shreds,
+                    shards_present,
+                ));
             }
 
             false
@@ -2167,10 +2263,9 @@ fn ingest_data_shred(
                     .unknown_start_emitted
                     .remove(&(index as ShredIndex));
                 state_tracker
-                    .unknown_start_last_attempt_generation
+                    .unknown_start_scan_state
                     .remove(&(index as ShredIndex));
             }
-            state_tracker.data_complete.set(index, now_complete);
             datapoint_info!(
                 "shredstream_proxy-deshred_shred_conflict",
                 "kind" => "data",
@@ -4263,13 +4358,6 @@ mod tests {
                 .load(Ordering::Relaxed),
             1
         );
-        assert!(
-            metrics
-                .known_start_parity_scrub_skip_budget_count
-                .load(Ordering::Relaxed)
-                >= 1,
-            "expected budget skip metric increment"
-        );
 
         // A repeated scrub in the same generation should be blocked.
         let second = super::try_known_start_parity_scrub(
@@ -4291,6 +4379,13 @@ mod tests {
                 .known_start_parity_scrub_attempt_count
                 .load(Ordering::Relaxed),
             1
+        );
+        assert!(
+            metrics
+                .known_start_parity_scrub_skip_budget_count
+                .load(Ordering::Relaxed)
+                >= 1,
+            "expected budget skip metric increment"
         );
 
         // Overwrite one in-range shred with conflicting payload to bump this FEC generation.
@@ -5822,7 +5917,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_start_skips_retry_when_range_unchanged() {
+    fn test_unknown_start_resumes_retry_when_range_unchanged() {
         let slot: Slot = 224_500;
         let leader_keypair = Arc::new(Keypair::new());
         let reed_solomon_cache = ReedSolomonCache::default();
@@ -5884,28 +5979,20 @@ mod tests {
             .collect_vec();
         assert!(!data2.is_empty());
         assert!(!coding2.is_empty());
-        let start2 = data2
-            .iter()
-            .map(|s| s.index() as super::ShredIndex)
-            .min()
-            .unwrap();
-        let end2 = data2
-            .iter()
-            .map(|s| s.index() as super::ShredIndex)
-            .max()
-            .unwrap();
 
-        // Call 1: omit set-1 terminal boundary to force unknown-start, and poison set-2 start so
-        // speculative decode fails.
+        // Call 1: omit set-1 terminal boundary to force unknown-start, and poison set-2 payloads
+        // so every candidate in the unknown-start range fails.
         let mut packets_call1 = Vec::new();
         for s in data1.iter().filter(|s| s.index() != end1) {
             packets_call1.push(packet_from_payload(s.payload()));
         }
         for s in &data2 {
             let mut payload = s.payload().to_vec();
-            if s.index() as super::ShredIndex == start2 {
-                payload[88..96].fill(0xFF);
-            }
+            assert!(
+                payload.len() > 88,
+                "expected Merkle data payload to include data region"
+            );
+            payload[88..].fill(0xFF);
             packets_call1.push(packet_from_payload(&payload));
         }
 
@@ -5939,7 +6026,7 @@ mod tests {
         assert!(errors_after_call_1 > 0);
 
         // Call 2: add only coding for the same slot/FEC. Data range [start2, end2] is unchanged,
-        // so unknown-start speculative decode should be skipped.
+        // but unknown-start should resume from the next candidate chunk.
         let mut scratch = super::ReconstructScratch::default();
         super::reconstruct_shreds(
             vec![PacketBatch::new(vec![packet_from_payload(
@@ -5954,27 +6041,244 @@ mod tests {
             &metrics,
             &mut scratch,
         );
+        // Depending on packet contents, resumed candidate may still fail or may decode a later
+        // viable boundary. Either way, we should attempt the next candidate without new data.
+        let attempts_after_call_2 = metrics.unknown_start_position_count.load(Ordering::Relaxed);
+        let errors_after_call_2 = metrics
+            .unknown_start_position_error_count
+            .load(Ordering::Relaxed);
+        assert!(
+            attempts_after_call_2 > attempts_after_call_1,
+            "unknown-start should resume with later candidates on unchanged range"
+        );
+        assert!(
+            errors_after_call_2 >= errors_after_call_1,
+            "resumed candidate should preserve monotonic unknown-start error accounting"
+        );
+    }
+
+    #[test]
+    fn test_unknown_start_can_succeed_on_later_candidate_without_new_data() {
+        let slot: Slot = 224_600;
+        let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let thread_pool = solana_entry::entry::thread_pool_for_tests();
+
+        let entries1 = solana_entry::entry::create_ticks(8, 1, Hash::new_from_array([9u8; 32]));
+        let bytes1 = bincode::serialize(&entries1).unwrap();
+        let shreds1 = solana_ledger::shred::merkle::make_shreds_from_data(
+            &thread_pool,
+            &leader_keypair,
+            Some(Hash::new_from_array([3u8; 32])),
+            &bytes1,
+            slot,
+            slot - 1,
+            0,
+            0,
+            false,
+            0,
+            0,
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        )
+        .unwrap();
+        let data1 = shreds1
+            .iter()
+            .filter(|s| matches!(s, Shred::ShredData(_)))
+            .cloned()
+            .collect_vec();
+        assert!(!data1.is_empty());
+        let end1 = data1.iter().map(|s| s.index()).max().unwrap();
+
+        let entries2 = solana_entry::entry::create_ticks(8, 1, entries1.last().unwrap().hash);
+        let bytes2 = bincode::serialize(&entries2).unwrap();
+        let shreds2 = solana_ledger::shred::merkle::make_shreds_from_data(
+            &thread_pool,
+            &leader_keypair,
+            Some(Hash::new_from_array([4u8; 32])),
+            &bytes2,
+            slot,
+            slot - 1,
+            0,
+            0,
+            false,
+            end1 + 1,
+            end1 + 1,
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        )
+        .unwrap();
+        let data2 = shreds2
+            .iter()
+            .filter(|s| matches!(s, Shred::ShredData(_)))
+            .cloned()
+            .collect_vec();
+        assert!(!data2.is_empty());
+        let start2 = data2
+            .iter()
+            .map(|s| s.index() as super::ShredIndex)
+            .min()
+            .unwrap();
+        let end2 = data2
+            .iter()
+            .map(|s| s.index() as super::ShredIndex)
+            .max()
+            .unwrap();
+
+        let entries3 = solana_entry::entry::create_ticks(8, 1, entries2.last().unwrap().hash);
+        let bytes3 = bincode::serialize(&entries3).unwrap();
+        let shreds3 = solana_ledger::shred::merkle::make_shreds_from_data(
+            &thread_pool,
+            &leader_keypair,
+            Some(Hash::new_from_array([5u8; 32])),
+            &bytes3,
+            slot,
+            slot - 1,
+            0,
+            0,
+            true,
+            end2 as u32 + 1,
+            end2 as u32 + 1,
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        )
+        .unwrap();
+        let data3 = shreds3
+            .iter()
+            .filter(|s| matches!(s, Shred::ShredData(_)))
+            .cloned()
+            .collect_vec();
+        let coding3 = shreds3
+            .iter()
+            .filter(|s| matches!(s, Shred::ShredCode(_)))
+            .cloned()
+            .collect_vec();
+        assert!(!data3.is_empty());
+        assert!(!coding3.is_empty());
+        let start3 = data3
+            .iter()
+            .map(|s| s.index() as super::ShredIndex)
+            .min()
+            .unwrap();
+        let end3 = data3
+            .iter()
+            .map(|s| s.index() as super::ShredIndex)
+            .max()
+            .unwrap();
+        assert!(start2 < start3);
+
+        // Call 1 packets:
+        // - omit set-1 terminal boundary to force unknown-start around sets 2/3;
+        // - clear set-2 end flags so end3 is the only boundary;
+        // - poison set-3 payloads so the first (end-aligned) candidate fails.
+        let mut packets_call1 = Vec::new();
+        for s in data1.iter().filter(|s| s.index() != end1) {
+            packets_call1.push(packet_from_payload(s.payload()));
+        }
+        for s in &data2 {
+            let mut payload = s.payload().to_vec();
+            if s.index() as super::ShredIndex == end2 {
+                payload[85] &= 0x3F;
+                assert_eq!(payload[85] & 0xC0, 0);
+            }
+            packets_call1.push(packet_from_payload(&payload));
+        }
+        for s in &data3 {
+            let mut payload = s.payload().to_vec();
+            assert!(
+                payload.len() >= 96,
+                "expected Merkle data payload to include data region"
+            );
+            payload[88..96].fill(0xFF);
+            packets_call1.push(packet_from_payload(&payload));
+        }
+
+        let rs_cache = ReedSolomonCache::default();
+        let metrics = Arc::new(ShredMetrics::default());
+        let mut all_shreds = ahash::HashMap::default();
+        let mut slot_fec_keys_to_iterate: Vec<(Slot, super::FecSetKey)> = Vec::new();
+        let mut deshredded_entries = Vec::new();
+        let mut highest_slot_seen = 0;
+        let cfg = super::ReconstructShredsConfig {
+            unknown_start_max_positions: 1,
+            ..TEST_RECONSTRUCT_CFG_DECODE_ENTRIES
+        };
+
+        let mut scratch = super::ReconstructScratch::default();
+        super::reconstruct_shreds(
+            vec![PacketBatch::new(packets_call1)],
+            &mut all_shreds,
+            &mut slot_fec_keys_to_iterate,
+            &mut deshredded_entries,
+            &mut highest_slot_seen,
+            &rs_cache,
+            cfg,
+            &metrics,
+            &mut scratch,
+        );
         assert!(
             deshredded_entries.is_empty(),
-            "coding-only update should not re-run unchanged unknown-start range"
+            "first chunk should try only the poisoned end-aligned candidate"
         );
         assert_eq!(
             metrics.unknown_start_position_count.load(Ordering::Relaxed),
-            attempts_after_call_1,
-            "unknown-start candidate attempts should not increase without in-range data changes"
+            1,
+            "budget=1 should attempt exactly one unknown-start candidate in call 1"
         );
         assert_eq!(
             metrics
                 .unknown_start_position_error_count
                 .load(Ordering::Relaxed),
-            errors_after_call_1,
-            "unknown-start candidate errors should not increase without in-range data changes"
+            1,
+            "poisoned first candidate should record one decode error"
+        );
+
+        // Call 2: no new in-range data. Resume with the next candidate, which should succeed.
+        let mut scratch = super::ReconstructScratch::default();
+        super::reconstruct_shreds(
+            vec![PacketBatch::new(vec![packet_from_payload(
+                coding3[0].payload(),
+            )])],
+            &mut all_shreds,
+            &mut slot_fec_keys_to_iterate,
+            &mut deshredded_entries,
+            &mut highest_slot_seen,
+            &rs_cache,
+            cfg,
+            &metrics,
+            &mut scratch,
+        );
+        assert_eq!(
+            deshredded_entries.len(),
+            1,
+            "resume pass should decode from a later candidate without new data payloads"
+        );
+        assert_eq!(deshredded_entries[0].0, slot);
+        assert!(
+            !deshredded_entries[0].1.is_empty(),
+            "expected decoded entries from resumed candidate"
+        );
+        assert_eq!(
+            metrics.unknown_start_position_count.load(Ordering::Relaxed),
+            2,
+            "second call should try the next candidate"
+        );
+        assert_eq!(
+            metrics
+                .unknown_start_position_error_count
+                .load(Ordering::Relaxed),
+            1,
+            "second candidate should succeed without adding another error"
         );
 
         let tracker = &all_shreds.get(&slot).unwrap().1;
-        assert!(
-            !tracker.unknown_start_emitted.contains_key(&end2),
-            "failed unknown-start candidate must not be marked as emitted"
+        assert_eq!(
+            tracker
+                .unknown_start_emitted
+                .get(&end3)
+                .map(|emitted| emitted.start_data_complete_idx),
+            Some(start2),
+            "resumed success should emit from the later-tried candidate"
         );
     }
 
