@@ -70,9 +70,6 @@ fn dedup_key_slice(data: &[u8]) -> &[u8] {
     } else {
         expected_len
     };
-    if data.len() < dedup_len {
-        return data;
-    }
     &data[..dedup_len]
 }
 

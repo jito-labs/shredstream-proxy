@@ -20,7 +20,7 @@ use solana_ledger::{
     shred::{
         merkle::{Shred, ShredCode as MerkleCodeShred, ShredData as MerkleDataShred},
         traits::Shred as ShredTrait,
-        ReedSolomonCache, ShredType, Shredder,
+        ReedSolomonCache, Shredder,
     },
 };
 use solana_metrics::{datapoint_info, datapoint_warn};
@@ -82,8 +82,6 @@ pub(crate) struct ReconstructShredsConfig {
 pub(crate) struct ReconstructScratch {
     /// Version histogram used to select dominant ingress version per call.
     version_counts: ahash::HashMap<u16, u32>,
-    /// Reused Merkle variant-profile histogram for per-FEC recovery filtering.
-    variant_profile_counts: ahash::HashMap<(u8, bool, bool), usize>,
     /// Parsed shreds awaiting slot-window filtering/ingest.
     parsed_shreds: Vec<(Shred, Slot, ShredIndex, FecSetKey)>,
     /// Slot samples used to compute the median slot anchor.
@@ -107,7 +105,6 @@ impl Default for ReconstructScratch {
     fn default() -> Self {
         Self {
             version_counts: ahash::HashMap::default(),
-            variant_profile_counts: ahash::HashMap::default(),
             parsed_shreds: Vec::new(),
             slot_samples: Vec::new(),
             data_complete_idxs: Vec::with_capacity(MAX_DATA_SHREDS_PER_SLOT),
@@ -197,8 +194,7 @@ fn count_byte_diffs(a: &[u8], b: &[u8]) -> u64 {
 /// when deciding whether two shreds are conflicting.
 #[inline]
 fn payload_compare_prefix(payload: &[u8], variant: solana_ledger::shred::ShredVariant) -> &[u8] {
-    let (tag, _proof_size, _chained, resigned) = merkle_variant_fields(variant);
-    if resigned && matches!(tag, 0x70 | 0xB0) {
+    if merkle_variant_profile(variant).1 {
         let len = payload
             .len()
             .saturating_sub(solana_ledger::shred::SIZE_OF_SIGNATURE);
@@ -208,42 +204,26 @@ fn payload_compare_prefix(payload: &[u8], variant: solana_ledger::shred::ShredVa
     }
 }
 
-/// Normalize `ShredVariant` into `(tag, proof_size, chained, resigned)` for logs/comparisons.
+/// Normalize a spec-valid (chained) Merkle shred variant into `(proof_size, resigned)`.
+///
+/// Non-chained/legacy variants are rejected at ingress (`should_discard_shred`), so reaching
+/// this function with one is a bug.
 #[inline]
-fn merkle_variant_fields(variant: solana_ledger::shred::ShredVariant) -> (u8, u8, bool, bool) {
+fn merkle_variant_profile(variant: solana_ledger::shred::ShredVariant) -> (u8, bool) {
     use solana_ledger::shred::ShredVariant;
 
     match variant {
         ShredVariant::MerkleCode {
             proof_size,
-            chained,
+            chained: true,
             resigned,
-        } => {
-            let tag = if !chained {
-                0x40
-            } else if resigned {
-                0x70
-            } else {
-                0x60
-            };
-            (tag, proof_size, chained, resigned)
-        }
+        } => (proof_size, resigned),
         ShredVariant::MerkleData {
             proof_size,
-            chained,
+            chained: true,
             resigned,
-        } => {
-            let tag = if !chained {
-                0x80
-            } else if resigned {
-                0xB0
-            } else {
-                0x90
-            };
-            (tag, proof_size, chained, resigned)
-        }
-        ShredVariant::LegacyCode => (u8::from(ShredType::Code), u8::MAX, false, false),
-        ShredVariant::LegacyData => (u8::from(ShredType::Data), u8::MAX, false, false),
+        } => (proof_size, resigned),
+        _ => unreachable!("unexpected non-spec shred variant after ingress filtering"),
     }
 }
 
@@ -378,7 +358,7 @@ impl FecSetState {
     /// Returns true if this call mutated set membership or payload bytes.
     fn insert_coding_shred(&mut self, shred: Shred) -> bool {
         let Shred::ShredCode(s) = &shred else {
-            return false;
+            unreachable!("insert_coding_shred called with non-coding shred");
         };
         let position = s.coding_header.position as usize;
         let num_coding_shreds = s.coding_header.num_coding_shreds as usize;
@@ -393,39 +373,34 @@ impl FecSetState {
                 || self.num_coding_shreds != s.coding_header.num_coding_shreds
             {
                 // Inputs are assumed filtered; if this happens anyway, keep the first view of the set.
-                let (new_tag, new_proof, new_chained, new_resigned) =
-                    merkle_variant_fields(s.common_header.shred_variant);
-                let (
-                    existing_sig_diff,
-                    existing_version,
-                    existing_tag,
-                    existing_proof,
-                    existing_chained,
-                    existing_resigned,
-                ) = self
+                let (new_proof, new_resigned) =
+                    merkle_variant_profile(s.common_header.shred_variant);
+                let (existing_sig_diff, existing_version, existing_proof, existing_resigned) = self
                     .coding_by_pos
                     .iter()
                     .filter_map(|x| x.as_ref())
-                    .find_map(|existing| match existing {
-                        Shred::ShredCode(old) => {
-                            let sig_diff = count_byte_diffs(
-                                old.common_header.signature.as_ref(),
-                                s.common_header.signature.as_ref(),
-                            );
-                            let (old_tag, old_proof, old_chained, old_resigned) =
-                                merkle_variant_fields(old.common_header.shred_variant);
-                            Some((
-                                sig_diff,
-                                old.common_header.version as i64,
-                                old_tag,
-                                old_proof,
-                                old_chained,
-                                old_resigned,
-                            ))
+                    .map(|existing| match existing {
+                        Shred::ShredCode(old) => old,
+                        Shred::ShredData(_) => {
+                            unreachable!("coding_by_pos stores only coding shreds")
                         }
-                        Shred::ShredData(_) => None,
                     })
-                    .unwrap_or((0, -1, 0, u8::MAX, false, false));
+                    .next()
+                    .map(|old| {
+                        let sig_diff = count_byte_diffs(
+                            old.common_header.signature.as_ref(),
+                            s.common_header.signature.as_ref(),
+                        );
+                        let (old_proof, old_resigned) =
+                            merkle_variant_profile(old.common_header.shred_variant);
+                        (
+                            sig_diff,
+                            old.common_header.version as i64,
+                            old_proof,
+                            old_resigned,
+                        )
+                    })
+                    .expect("coding header mismatch requires at least one existing coding shred");
 
                 datapoint_info!(
                     "shredstream_proxy-deshred_shred_conflict",
@@ -442,12 +417,8 @@ impl FecSetState {
                     ("existing_version", existing_version, i64),
                     ("new_version", s.common_header.version, i64),
                     ("sig_diff_bytes_vs_existing", existing_sig_diff, i64),
-                    ("variant_tag_existing", existing_tag, i64),
-                    ("variant_tag_new", new_tag, i64),
                     ("proof_size_existing", existing_proof, i64),
                     ("proof_size_new", new_proof, i64),
-                    ("chained_existing", existing_chained, bool),
-                    ("chained_new", new_chained, bool),
                     ("resigned_existing", existing_resigned, bool),
                     ("resigned_new", new_resigned, bool),
                 );
@@ -458,22 +429,12 @@ impl FecSetState {
             }
         }
 
-        if position >= self.coding_by_pos.len() {
-            // Malformed coding shred (position out of bounds).
-            datapoint_info!(
-                "shredstream_proxy-deshred_shred_conflict",
-                "kind" => "code",
-                "reason" => "position_oob",
-                ("slot", s.common_header.slot, i64),
-                ("fec_set_index", s.common_header.fec_set_index, i64),
-                ("position", s.coding_header.position, i64),
-                ("coding_by_pos_len", self.coding_by_pos.len(), i64),
-                ("num_data_shreds", s.coding_header.num_data_shreds, i64),
-                ("num_coding_shreds", s.coding_header.num_coding_shreds, i64),
-                ("payload_len", s.payload.len(), i64),
-            );
-            return false;
-        }
+        debug_assert!(
+            position < self.coding_by_pos.len(),
+            "coding position out of bounds after sanitize: pos={}, len={}",
+            position,
+            self.coding_by_pos.len()
+        );
         let Some(existing) = self.coding_by_pos[position].as_ref() else {
             self.coding_by_pos[position] = Some(shred);
             self.coding_count = self.coding_count.saturating_add(1);
@@ -481,17 +442,17 @@ impl FecSetState {
             return true;
         };
         let Shred::ShredCode(old) = existing else {
-            return false;
+            unreachable!("coding_by_pos stores only coding shreds");
         };
 
         let sig_diff = count_byte_diffs(
             old.common_header.signature.as_ref(),
             s.common_header.signature.as_ref(),
         );
-        let (old_tag, old_proof, old_chained, old_resigned) =
-            merkle_variant_fields(old.common_header.shred_variant);
-        let (new_tag, new_proof, new_chained, new_resigned) =
-            merkle_variant_fields(s.common_header.shred_variant);
+        let old_variant = merkle_variant_profile(old.common_header.shred_variant);
+        let new_variant = merkle_variant_profile(s.common_header.shred_variant);
+        let (old_proof, old_resigned) = old_variant;
+        let (new_proof, new_resigned) = new_variant;
         let old_payload =
             payload_compare_prefix(old.payload.as_ref(), old.common_header.shred_variant);
         let new_payload = payload_compare_prefix(s.payload.as_ref(), s.common_header.shred_variant);
@@ -504,8 +465,7 @@ impl FecSetState {
             || old.coding_header.num_data_shreds != s.coding_header.num_data_shreds
             || old.coding_header.num_coding_shreds != s.coding_header.num_coding_shreds
             || old.coding_header.position != s.coding_header.position
-            || old_tag != new_tag
-            || old_proof != new_proof
+            || old_variant != new_variant
             || old.payload.len() != s.payload.len()
             || payload_byte_diff != 0;
         if !is_conflict {
@@ -529,12 +489,8 @@ impl FecSetState {
             ("version_old", old.common_header.version, i64),
             ("version_new", s.common_header.version, i64),
             ("sig_diff_bytes", sig_diff, i64),
-            ("variant_tag_old", old_tag, i64),
-            ("variant_tag_new", new_tag, i64),
             ("proof_size_old", old_proof, i64),
             ("proof_size_new", new_proof, i64),
-            ("chained_old", old_chained, bool),
-            ("chained_new", new_chained, bool),
             ("resigned_old", old_resigned, bool),
             ("resigned_new", new_resigned, bool),
             ("num_data_shreds_old", old.coding_header.num_data_shreds, i64),
@@ -552,10 +508,8 @@ impl FecSetState {
 #[inline]
 fn merkle_payload_size_from_tag(tag: u8) -> Option<usize> {
     match tag & 0xF0 {
-        // MerkleCode: 0x40 (unchained), 0x60 (chained), 0x70 (chained resigned)
-        0x40 | 0x60 | 0x70 => Some(<MerkleCodeShred as ShredTrait>::SIZE_OF_PAYLOAD),
-        // MerkleData: 0x80 (unchained), 0x90 (chained), 0xB0 (chained resigned)
-        0x80 | 0x90 | 0xB0 => Some(<MerkleDataShred as ShredTrait>::SIZE_OF_PAYLOAD),
+        0x60 | 0x70 => Some(<MerkleCodeShred as ShredTrait>::SIZE_OF_PAYLOAD),
+        0x90 | 0xB0 => Some(<MerkleDataShred as ShredTrait>::SIZE_OF_PAYLOAD),
         _ => None,
     }
 }
@@ -979,7 +933,6 @@ fn recover_data_for_fec_key(
     state_tracker: &mut ShredsStateTracker,
     rs_cache: &ReedSolomonCache,
     metrics: &ShredMetrics,
-    scratch: &mut ReconstructScratch,
     first_shred_observed_at: Instant,
     force_missing_data_index: Option<usize>,
     enforce_missing_data_gate: bool,
@@ -1092,7 +1045,6 @@ fn recover_data_for_fec_key(
 
     // `merkle::recover` internally sorts shreds by erasure shard index.
     let mut merkle_shreds = Vec::with_capacity(effective_total_shards);
-    scratch.variant_profile_counts.clear();
     for idx in start..end_excl {
         if forced_missing_index == Some(idx) {
             continue;
@@ -1101,71 +1053,13 @@ fn recover_data_for_fec_key(
             .as_ref()
             .filter(|s| shred_matches_fec_key(s, key))
         {
-            let (_tag, proof_size, chained, resigned) =
-                merkle_variant_fields(shred.common_header().shred_variant);
-            *scratch
-                .variant_profile_counts
-                .entry((proof_size, chained, resigned))
-                .or_default() += 1;
             merkle_shreds.push(shred.clone());
         }
     }
     if let Some(fec_state) = fec_sets.get(key) {
         for shred in fec_state.coding_by_pos.iter().filter_map(|s| s.as_ref()) {
-            let (_tag, proof_size, chained, resigned) =
-                merkle_variant_fields(shred.common_header().shred_variant);
-            *scratch
-                .variant_profile_counts
-                .entry((proof_size, chained, resigned))
-                .or_default() += 1;
             merkle_shreds.push(shred.clone());
         }
-    }
-    let Some((&dominant_variant, _)) = scratch
-        .variant_profile_counts
-        .iter()
-        .max_by(|(va, ca), (vb, cb)| ca.cmp(cb).then_with(|| va.cmp(vb)))
-    else {
-        return outcome;
-    };
-    let total_before_variant_filter = merkle_shreds.len();
-    merkle_shreds.retain(|shred| {
-        let (_tag, proof_size, chained, resigned) =
-            merkle_variant_fields(shred.common_header().shred_variant);
-        (proof_size, chained, resigned) == dominant_variant
-    });
-    let filtered_variant_shreds = total_before_variant_filter.saturating_sub(merkle_shreds.len());
-    if filtered_variant_shreds > 0 {
-        datapoint_warn!(
-            "shredstream_proxy-deshred_recovery_variant_mismatch",
-            ("slot", slot, i64),
-            ("fec_set_index", fec_set_index, i64),
-            ("proof_size_kept", dominant_variant.0, i64),
-            ("chained_kept", dominant_variant.1, bool),
-            ("resigned_kept", dominant_variant.2, bool),
-            (
-                "variant_profiles_seen",
-                scratch.variant_profile_counts.len(),
-                i64
-            ),
-            ("variant_shreds_filtered", filtered_variant_shreds, i64),
-            (
-                "total_shards_before_filter",
-                total_before_variant_filter,
-                i64
-            ),
-            ("total_shards_after_filter", merkle_shreds.len(), i64),
-            ("num_expected_data_shreds", num_expected_data_shreds, i64),
-        );
-    }
-    if merkle_shreds.len() < num_expected_data_shreds as usize {
-        // Even after removing inconsistent-variant shards we still don't have enough
-        // shards to recover data in this FEC set.
-        metrics
-            .fec_recovery_error_count
-            .fetch_add(1, Ordering::Relaxed);
-        outcome.recover_failed = true;
-        return outcome;
     }
 
     let recovered = match solana_ledger::shred::merkle::recover(merkle_shreds, rs_cache) {
@@ -1362,7 +1256,6 @@ fn try_known_start_parity_scrub(
                 state_tracker,
                 rs_cache,
                 metrics,
-                scratch,
                 first_shred_observed_at,
                 Some(forced_missing_idx),
                 false,
@@ -1424,7 +1317,6 @@ pub(crate) fn reconstruct_shreds(
     scratch.data_complete_idxs.clear();
     scratch.unknown_start_candidates.clear();
     scratch.unknown_start_missing_suffix.clear();
-    scratch.variant_profile_counts.clear();
     // Phase 1: Ingest packets from ALL batches.
     //
     // Compute a combined "slot anchor" as the median parsed slot to avoid being driven by a
@@ -1483,7 +1375,7 @@ pub(crate) fn reconstruct_shreds(
             0, // root
             Slot::MAX,
             version,
-            |_| false, // keep unchained Merkle shreds for compatibility
+            |_| true, // spec-only: reject unchained Merkle shreds
             &mut shred_fetch_stats,
         ) {
             metrics
@@ -1498,7 +1390,9 @@ pub(crate) fn reconstruct_shreds(
         let key = FecSetKey::from_shred(&shred);
         if index >= MAX_DATA_SHREDS_PER_SLOT || (fec_set_index as usize) >= MAX_DATA_SHREDS_PER_SLOT
         {
-            debug!("Out-of-bounds shred slot: {slot}, fec_set_index: {fec_set_index}, index: {index}");
+            debug!(
+                "Out-of-bounds shred slot: {slot}, fec_set_index: {fec_set_index}, index: {index}"
+            );
             continue;
         }
         let index = index as ShredIndex;
@@ -1512,23 +1406,27 @@ pub(crate) fn reconstruct_shreds(
         .map(|(version, _count)| *version);
     if let Some(expected_version) = expected_shred_version {
         let mut dropped_mismatched_versions = 0u64;
-        scratch.parsed_shreds.retain(|(shred, _slot, _index, _key)| {
-            let keep = shred.common_header().version == expected_version;
-            if !keep {
-                dropped_mismatched_versions = dropped_mismatched_versions.saturating_add(1);
-            }
-            keep
-        });
+        scratch
+            .parsed_shreds
+            .retain(|(shred, _slot, _index, _key)| {
+                let keep = shred.common_header().version == expected_version;
+                if !keep {
+                    dropped_mismatched_versions = dropped_mismatched_versions.saturating_add(1);
+                }
+                keep
+            });
         if dropped_mismatched_versions > 0 {
-            metrics.reconstruct_ingress_filter_drop_count.fetch_add(
-                dropped_mismatched_versions,
-                Ordering::Relaxed,
-            );
+            metrics
+                .reconstruct_ingress_filter_drop_count
+                .fetch_add(dropped_mismatched_versions, Ordering::Relaxed);
         }
     }
-    scratch
-        .slot_samples
-        .extend(scratch.parsed_shreds.iter().map(|(_shred, slot, _index, _key)| *slot));
+    scratch.slot_samples.extend(
+        scratch
+            .parsed_shreds
+            .iter()
+            .map(|(_shred, slot, _index, _key)| *slot),
+    );
 
     let slot_anchor = if scratch.slot_samples.is_empty() {
         *highest_slot_seen
@@ -1625,7 +1523,6 @@ pub(crate) fn reconstruct_shreds(
             state_tracker,
             rs_cache,
             metrics,
-            scratch,
             first_shred_observed_at,
             None,
             true,
@@ -1743,9 +1640,9 @@ pub(crate) fn reconstruct_shreds(
                 }
                 for idx in initial_start_data_complete_idx..=end_data_complete_idx {
                     let idx_usize = idx as usize;
-                    if !state_tracker.data_shreds[idx_usize]
+                    if state_tracker.data_shreds[idx_usize]
                         .as_ref()
-                        .is_some_and(|s| s.fec_set_index() as ShredIndex == idx)
+                        .is_none_or(|s| s.fec_set_index() as ShredIndex != idx)
                     {
                         scratch.unknown_start_candidates.push(idx);
                     }
@@ -2160,100 +2057,75 @@ fn ingest_data_shred(
         return false;
     };
     if let Some(existing) = state_tracker.data_shreds[index].as_ref() {
-        let mut should_overwrite_with_new = false;
-        match existing {
-            Shred::ShredData(old) => {
-                let payload_len_old = old.payload.len();
-                let payload_len_new = s.payload.len();
-                let sig_diff = count_byte_diffs(
-                    old.common_header.signature.as_ref(),
-                    s.common_header.signature.as_ref(),
-                );
-                let (old_tag, old_proof, old_chained, old_resigned) =
-                    merkle_variant_fields(old.common_header.shred_variant);
-                let (new_tag, new_proof, new_chained, new_resigned) =
-                    merkle_variant_fields(s.common_header.shred_variant);
+        let Shred::ShredData(old) = existing else {
+            unreachable!("data_shreds stores only data shreds");
+        };
 
-                let flags_old = old.data_header.flags.bits();
-                let flags_new = s.data_header.flags.bits();
-                let size_old = old.data_header.size;
-                let size_new = s.data_header.size;
-                let data_len_old = size_old.saturating_sub(88);
-                let data_len_new = size_new.saturating_sub(88);
-                let old_payload =
-                    payload_compare_prefix(old.payload.as_ref(), old.common_header.shred_variant);
-                let new_payload =
-                    payload_compare_prefix(s.payload.as_ref(), s.common_header.shred_variant);
-                let payload_byte_diff = count_byte_diffs(old_payload, new_payload);
+        let payload_len_old = old.payload.len();
+        let payload_len_new = s.payload.len();
+        let sig_diff = count_byte_diffs(
+            old.common_header.signature.as_ref(),
+            s.common_header.signature.as_ref(),
+        );
+        let old_variant = merkle_variant_profile(old.common_header.shred_variant);
+        let new_variant = merkle_variant_profile(s.common_header.shred_variant);
+        let (old_proof, old_resigned) = old_variant;
+        let (new_proof, new_resigned) = new_variant;
 
-                let is_conflict = sig_diff != 0
-                    || old.common_header.version != s.common_header.version
-                    || old.common_header.fec_set_index != s.common_header.fec_set_index
-                    || old.common_header.index != s.common_header.index
-                    || old_tag != new_tag
-                    || old_proof != new_proof
-                    || old_chained != new_chained
-                    || old_resigned != new_resigned
-                    || old.data_header.parent_offset != s.data_header.parent_offset
-                    || flags_old != flags_new
-                    || size_old != size_new
-                    || payload_len_old != payload_len_new
-                    || payload_byte_diff != 0;
+        let flags_old = old.data_header.flags.bits();
+        let flags_new = s.data_header.flags.bits();
+        let size_old = old.data_header.size;
+        let size_new = s.data_header.size;
+        let data_len_old = size_old.saturating_sub(88);
+        let data_len_new = size_new.saturating_sub(88);
+        let old_payload =
+            payload_compare_prefix(old.payload.as_ref(), old.common_header.shred_variant);
+        let new_payload = payload_compare_prefix(s.payload.as_ref(), s.common_header.shred_variant);
+        let payload_byte_diff = count_byte_diffs(old_payload, new_payload);
 
-                if is_conflict {
-                    should_overwrite_with_new = true;
-                    datapoint_info!(
-                        "shredstream_proxy-deshred_shred_conflict",
-                        "kind" => "data",
-                        "reason" => "duplicate_index",
-                        ("slot", s.common_header.slot, i64),
-                        ("index", s.common_header.index, i64),
-                        ("payload_len_old", payload_len_old, i64),
-                        ("payload_len_new", payload_len_new, i64),
-                        ("payload_len_diff", payload_len_new.abs_diff(payload_len_old), i64),
-                        ("payload_diff_bytes", payload_byte_diff, i64),
-                        ("version_old", old.common_header.version, i64),
-                        ("version_new", s.common_header.version, i64),
-                        ("sig_diff_bytes", sig_diff, i64),
-                        ("fec_set_index_old", old.common_header.fec_set_index, i64),
-                        ("fec_set_index_new", s.common_header.fec_set_index, i64),
-                        ("variant_tag_old", old_tag, i64),
-                        ("variant_tag_new", new_tag, i64),
-                        ("proof_size_old", old_proof, i64),
-                        ("proof_size_new", new_proof, i64),
-                        ("chained_old", old_chained, bool),
-                        ("chained_new", new_chained, bool),
-                        ("resigned_old", old_resigned, bool),
-                        ("resigned_new", new_resigned, bool),
-                        ("flags_old", flags_old, i64),
-                        ("flags_new", flags_new, i64),
-                        ("flags_xor", flags_old ^ flags_new, i64),
-                        ("size_old", size_old, i64),
-                        ("size_new", size_new, i64),
-                        ("size_diff", size_new.abs_diff(size_old), i64),
-                        ("data_len_old", data_len_old, i64),
-                        ("data_len_new", data_len_new, i64),
-                        ("data_len_diff", data_len_new.abs_diff(data_len_old), i64),
-                        ("parent_offset_old", old.data_header.parent_offset, i64),
-                        ("parent_offset_new", s.data_header.parent_offset, i64),
-                    );
-                }
-            }
-            Shred::ShredCode(old) => {
-                // This should never happen: data_shreds[] should only contain data shreds.
-                should_overwrite_with_new = true;
-                datapoint_info!(
-                    "shredstream_proxy-deshred_shred_conflict",
-                    "kind" => "data",
-                    "reason" => "type_mismatch_existing_code",
-                    ("slot", s.common_header.slot, i64),
-                    ("index", s.common_header.index, i64),
-                    ("existing_payload_len", old.payload.len(), i64),
-                    ("new_payload_len", s.payload.len(), i64),
-                );
-            }
-        }
-        if should_overwrite_with_new {
+        let is_conflict = sig_diff != 0
+            || old.common_header.version != s.common_header.version
+            || old.common_header.fec_set_index != s.common_header.fec_set_index
+            || old.common_header.index != s.common_header.index
+            || old_variant != new_variant
+            || old.data_header.parent_offset != s.data_header.parent_offset
+            || flags_old != flags_new
+            || size_old != size_new
+            || payload_len_old != payload_len_new
+            || payload_byte_diff != 0;
+
+        if is_conflict {
+            datapoint_info!(
+                "shredstream_proxy-deshred_shred_conflict",
+                "kind" => "data",
+                "reason" => "duplicate_index",
+                ("slot", s.common_header.slot, i64),
+                ("index", s.common_header.index, i64),
+                ("payload_len_old", payload_len_old, i64),
+                ("payload_len_new", payload_len_new, i64),
+                ("payload_len_diff", payload_len_new.abs_diff(payload_len_old), i64),
+                ("payload_diff_bytes", payload_byte_diff, i64),
+                ("version_old", old.common_header.version, i64),
+                ("version_new", s.common_header.version, i64),
+                ("sig_diff_bytes", sig_diff, i64),
+                ("fec_set_index_old", old.common_header.fec_set_index, i64),
+                ("fec_set_index_new", s.common_header.fec_set_index, i64),
+                ("proof_size_old", old_proof, i64),
+                ("proof_size_new", new_proof, i64),
+                ("resigned_old", old_resigned, bool),
+                ("resigned_new", new_resigned, bool),
+                ("flags_old", flags_old, i64),
+                ("flags_new", flags_new, i64),
+                ("flags_xor", flags_old ^ flags_new, i64),
+                ("size_old", size_old, i64),
+                ("size_new", size_new, i64),
+                ("size_diff", size_new.abs_diff(size_old), i64),
+                ("data_len_old", data_len_old, i64),
+                ("data_len_new", data_len_new, i64),
+                ("data_len_diff", data_len_new.abs_diff(data_len_old), i64),
+                ("parent_offset_old", old.data_header.parent_offset, i64),
+                ("parent_offset_new", s.data_header.parent_offset, i64),
+            );
             let was_complete = state_tracker.data_complete[index];
             let now_complete = s.data_complete() || s.last_in_slot();
             let slot = s.common_header.slot;
@@ -2336,11 +2208,12 @@ mod tests {
     use super::BINCODE_DESERIALIZE_LIMIT_BYTES;
     use crate::forwarder::ShredMetrics;
 
-    // Fixture expectations: these are regression baselines. If decoding improves, bump them.
-    const FIXTURE_SERIALIZED_SHREDS_TOTAL_ENTRIES: usize = 13_580;
-    const FIXTURE_SERIALIZED_SHREDS_DECODED_SLOTS: usize = 29;
-    const FIXTURE_SERIALIZED_SHREDS_DECODED_SETS: usize = 609;
-    const FIXTURE_SERIALIZED_SHREDS_DECODED_DATA_SHREDS: usize = 22_017;
+    // Fixture expectations: these are regression baselines. If decoding behavior changes, bump
+    // them (for example, when tightening ingress validation to spec-only variants).
+    const FIXTURE_SERIALIZED_SHREDS_TOTAL_ENTRIES: usize = 3_619;
+    const FIXTURE_SERIALIZED_SHREDS_DECODED_SLOTS: usize = 7;
+    const FIXTURE_SERIALIZED_SHREDS_DECODED_SETS: usize = 157;
+    const FIXTURE_SERIALIZED_SHREDS_DECODED_DATA_SHREDS: usize = 5_449;
 
     const FIXTURE_DATA_COMPLETE_TOTAL_ENTRIES: usize = 43_170;
     const FIXTURE_DATA_COMPLETE_DECODED_SLOTS: usize = 61;
@@ -2699,8 +2572,8 @@ mod tests {
                 min_decoded_slots: FIXTURE_SERIALIZED_SHREDS_DECODED_SLOTS,
                 min_decoded_sets: FIXTURE_SERIALIZED_SHREDS_DECODED_SETS,
                 min_decoded_data_shreds: FIXTURE_SERIALIZED_SHREDS_DECODED_DATA_SHREDS,
-                expected_slots_tracked_full: 30,
-                expected_slots_tracked_drop33: 29,
+                expected_slots_tracked_full: 7,
+                expected_slots_tracked_drop33: 7,
             },
             LiveFixtureCase {
                 name: "data_complete",
@@ -2824,8 +2697,8 @@ mod tests {
                 min_decoded_slots: FIXTURE_SERIALIZED_SHREDS_DECODED_SLOTS,
                 min_decoded_sets: FIXTURE_SERIALIZED_SHREDS_DECODED_SETS,
                 min_decoded_data_shreds: FIXTURE_SERIALIZED_SHREDS_DECODED_DATA_SHREDS,
-                expected_slots_tracked_full: 30,
-                expected_slots_tracked_drop33: 29,
+                expected_slots_tracked_full: 7,
+                expected_slots_tracked_drop33: 7,
             },
             LiveFixtureCase {
                 name: "data_complete",
@@ -3126,7 +2999,7 @@ mod tests {
             &leader_keypair,
             entries.as_slice(),
             true,
-            None,
+            Some(Hash::new_from_array([11u8; 32])),
             0, // next_shred_index
             0, // next_code_index
             true,
@@ -3200,7 +3073,7 @@ mod tests {
             &leader_keypair,
             entries.as_slice(),
             true,
-            None,
+            Some(Hash::new_from_array([12u8; 32])),
             0, // next_shred_index
             0, // next_code_index
             true,
@@ -3280,7 +3153,7 @@ mod tests {
             &leader_keypair,
             entries.as_slice(),
             true,
-            None,
+            Some(Hash::new_from_array([13u8; 32])),
             0, // next_shred_index
             0, // next_code_index
             true,
@@ -3349,7 +3222,7 @@ mod tests {
             &leader_keypair,
             entries.as_slice(),
             true,
-            None,
+            Some(Hash::new_from_array([14u8; 32])),
             0, // next_shred_index
             0, // next_code_index
             true,
@@ -3420,7 +3293,7 @@ mod tests {
             &leader_keypair,
             entries.as_slice(),
             true,
-            None,
+            Some(Hash::new_from_array([15u8; 32])),
             0, // next_shred_index
             0, // next_code_index
             true,
@@ -3491,7 +3364,7 @@ mod tests {
             &leader_keypair,
             entries.as_slice(),
             true,
-            None,
+            Some(Hash::new_from_array([16u8; 32])),
             0, // next_shred_index
             0, // next_code_index
             true,
@@ -3561,7 +3434,7 @@ mod tests {
             &leader_keypair,
             entries.as_slice(),
             true,
-            None,
+            Some(Hash::new_from_array([17u8; 32])),
             0, // next_shred_index
             0, // next_code_index
             true,
@@ -3954,7 +3827,7 @@ mod tests {
             &target.payload()[suffix_start..]
         );
 
-        let original = Shred::from_payload(target.payload().to_vec()).unwrap();
+        let original = Shred::from_payload(target.payload().clone()).unwrap();
         let duplicate = Shred::from_payload(duplicate_payload).unwrap();
         let index = original.index() as usize;
 
@@ -3975,9 +3848,9 @@ mod tests {
         );
         let stored = tracker.data_shreds[index]
             .as_ref()
-            .map(|s| s.payload().to_vec())
+            .map(|s| s.payload())
             .expect("index should contain original payload");
-        assert_eq!(stored.as_slice(), original.payload().as_ref());
+        assert_eq!(stored.as_ref(), original.payload().as_ref());
     }
 
     #[test]
@@ -4019,7 +3892,7 @@ mod tests {
             &target.payload()[suffix_start..]
         );
 
-        let original = Shred::from_payload(target.payload().to_vec()).unwrap();
+        let original = Shred::from_payload(target.payload().clone()).unwrap();
         let duplicate = Shred::from_payload(duplicate_payload).unwrap();
         let position = match &original {
             Shred::ShredCode(code) => code.coding_header.position as usize,
@@ -4036,9 +3909,9 @@ mod tests {
         assert_eq!(fec_state.generation, 1);
         let stored = fec_state.coding_by_pos[position]
             .as_ref()
-            .map(|s| s.payload().to_vec())
+            .map(|s| s.payload())
             .expect("coding position should contain original payload");
-        assert_eq!(stored.as_slice(), original.payload().as_ref());
+        assert_eq!(stored.as_ref(), original.payload().as_ref());
     }
 
     #[test]
@@ -4542,91 +4415,6 @@ mod tests {
                 .sum::<usize>(),
             entries.len(),
             "expected decode after replacing pinned conflicting coding duplicate"
-        );
-    }
-
-    #[test]
-    fn test_recovery_filters_minor_variant_mismatch_and_still_decodes() {
-        let slot = 252_526;
-        let leader_keypair = Arc::new(Keypair::new());
-        let reed_solomon_cache = ReedSolomonCache::default();
-        let shredder = Shredder::new(slot, slot - 1, 0, 0).unwrap();
-        let entries = make_slot_entries_with_transactions(64);
-        let (data_shreds, coding_shreds) = shredder.entries_to_shreds(
-            &leader_keypair,
-            entries.as_slice(),
-            true,
-            Some(Hash::new_from_array([10u8; 32])),
-            0,
-            0,
-            true,
-            &reed_solomon_cache,
-            &mut ProcessShredsStats::default(),
-        );
-        assert_eq!(data_shreds.len(), 32);
-        assert_eq!(coding_shreds.len(), 32);
-
-        let missing_data_index = data_shreds[0].index() as usize;
-        let mut mismatched_variant_coding = coding_shreds[0].payload().to_vec();
-        let original_variant = mismatched_variant_coding[64];
-        let original_proof_size = original_variant & 0x0F;
-        assert!(
-            original_proof_size > 0,
-            "expected proof_size > 0 so we can force a mismatched profile"
-        );
-        // Force a different proof_size while keeping the coding shard otherwise intact.
-        // This creates a mixed-variant FEC input set.
-        mismatched_variant_coding[64] = (original_variant & 0xF0) | (original_proof_size - 1);
-
-        let packets = data_shreds
-            .iter()
-            .filter(|s| s.index() as usize != missing_data_index)
-            .map(|s| packet_from_payload(s.payload()))
-            .chain(coding_shreds.iter().enumerate().map(|(idx, s)| {
-                if idx == 0 {
-                    packet_from_payload(&mismatched_variant_coding)
-                } else {
-                    packet_from_payload(s.payload())
-                }
-            }))
-            .collect_vec();
-
-        let metrics = Arc::new(ShredMetrics::default());
-        let rs_cache = ReedSolomonCache::default();
-        let mut all_shreds = ahash::HashMap::default();
-        let mut slot_fec_keys_to_iterate: Vec<(Slot, super::FecSetKey)> = Vec::new();
-        let mut deshredded_entries = Vec::new();
-        let mut highest_slot_seen = 0;
-        let mut scratch = super::ReconstructScratch::default();
-
-        let recovered_count = super::reconstruct_shreds(
-            vec![PacketBatch::new(packets)],
-            &mut all_shreds,
-            &mut slot_fec_keys_to_iterate,
-            &mut deshredded_entries,
-            &mut highest_slot_seen,
-            &rs_cache,
-            TEST_RECONSTRUCT_CFG_DECODE_ENTRIES,
-            &metrics,
-            &mut scratch,
-        );
-
-        assert!(
-            recovered_count >= 1,
-            "expected recovery to filter the minority mismatched variant and recover missing data",
-        );
-        assert_eq!(
-            deshredded_entries
-                .iter()
-                .map(|(_slot, e, _bytes)| e.len())
-                .sum::<usize>(),
-            entries.len(),
-            "expected decode to succeed despite one mismatched-variant coding shard"
-        );
-        assert_eq!(
-            metrics.fec_recovery_error_count.load(Ordering::Relaxed),
-            0,
-            "variant filtering should avoid counting this as a recovery error"
         );
     }
 
@@ -5809,17 +5597,19 @@ mod tests {
             "expected at least one later unknown-start candidate to try"
         );
 
-        let run_case = |unknown_start_max_positions: u16| -> (
-            ahash::HashMap<
-                Slot,
-                (
-                    ahash::HashMap<super::FecSetKey, super::FecSetState>,
-                    super::ShredsStateTracker,
-                ),
-            >,
+        type SlotStateMap = ahash::HashMap<
+            Slot,
+            (
+                ahash::HashMap<super::FecSetKey, super::FecSetState>,
+                super::ShredsStateTracker,
+            ),
+        >;
+        type RunCaseOutput = (
+            SlotStateMap,
             Vec<(Slot, Vec<solana_entry::entry::Entry>, Vec<u8>)>,
             Arc<ShredMetrics>,
-        ) {
+        );
+        let run_case = |unknown_start_max_positions: u16| -> RunCaseOutput {
             let rs_cache = ReedSolomonCache::default();
             let metrics = Arc::new(ShredMetrics::default());
             let mut all_shreds = ahash::HashMap::default();

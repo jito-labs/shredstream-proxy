@@ -268,16 +268,22 @@ fn main() -> Result<(), ShredstreamProxyError> {
         ProxySubcommands::ForwardOnly(x) => x,
     };
     set_host_id(hostname::get()?.into_string().unwrap());
-    if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
-        || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
+    let discovery_config = match (args.endpoint_discovery_url.clone(), args.discovered_endpoints_port)
     {
-        return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "Invalid arguments provided, dynamic endpoints requires both --endpoint-discovery-url and --discovered-endpoints-port.")));
-    }
-    if args.endpoint_discovery_url.is_none()
-        && args.discovered_endpoints_port.is_none()
-        && args.dest_ip_ports.is_empty()
-    {
-        return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")));
+        (Some(url), Some(port)) => Some((url, port)),
+        (None, None) => None,
+        _ => {
+            return Err(ShredstreamProxyError::IoError(io::Error::new(
+                ErrorKind::InvalidInput,
+                "Invalid arguments provided, dynamic endpoints requires both --endpoint-discovery-url and --discovered-endpoints-port.",
+            )))
+        }
+    };
+    if discovery_config.is_none() && args.dest_ip_ports.is_empty() {
+        return Err(ShredstreamProxyError::IoError(io::Error::new(
+            ErrorKind::InvalidInput,
+            "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.",
+        )));
     }
 
     let exit = Arc::new(AtomicBool::new(false));
@@ -317,8 +323,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
 
     let entry_sender = Arc::new(BroadcastSender::new(100));
     let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
-    let use_discovery_service =
-        args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
+    let use_discovery_service = discovery_config.is_some();
     let maybe_multicast_socket = create_multicast_socket_on_device(
         &args.multicast_device,
         args.multicast_subscribe_port,
@@ -388,10 +393,10 @@ fn main() -> Result<(), ShredstreamProxyError> {
         exit.clone(),
     );
     thread_handles.push(metrics_hdl);
-    if use_discovery_service {
+    if let Some((endpoint_discovery_url, discovered_endpoints_port)) = discovery_config {
         let refresh_handle = forwarder::start_destination_refresh_thread(
-            args.endpoint_discovery_url.unwrap(),
-            args.discovered_endpoints_port.unwrap(),
+            endpoint_discovery_url,
+            discovered_endpoints_port,
             args.dest_ip_ports,
             unioned_dest_sockets,
             shutdown_receiver.clone(),
