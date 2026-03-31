@@ -144,6 +144,11 @@ struct CommonArgs {
     /// Number of threads to use. Defaults to use up to 4.
     #[arg(long, env)]
     num_threads: Option<usize>,
+
+    /// Multicast TTL (time-to-live / hop limit) for forwarded packets.
+    /// Only relevant when forwarding to multicast destinations. Default OS value is 1.
+    #[arg(long, env)]
+    multicast_ttl: Option<u32>,
 }
 
 #[derive(Debug, Error)]
@@ -302,6 +307,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         args.src_bind_port,
         maybe_multicast_socket,
         args.num_threads,
+        args.multicast_ttl,
         deduper.clone(),
         args.grpc_service_port.is_some(),
         entry_sender.clone(),
