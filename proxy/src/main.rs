@@ -286,7 +286,7 @@ fn main() -> Result<(), ShredstreamProxyError> {
         forwarder::DEDUPER_NUM_BITS,
     )));
 
-    let entry_sender = Arc::new(BroadcastSender::new(100));
+    let entry_sender = Arc::new(BroadcastSender::new(10_000));
     let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
     let use_discovery_service =
         args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();

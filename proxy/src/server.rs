@@ -10,8 +10,8 @@ use jito_protos::shredstream::{
     shredstream_proxy_server::{ShredstreamProxy, ShredstreamProxyServer},
     Entry as PbEntry, SubscribeEntriesRequest,
 };
-use log::{debug, info};
-use tokio::sync::broadcast::{Receiver as BroadcastReceiver, Sender};
+use log::{debug, info, warn};
+use tokio::sync::broadcast::{error::RecvError, Receiver as BroadcastReceiver, Sender};
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Debug)]
@@ -63,11 +63,23 @@ impl ShredstreamProxy for ShredstreamProxyService {
         let mut entry_receiver: BroadcastReceiver<PbEntry> = self.entry_sender.subscribe();
 
         tokio::spawn(async move {
-            while let Ok(entry) = entry_receiver.recv().await {
-                match tx.send(Ok(entry)).await {
-                    Ok(_) => (),
-                    Err(_e) => {
-                        debug!("client disconnected");
+            loop {
+                match entry_receiver.recv().await {
+                    Ok(entry) => {
+                        if tx.send(Ok(entry)).await.is_err() {
+                            debug!("client disconnected");
+                            break;
+                        }
+                    }
+                    Err(RecvError::Lagged(skipped)) => {
+                        warn!(
+                            "client lagged, skipped {} entries, continuing stream",
+                            skipped
+                        );
+                        continue;
+                    }
+                    Err(RecvError::Closed) => {
+                        debug!("broadcast channel closed");
                         break;
                     }
                 }
