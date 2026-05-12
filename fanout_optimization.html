@@ -181,6 +181,54 @@ const RUNS = [
       { time: "03:56:35Z", batches: 24494, packets: 37341, dest_sends: 489880, avg_total_us: 106, avg_dedup_us: 1, avg_fanout_send_us: 104, avg_max_per_dest_us: 7, max_total_us: 1932, max_fanout_send_us: 1893, max_per_dest_us: 286 },
     ],
   },
+  {
+    name: "Run 3 (2026-05-12) — parallel worker dispatch",
+    description: "2026-05-12, fra-shred-proxy, 20 destinations, parallel-worker fanout (worker_count=20, worker_dropped_batches=0). Recv thread now only dispatches to worker queues; the actual sendmmsg calls happen off-thread. Log line uses avg_fanout_dispatch_us / max_fanout_dispatch_us instead of *_fanout_send_us — mapped onto the same chart slot. avg_max_per_dest_us / max_per_dest_us are not emitted in this mode (per-dest timing now lives on the workers). ~2.5 min window, 15 samples at 10s cadence.",
+    samples: [
+      // time (HH:MM:SSZ), batches, packets, dest_sends,
+      // avg_total_us, avg_dedup_us, avg_fanout_send_us (= avg_fanout_dispatch_us in this mode),
+      // avg_max_per_dest_us (null — not emitted),
+      // max_total_us, max_fanout_send_us (= max_fanout_dispatch_us), max_per_dest_us (null)
+      { time: "04:11:06Z", batches: 26272, packets: 37415, dest_sends: 525440, avg_total_us: 30, avg_dedup_us: 2, avg_fanout_send_us: 26, avg_max_per_dest_us: null, max_total_us: 530, max_fanout_send_us: 524, max_per_dest_us: null },
+      { time: "04:11:16Z", batches: 23803, packets: 36648, dest_sends: 476060, avg_total_us: 29, avg_dedup_us: 1, avg_fanout_send_us: 27, avg_max_per_dest_us: null, max_total_us: 408, max_fanout_send_us: 406, max_per_dest_us: null },
+      { time: "04:11:26Z", batches: 28833, packets: 44395, dest_sends: 576660, avg_total_us: 30, avg_dedup_us: 1, avg_fanout_send_us: 27, avg_max_per_dest_us: null, max_total_us: 364, max_fanout_send_us: 363, max_per_dest_us: null },
+      { time: "04:11:36Z", batches: 25998, packets: 39771, dest_sends: 519960, avg_total_us: 30, avg_dedup_us: 1, avg_fanout_send_us: 28, avg_max_per_dest_us: null, max_total_us: 649, max_fanout_send_us: 648, max_per_dest_us: null },
+      { time: "04:11:46Z", batches: 24749, packets: 36878, dest_sends: 494980, avg_total_us: 30, avg_dedup_us: 1, avg_fanout_send_us: 28, avg_max_per_dest_us: null, max_total_us: 666, max_fanout_send_us: 664, max_per_dest_us: null },
+      { time: "04:11:56Z", batches: 20760, packets: 34866, dest_sends: 415200, avg_total_us: 33, avg_dedup_us: 1, avg_fanout_send_us: 30, avg_max_per_dest_us: null, max_total_us: 538, max_fanout_send_us: 534, max_per_dest_us: null },
+      { time: "04:12:06Z", batches: 26179, packets: 40028, dest_sends: 523580, avg_total_us: 29, avg_dedup_us: 1, avg_fanout_send_us: 27, avg_max_per_dest_us: null, max_total_us: 976, max_fanout_send_us: 973, max_per_dest_us: null },
+      { time: "04:12:16Z", batches: 19895, packets: 31079, dest_sends: 397900, avg_total_us: 27, avg_dedup_us: 1, avg_fanout_send_us: 25, avg_max_per_dest_us: null, max_total_us: 598, max_fanout_send_us: 595, max_per_dest_us: null },
+      { time: "04:12:26Z", batches: 26197, packets: 41093, dest_sends: 523940, avg_total_us: 26, avg_dedup_us: 1, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us: 658, max_fanout_send_us: 656, max_per_dest_us: null },
+      { time: "04:12:36Z", batches: 27085, packets: 39590, dest_sends: 541700, avg_total_us: 26, avg_dedup_us: 0, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us: 602, max_fanout_send_us: 599, max_per_dest_us: null },
+      { time: "04:12:46Z", batches: 22094, packets: 36200, dest_sends: 441880, avg_total_us: 27, avg_dedup_us: 1, avg_fanout_send_us: 25, avg_max_per_dest_us: null, max_total_us: 602, max_fanout_send_us: 598, max_per_dest_us: null },
+      { time: "04:12:56Z", batches: 23923, packets: 36912, dest_sends: 478460, avg_total_us: 26, avg_dedup_us: 1, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us: 466, max_fanout_send_us: 464, max_per_dest_us: null },
+      { time: "04:13:06Z", batches: 21164, packets: 33594, dest_sends: 423280, avg_total_us: 27, avg_dedup_us: 1, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us: 747, max_fanout_send_us: 746, max_per_dest_us: null },
+      { time: "04:13:16Z", batches: 19197, packets: 33380, dest_sends: 383940, avg_total_us: 28, avg_dedup_us: 1, avg_fanout_send_us: 25, avg_max_per_dest_us: null, max_total_us: 632, max_fanout_send_us: 626, max_per_dest_us: null },
+      { time: "04:13:26Z", batches: 25498, packets: 37246, dest_sends: 509960, avg_total_us: 26, avg_dedup_us: 0, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us: 556, max_fanout_send_us: 553, max_per_dest_us: null },
+    ],
+  },
+  {
+    name: "Run 4 (2026-05-12) — parallel worker dispatch (re-run)",
+    description: "2026-05-12, fra-shred-proxy, 20 destinations, parallel-worker fanout. Same configuration as Run 3, captured later to confirm steady-state. worker_count=20, worker_dropped_batches=0 throughout. ~2 min window, 14 samples at 10s cadence.",
+    samples: [
+      // time (HH:MM:SSZ), batches, packets, dest_sends,
+      // avg_total_us, avg_dedup_us, avg_fanout_send_us (= avg_fanout_dispatch_us in this mode),
+      // avg_max_per_dest_us (null), max_total_us, max_fanout_send_us (= max_fanout_dispatch_us), max_per_dest_us (null)
+      { time: "04:33:46Z", batches: 26993, packets: 39703, dest_sends: 539860, avg_total_us: 26, avg_dedup_us: 0, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us: 1075, max_fanout_send_us: 1073, max_per_dest_us: null },
+      { time: "04:33:56Z", batches: 23468, packets: 37377, dest_sends: 469360, avg_total_us: 26, avg_dedup_us: 1, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us:  719, max_fanout_send_us:  716, max_per_dest_us: null },
+      { time: "04:34:06Z", batches: 24811, packets: 39520, dest_sends: 496220, avg_total_us: 26, avg_dedup_us: 1, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us:  621, max_fanout_send_us:  619, max_per_dest_us: null },
+      { time: "04:34:16Z", batches: 22264, packets: 35645, dest_sends: 445280, avg_total_us: 28, avg_dedup_us: 1, avg_fanout_send_us: 25, avg_max_per_dest_us: null, max_total_us: 1051, max_fanout_send_us: 1049, max_per_dest_us: null },
+      { time: "04:34:26Z", batches: 24881, packets: 36774, dest_sends: 497620, avg_total_us: 25, avg_dedup_us: 0, avg_fanout_send_us: 23, avg_max_per_dest_us: null, max_total_us:  554, max_fanout_send_us:  550, max_per_dest_us: null },
+      { time: "04:34:36Z", batches: 24239, packets: 37335, dest_sends: 484780, avg_total_us: 26, avg_dedup_us: 1, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us:  979, max_fanout_send_us:  974, max_per_dest_us: null },
+      { time: "04:34:46Z", batches: 22464, packets: 36261, dest_sends: 449280, avg_total_us: 26, avg_dedup_us: 1, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us:  361, max_fanout_send_us:  358, max_per_dest_us: null },
+      { time: "04:34:56Z", batches: 25445, packets: 36804, dest_sends: 508900, avg_total_us: 26, avg_dedup_us: 0, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us:  670, max_fanout_send_us:  665, max_per_dest_us: null },
+      { time: "04:35:06Z", batches: 25524, packets: 39247, dest_sends: 510480, avg_total_us: 26, avg_dedup_us: 1, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us:  887, max_fanout_send_us:  883, max_per_dest_us: null },
+      { time: "04:35:16Z", batches: 25341, packets: 37820, dest_sends: 506820, avg_total_us: 25, avg_dedup_us: 0, avg_fanout_send_us: 23, avg_max_per_dest_us: null, max_total_us:  580, max_fanout_send_us:  577, max_per_dest_us: null },
+      { time: "04:35:26Z", batches: 26316, packets: 38161, dest_sends: 526320, avg_total_us: 27, avg_dedup_us: 1, avg_fanout_send_us: 25, avg_max_per_dest_us: null, max_total_us:  790, max_fanout_send_us:  788, max_per_dest_us: null },
+      { time: "04:35:36Z", batches: 20568, packets: 34943, dest_sends: 411360, avg_total_us: 28, avg_dedup_us: 1, avg_fanout_send_us: 25, avg_max_per_dest_us: null, max_total_us:  878, max_fanout_send_us:  875, max_per_dest_us: null },
+      { time: "04:35:46Z", batches: 24360, packets: 36501, dest_sends: 487200, avg_total_us: 26, avg_dedup_us: 0, avg_fanout_send_us: 24, avg_max_per_dest_us: null, max_total_us:  635, max_fanout_send_us:  632, max_per_dest_us: null },
+      { time: "04:35:56Z", batches: 23191, packets: 35834, dest_sends: 463820, avg_total_us: 30, avg_dedup_us: 1, avg_fanout_send_us: 27, avg_max_per_dest_us: null, max_total_us:  514, max_fanout_send_us:  507, max_per_dest_us: null },
+    ],
+  },
   // Add additional runs below. Template:
   // {
   //   name: "Run N (YYYY-MM-DD) — <what changed>",
@@ -229,9 +277,9 @@ const METRICS = [
     why:  'The headline "how fast do we forward a typical shred" number. Optimizations that reduce per-batch work should drop this directly.',
   },
   {
-    id: 'avg_fanout_send_us', title: 'avg_fanout_send_us', unit: 'us', group: 'avgLatency', pick: s => s.avg_fanout_send_us,
-    what: 'Average time spent <b>just in the sendmmsg fanout</b> per batch (one packet → ~20 destinations).',
-    why:  'Isolates the syscall/kernel-side cost from the rest. This is what the fanout optimization (batch_send + reused scratch) is supposed to flatten.',
+    id: 'avg_fanout_send_us', title: 'avg_fanout_us (send / dispatch)', unit: 'us', group: 'avgLatency', pick: s => s.avg_fanout_send_us,
+    what: 'Average time the <b>recv thread spends on the fanout step</b> per batch. In sequential mode this is the ~20 sendmmsg syscalls; in parallel-worker mode (<code>avg_fanout_dispatch_us</code>) it is only the time to dispatch to worker queues — the actual sends happen off-thread.',
+    why:  'This is the headline cost the recv thread pays for fanout. Optimizations that move sends off-thread or reduce per-call overhead should collapse this number.',
   },
   {
     id: 'avg_dedup_us', title: 'avg_dedup_us', unit: 'us', group: 'avgLatency', pick: s => s.avg_dedup_us,
@@ -251,9 +299,9 @@ const METRICS = [
     why:  'Tail latency — this is what causes intermittent send-side stalls. The point of the optimization is to keep this from spiking.',
   },
   {
-    id: 'max_fanout_send_us', title: 'max_fanout_send_us', unit: 'us', group: 'maxLatency', pick: s => s.max_fanout_send_us,
-    what: 'Worst <b>single-batch sendmmsg time</b> in the window.',
-    why:  'Pins tail spikes specifically to the fanout step (vs. dedup/scheduling). If <code>max_total</code> spikes track <code>max_fanout_send</code>, the kernel/socket path is the culprit.',
+    id: 'max_fanout_send_us', title: 'max_fanout_us (send / dispatch)', unit: 'us', group: 'maxLatency', pick: s => s.max_fanout_send_us,
+    what: 'Worst <b>single-batch fanout time</b> in the window — sendmmsg in sequential mode, or worker dispatch in parallel mode.',
+    why:  'Pins tail spikes to the fanout step on the recv thread. If <code>max_total</code> spikes track this, the recv-thread fanout is the culprit; in parallel mode this should be small even when tails on individual workers stay long.',
   },
   {
     id: 'max_per_dest_us', title: 'max_per_dest_us', unit: 'us', group: 'maxLatency', pick: s => s.max_per_dest_us,
@@ -279,13 +327,20 @@ const METRICS = [
   },
 ];
 
-// Quick stats: avg, p50, p99.
-function avg(arr)  { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0; }
+// Quick stats: avg, p50, p99. Filter out null/undefined so runs that don't
+// emit a particular metric (e.g. parallel-worker runs have no per-dest stats)
+// show "–" instead of skewing the average toward zero.
+const isNum = v => typeof v === 'number' && isFinite(v);
+function avg(arr) {
+  const nums = arr.filter(isNum);
+  return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : NaN;
+}
 function quantile(sorted, q) {
-  if (sorted.length === 0) return 0;
-  const pos = (sorted.length - 1) * q;
+  const nums = sorted.filter(isNum);
+  if (nums.length === 0) return NaN;
+  const pos = (nums.length - 1) * q;
   const lo = Math.floor(pos), hi = Math.ceil(pos);
-  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+  return nums[lo] + (nums[hi] - nums[lo]) * (pos - lo);
 }
 function fmt(v, unit) {
   if (typeof v !== 'number' || !isFinite(v)) return '–';
