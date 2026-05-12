@@ -70,12 +70,36 @@ You get two streams of perf data:
 
 ### Extracting for the HTML dashboard
 
-The aggregated datapoints land on stdout (and InfluxDB, if configured). Grep
-for `shredstream_proxy-forwarding_perf` to pull rows into the
-`latency_dashboard.html` / `fanout_optimization.html` data tables.
+Both the per-batch `trace!` lines and the aggregated `datapoint_info!` rows go
+to **stderr** via `env_logger`. Merge stderr into stdout with `2>&1` so you can
+pipe/redirect. (If `SOLANA_METRICS_CONFIG` is set, `datapoint_info!` is *also*
+shipped to InfluxDB; the local stderr line still prints either way.)
+
+**Option A — capture full log, grep afterwards.** Best when you want to re-grep
+different fields without re-running.
 
 ```bash
 RUST_LOG=info,jito_shredstream_proxy::forwarder=trace \
   cargo run --release --bin jito-shredstream-proxy -- forward-only ... \
-  2>&1 | grep "shredstream_proxy-forwarding_perf"
+  > shredstream.log 2>&1
+
+# stop with Ctrl-C, then extract:
+grep "shredstream_proxy-forwarding_perf" shredstream.log > perf_aggregated.txt
+grep "fwd_batch"                          shredstream.log > perf_per_batch.txt
 ```
+
+**Option B — live filter + keep the raw log.** Best when watching a profiling
+run for a fixed window.
+
+```bash
+RUST_LOG=info,jito_shredstream_proxy::forwarder=trace \
+  cargo run --release --bin jito-shredstream-proxy -- forward-only ... \
+  2>&1 | tee shredstream.log | grep --line-buffered "shredstream_proxy-forwarding_perf"
+```
+
+- `tee shredstream.log` keeps the full raw log on disk for later re-grep.
+- `grep --line-buffered` flushes matches to your terminal immediately
+  (without it, pipe buffering can delay output by seconds).
+
+Feed `perf_aggregated.txt` (or whatever you `tee` to) into the
+`latency_dashboard.html` / `fanout_optimization.html` data tables.
