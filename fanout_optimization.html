@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shredstream Fanout Optimization Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; background: #0d1117; color: #c9d1d9; padding: 24px; }
+  h1 { font-size: 1.6rem; margin-bottom: 16px; color: #58a6ff; }
+  h2 { font-size: 1.2rem; margin: 24px 0 12px; color: #8b949e; }
+  .charts-grid { display: grid; grid-template-columns: 1fr; gap: 24px; margin-bottom: 24px; }
+  .chart-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .chart-card h3 { font-size: 0.95rem; color: #58a6ff; margin-bottom: 6px; }
+  .chart-card .what { font-size: 0.75rem; color: #c9d1d9; margin-bottom: 2px; }
+  .chart-card .why  { font-size: 0.75rem; color: #8b949e; margin-bottom: 10px; }
+  .chart-card .what b, .chart-card .why b { color: #ffa657; font-weight: 600; }
+  .chart-container { position: relative; width: 100%; height: 350px; }
+  .description { font-size: 0.8rem; color: #8b949e; margin-bottom: 8px; }
+  .legend-box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 18px; margin-bottom: 24px; font-size: 0.82rem; color: #c9d1d9; line-height: 1.6; }
+  .legend-box code { color: #ffa657; background: #0d1117; padding: 1px 5px; border-radius: 3px; font-size: 0.78rem; }
+  .legend-box .lbl { color: #58a6ff; font-weight: 600; }
+  .legend-box ul { margin: 6px 0 0 22px; }
+  .legend-box li { margin-bottom: 4px; }
+  table.summary th.group-header { text-align: center; background: #0d1117; color: #58a6ff; border-bottom: 1px solid #30363d; font-size: 0.7rem; padding: 6px 8px; }
+  table.summary th.stat { font-size: 0.68rem; }
+  @media (min-width: 1200px) { .charts-grid { grid-template-columns: 1fr 1fr; } }
+  table.summary { border-collapse: collapse; width: 100%; font-size: 0.82rem; background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+  table.summary th, table.summary td { padding: 8px 10px; border-bottom: 1px solid #21262d; text-align: right; white-space: nowrap; }
+  table.summary th { background: #0d1117; color: #8b949e; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; position: sticky; top: 0; }
+  table.summary th.run-col, table.summary td.run-col { text-align: left; }
+  table.summary td.run-col { color: #c9d1d9; font-weight: 600; }
+  table.summary tr:last-child td { border-bottom: none; }
+  table.summary tr:hover td { background: #1c2128; }
+  .run-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .note { font-size: 0.75rem; color: #6e7681; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Shredstream Fanout Optimization — All-Runs Comparison</h1>
+<p class="description" style="margin-bottom:12px;">
+  Each chart plots one metric from <code>shredstream_proxy-forwarding_perf</code> datapoints
+  (emitted every ~10s by <code>proxy/src/forwarder.rs</code>). Each line is one test run; the
+  x-axis is the in-run sample index (1..N) since runs span different wall-clock times.
+</p>
+
+<div class="legend-box">
+  <div><span class="lbl">How to read these numbers — two layers of aggregation.</span></div>
+  <ul>
+    <li><b>Per-batch:</b> one batch = one call to <code>recv_from_channel_and_send_multiple_dest</code> (one packet → ~20 dest sendmmsg fanout).</li>
+    <li><b>Per window (≈10s, ~24k batches):</b> the proxy emits one log line every ~10s aggregating those batches into <code>avg_*</code> (mean across batches) and <code>max_*</code> (worst single batch in the window).</li>
+    <li><b>Per run (this dashboard):</b> the summary table then aggregates the ~44 window samples in a run into <code>avg / p50 / p99</code>. So a header like <code>avg max_total_us</code> means "average, across windows, of each window's worst-batch <code>total_us</code>" — i.e. typical tail. <code>p99 max_total_us</code> ≈ the worst window in the run.</li>
+  </ul>
+  <div style="margin-top:8px;color:#8b949e;font-size:0.75rem;">
+    Source line: <code>datapoint: shredstream_proxy-forwarding_perf batches=Bi packets=Pi dest_sends=Di avg_total_us=Ui avg_dedup_us=Di avg_fanout_send_us=Fi avg_max_per_dest_us=Mi max_total_us=Ti max_fanout_send_us=Si max_per_dest_us=Pi</code>
+  </div>
+</div>
+
+<h2>Per-Run Summary</h2>
+<div id="summaryTableWrap" style="overflow-x:auto;margin-bottom:28px;"></div>
+
+<h2>Average Per-Batch Latencies</h2>
+<div class="charts-grid" id="avgLatencyGrid"></div>
+
+<h2>Tail Latencies (per ~10s window max)</h2>
+<div class="charts-grid" id="maxLatencyGrid"></div>
+
+<h2>Throughput</h2>
+<div class="charts-grid" id="throughputGrid"></div>
+
+<script>
+// ============================================================
+// DATA — add new runs here. Each run has a name, description, and an array
+// of per-window samples. Each sample maps to one
+// `shredstream_proxy-forwarding_perf` datapoint log line.
+//
+// To add a new run, capture logs on the test machine and grep for
+// "shredstream_proxy-forwarding_perf", then convert each line into one row
+// below in chronological order.
+// ============================================================
+const RUNS = [
+  {
+    name: "Run 1 (2026-05-12) — master (no opt)",
+    description: "2026-05-12, fra-shred-proxy, 20 destinations, master branch — baseline before fanout optimizations. ~7 min window, 44 samples at 10s cadence.",
+    samples: [
+      // time (HH:MM:SSZ), batches, packets, dest_sends,
+      // avg_total_us, avg_dedup_us, avg_fanout_send_us, avg_max_per_dest_us,
+      // max_total_us, max_fanout_send_us, max_per_dest_us
+      { time: "03:23:09Z", batches: 22973, packets: 36072, dest_sends: 459460, avg_total_us: 105, avg_dedup_us: 1, avg_fanout_send_us: 102, avg_max_per_dest_us: 7, max_total_us: 1595, max_fanout_send_us: 1574, max_per_dest_us:  314 },
+      { time: "03:23:19Z", batches: 23870, packets: 38474, dest_sends: 477400, avg_total_us: 108, avg_dedup_us: 1, avg_fanout_send_us: 106, avg_max_per_dest_us: 7, max_total_us: 1741, max_fanout_send_us: 1713, max_per_dest_us:  237 },
+      { time: "03:23:29Z", batches: 24320, packets: 36296, dest_sends: 486400, avg_total_us:  99, avg_dedup_us: 0, avg_fanout_send_us:  98, avg_max_per_dest_us: 6, max_total_us: 1365, max_fanout_send_us: 1351, max_per_dest_us:  275 },
+      { time: "03:23:39Z", batches: 20609, packets: 33464, dest_sends: 412180, avg_total_us: 108, avg_dedup_us: 0, avg_fanout_send_us: 106, avg_max_per_dest_us: 7, max_total_us: 3098, max_fanout_send_us: 3057, max_per_dest_us:  215 },
+      { time: "03:23:49Z", batches: 23613, packets: 39080, dest_sends: 472260, avg_total_us: 110, avg_dedup_us: 1, avg_fanout_send_us: 108, avg_max_per_dest_us: 7, max_total_us: 3408, max_fanout_send_us: 3345, max_per_dest_us:  211 },
+      { time: "03:23:59Z", batches: 23020, packets: 35922, dest_sends: 460400, avg_total_us: 107, avg_dedup_us: 0, avg_fanout_send_us: 105, avg_max_per_dest_us: 6, max_total_us: 1289, max_fanout_send_us: 1270, max_per_dest_us:  685 },
+      { time: "03:24:09Z", batches: 21457, packets: 34290, dest_sends: 429140, avg_total_us: 105, avg_dedup_us: 0, avg_fanout_send_us: 103, avg_max_per_dest_us: 6, max_total_us: 1790, max_fanout_send_us: 1755, max_per_dest_us:  168 },
+      { time: "03:24:19Z", batches: 27015, packets: 39109, dest_sends: 540300, avg_total_us:  97, avg_dedup_us: 0, avg_fanout_send_us:  95, avg_max_per_dest_us: 6, max_total_us:  903, max_fanout_send_us:  896, max_per_dest_us:  259 },
+      { time: "03:24:29Z", batches: 23920, packets: 35942, dest_sends: 478400, avg_total_us:  99, avg_dedup_us: 0, avg_fanout_send_us:  97, avg_max_per_dest_us: 6, max_total_us: 1655, max_fanout_send_us: 1622, max_per_dest_us:  239 },
+      { time: "03:24:39Z", batches: 27598, packets: 40706, dest_sends: 551960, avg_total_us:  98, avg_dedup_us: 0, avg_fanout_send_us:  96, avg_max_per_dest_us: 6, max_total_us: 1139, max_fanout_send_us: 1121, max_per_dest_us:  328 },
+      { time: "03:24:49Z", batches: 23990, packets: 37102, dest_sends: 479800, avg_total_us: 105, avg_dedup_us: 0, avg_fanout_send_us: 103, avg_max_per_dest_us: 6, max_total_us: 1946, max_fanout_send_us: 1913, max_per_dest_us:  314 },
+      { time: "03:24:59Z", batches: 22881, packets: 33859, dest_sends: 457620, avg_total_us: 100, avg_dedup_us: 0, avg_fanout_send_us:  99, avg_max_per_dest_us: 6, max_total_us:  959, max_fanout_send_us:  946, max_per_dest_us:  599 },
+      { time: "03:25:09Z", batches: 24680, packets: 36528, dest_sends: 493600, avg_total_us:  99, avg_dedup_us: 0, avg_fanout_send_us:  97, avg_max_per_dest_us: 6, max_total_us: 1181, max_fanout_send_us: 1167, max_per_dest_us:  226 },
+      { time: "03:25:19Z", batches: 22303, packets: 34623, dest_sends: 446060, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us: 1700, max_fanout_send_us: 1668, max_per_dest_us:  331 },
+      { time: "03:25:29Z", batches: 23096, packets: 35020, dest_sends: 461920, avg_total_us: 101, avg_dedup_us: 0, avg_fanout_send_us:  99, avg_max_per_dest_us: 6, max_total_us: 1096, max_fanout_send_us: 1084, max_per_dest_us:  145 },
+      { time: "03:25:39Z", batches: 22981, packets: 35691, dest_sends: 459620, avg_total_us: 105, avg_dedup_us: 0, avg_fanout_send_us: 103, avg_max_per_dest_us: 7, max_total_us: 1050, max_fanout_send_us: 1031, max_per_dest_us:  130 },
+      { time: "03:25:49Z", batches: 22785, packets: 34671, dest_sends: 455700, avg_total_us: 102, avg_dedup_us: 0, avg_fanout_send_us: 100, avg_max_per_dest_us: 6, max_total_us: 1091, max_fanout_send_us: 1078, max_per_dest_us:  405 },
+      { time: "03:25:59Z", batches: 24060, packets: 36101, dest_sends: 481200, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us: 1773, max_fanout_send_us: 1737, max_per_dest_us:  225 },
+      { time: "03:26:09Z", batches: 23563, packets: 36190, dest_sends: 471260, avg_total_us: 104, avg_dedup_us: 0, avg_fanout_send_us: 103, avg_max_per_dest_us: 7, max_total_us: 1731, max_fanout_send_us: 1696, max_per_dest_us:  910 },
+      { time: "03:26:19Z", batches: 23230, packets: 36433, dest_sends: 464600, avg_total_us: 107, avg_dedup_us: 0, avg_fanout_send_us: 105, avg_max_per_dest_us: 7, max_total_us: 1479, max_fanout_send_us: 1451, max_per_dest_us:  164 },
+      { time: "03:26:29Z", batches: 25742, packets: 38422, dest_sends: 514840, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us: 1083, max_fanout_send_us: 1064, max_per_dest_us:  134 },
+      { time: "03:26:39Z", batches: 24647, packets: 39064, dest_sends: 492940, avg_total_us: 107, avg_dedup_us: 1, avg_fanout_send_us: 105, avg_max_per_dest_us: 7, max_total_us: 1144, max_fanout_send_us: 1123, max_per_dest_us:  159 },
+      { time: "03:26:49Z", batches: 24175, packets: 35956, dest_sends: 483500, avg_total_us: 102, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 7, max_total_us: 1473, max_fanout_send_us: 1444, max_per_dest_us:  272 },
+      { time: "03:26:59Z", batches: 26151, packets: 39746, dest_sends: 523020, avg_total_us: 104, avg_dedup_us: 0, avg_fanout_send_us: 102, avg_max_per_dest_us: 6, max_total_us: 2041, max_fanout_send_us: 2007, max_per_dest_us:  125 },
+      { time: "03:27:09Z", batches: 23714, packets: 36146, dest_sends: 474280, avg_total_us: 104, avg_dedup_us: 1, avg_fanout_send_us: 102, avg_max_per_dest_us: 6, max_total_us: 2090, max_fanout_send_us: 2048, max_per_dest_us:  148 },
+      { time: "03:27:19Z", batches: 23363, packets: 36482, dest_sends: 467260, avg_total_us: 105, avg_dedup_us: 0, avg_fanout_send_us: 103, avg_max_per_dest_us: 6, max_total_us: 1198, max_fanout_send_us: 1175, max_per_dest_us:  369 },
+      { time: "03:27:29Z", batches: 26314, packets: 38311, dest_sends: 526280, avg_total_us:  99, avg_dedup_us: 0, avg_fanout_send_us:  97, avg_max_per_dest_us: 6, max_total_us: 1050, max_fanout_send_us: 1037, max_per_dest_us:  101 },
+      { time: "03:27:39Z", batches: 24449, packets: 36071, dest_sends: 488980, avg_total_us:  99, avg_dedup_us: 0, avg_fanout_send_us:  97, avg_max_per_dest_us: 6, max_total_us: 1902, max_fanout_send_us: 1878, max_per_dest_us:  165 },
+      { time: "03:27:49Z", batches: 25709, packets: 37729, dest_sends: 514180, avg_total_us:  98, avg_dedup_us: 0, avg_fanout_send_us:  97, avg_max_per_dest_us: 6, max_total_us: 1059, max_fanout_send_us: 1046, max_per_dest_us:  311 },
+      { time: "03:27:59Z", batches: 26345, packets: 38622, dest_sends: 526900, avg_total_us:  99, avg_dedup_us: 0, avg_fanout_send_us:  97, avg_max_per_dest_us: 6, max_total_us: 1444, max_fanout_send_us: 1416, max_per_dest_us:  155 },
+      { time: "03:28:09Z", batches: 20425, packets: 32407, dest_sends: 408500, avg_total_us: 107, avg_dedup_us: 0, avg_fanout_send_us: 105, avg_max_per_dest_us: 7, max_total_us: 1354, max_fanout_send_us: 1327, max_per_dest_us:  222 },
+      { time: "03:28:19Z", batches: 23305, packets: 36267, dest_sends: 466100, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us: 1158, max_fanout_send_us: 1132, max_per_dest_us:  312 },
+      { time: "03:28:29Z", batches: 25152, packets: 38220, dest_sends: 503040, avg_total_us: 101, avg_dedup_us: 0, avg_fanout_send_us:  99, avg_max_per_dest_us: 6, max_total_us: 1717, max_fanout_send_us: 1692, max_per_dest_us:  439 },
+      { time: "03:28:39Z", batches: 21288, packets: 34286, dest_sends: 425760, avg_total_us: 107, avg_dedup_us: 0, avg_fanout_send_us: 105, avg_max_per_dest_us: 6, max_total_us: 1682, max_fanout_send_us: 1647, max_per_dest_us:  382 },
+      { time: "03:28:49Z", batches: 22437, packets: 34969, dest_sends: 448740, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us: 2383, max_fanout_send_us: 2343, max_per_dest_us:  270 },
+      { time: "03:28:59Z", batches: 25890, packets: 37907, dest_sends: 517800, avg_total_us:  99, avg_dedup_us: 0, avg_fanout_send_us:  98, avg_max_per_dest_us: 6, max_total_us: 2457, max_fanout_send_us: 2455, max_per_dest_us: 2277 },
+      { time: "03:29:09Z", batches: 23633, packets: 36070, dest_sends: 472660, avg_total_us: 104, avg_dedup_us: 1, avg_fanout_send_us: 102, avg_max_per_dest_us: 6, max_total_us: 1703, max_fanout_send_us: 1683, max_per_dest_us:  305 },
+      { time: "03:29:19Z", batches: 22283, packets: 35653, dest_sends: 445660, avg_total_us: 105, avg_dedup_us: 0, avg_fanout_send_us: 104, avg_max_per_dest_us: 6, max_total_us: 1698, max_fanout_send_us: 1668, max_per_dest_us:  205 },
+      { time: "03:29:29Z", batches: 23706, packets: 36217, dest_sends: 474120, avg_total_us: 102, avg_dedup_us: 0, avg_fanout_send_us: 100, avg_max_per_dest_us: 6, max_total_us: 1916, max_fanout_send_us: 1895, max_per_dest_us:  348 },
+      { time: "03:29:39Z", batches: 25593, packets: 38280, dest_sends: 511860, avg_total_us: 100, avg_dedup_us: 0, avg_fanout_send_us:  98, avg_max_per_dest_us: 6, max_total_us: 1112, max_fanout_send_us: 1101, max_per_dest_us:  152 },
+      { time: "03:29:49Z", batches: 26512, packets: 38919, dest_sends: 530240, avg_total_us:  99, avg_dedup_us: 0, avg_fanout_send_us:  97, avg_max_per_dest_us: 6, max_total_us: 1189, max_fanout_send_us: 1171, max_per_dest_us:  292 },
+      { time: "03:29:59Z", batches: 24226, packets: 37496, dest_sends: 484520, avg_total_us: 104, avg_dedup_us: 0, avg_fanout_send_us: 102, avg_max_per_dest_us: 6, max_total_us: 2386, max_fanout_send_us: 2347, max_per_dest_us:  549 },
+      { time: "03:30:09Z", batches: 26034, packets: 38367, dest_sends: 520680, avg_total_us: 101, avg_dedup_us: 0, avg_fanout_send_us:  99, avg_max_per_dest_us: 6, max_total_us: 1208, max_fanout_send_us: 1194, max_per_dest_us:  397 },
+      { time: "03:30:19Z", batches: 23744, packets: 37002, dest_sends: 474880, avg_total_us: 105, avg_dedup_us: 1, avg_fanout_send_us: 103, avg_max_per_dest_us: 6, max_total_us: 2250, max_fanout_send_us: 2204, max_per_dest_us:  137 },
+    ],
+  },
+  {
+    name: "Run 2 (2026-05-12) — with optimizations",
+    description: "2026-05-12, fra-shred-proxy, 20 destinations, optimizations applied. ~6 min window, 37 samples at 10s cadence. Note: proxy restarted mid-run at 03:51:15 (PID 1277139 → 1280027); first 5 samples are from the pre-restart process, remaining 32 from the post-restart process.",
+    samples: [
+      // time (HH:MM:SSZ), batches, packets, dest_sends,
+      // avg_total_us, avg_dedup_us, avg_fanout_send_us, avg_max_per_dest_us,
+      // max_total_us, max_fanout_send_us, max_per_dest_us
+      { time: "03:50:29Z", batches: 28827, packets: 43297, dest_sends: 576540, avg_total_us: 102, avg_dedup_us: 0, avg_fanout_send_us: 100, avg_max_per_dest_us: 6, max_total_us: 1444, max_fanout_send_us: 1422, max_per_dest_us: 526 },
+      { time: "03:50:39Z", batches: 26199, packets: 39532, dest_sends: 523980, avg_total_us: 103, avg_dedup_us: 1, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us: 1581, max_fanout_send_us: 1555, max_per_dest_us: 164 },
+      { time: "03:50:49Z", batches: 25827, packets: 39891, dest_sends: 516540, avg_total_us: 104, avg_dedup_us: 0, avg_fanout_send_us: 102, avg_max_per_dest_us: 6, max_total_us: 1506, max_fanout_send_us: 1484, max_per_dest_us: 188 },
+      { time: "03:50:59Z", batches: 22684, packets: 35273, dest_sends: 453680, avg_total_us: 106, avg_dedup_us: 0, avg_fanout_send_us: 104, avg_max_per_dest_us: 7, max_total_us: 1428, max_fanout_send_us: 1403, max_per_dest_us: 389 },
+      { time: "03:51:09Z", batches: 25801, packets: 41555, dest_sends: 516020, avg_total_us: 108, avg_dedup_us: 0, avg_fanout_send_us: 106, avg_max_per_dest_us: 7, max_total_us: 1834, max_fanout_send_us: 1812, max_per_dest_us: 181 },
+      // -- proxy restart at 03:51:15 (PID 1277139 -> 1280027) --
+      { time: "03:51:25Z", batches: 23797, packets: 36250, dest_sends: 475940, avg_total_us: 105, avg_dedup_us: 2, avg_fanout_send_us: 102, avg_max_per_dest_us: 6, max_total_us: 1624, max_fanout_send_us: 1548, max_per_dest_us: 703 },
+      { time: "03:51:35Z", batches: 22594, packets: 34838, dest_sends: 451880, avg_total_us: 106, avg_dedup_us: 1, avg_fanout_send_us: 104, avg_max_per_dest_us: 7, max_total_us: 1346, max_fanout_send_us: 1325, max_per_dest_us: 340 },
+      { time: "03:51:45Z", batches: 20755, packets: 32472, dest_sends: 415100, avg_total_us: 108, avg_dedup_us: 1, avg_fanout_send_us: 106, avg_max_per_dest_us: 7, max_total_us:  885, max_fanout_send_us:  869, max_per_dest_us: 336 },
+      { time: "03:51:55Z", batches: 25586, packets: 37907, dest_sends: 511720, avg_total_us: 101, avg_dedup_us: 0, avg_fanout_send_us:  99, avg_max_per_dest_us: 6, max_total_us: 1170, max_fanout_send_us: 1154, max_per_dest_us: 113 },
+      { time: "03:52:05Z", batches: 22136, packets: 35549, dest_sends: 442720, avg_total_us: 109, avg_dedup_us: 0, avg_fanout_send_us: 107, avg_max_per_dest_us: 7, max_total_us: 2974, max_fanout_send_us: 2931, max_per_dest_us: 201 },
+      { time: "03:52:15Z", batches: 19330, packets: 31696, dest_sends: 386600, avg_total_us: 111, avg_dedup_us: 0, avg_fanout_send_us: 109, avg_max_per_dest_us: 7, max_total_us: 1519, max_fanout_send_us: 1505, max_per_dest_us: 333 },
+      { time: "03:52:25Z", batches: 24218, packets: 36477, dest_sends: 484360, avg_total_us: 102, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us:  970, max_fanout_send_us:  967, max_per_dest_us: 680 },
+      { time: "03:52:35Z", batches: 24344, packets: 36505, dest_sends: 486880, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 102, avg_max_per_dest_us: 6, max_total_us: 2009, max_fanout_send_us: 1976, max_per_dest_us: 116 },
+      { time: "03:52:45Z", batches: 27965, packets: 38939, dest_sends: 559300, avg_total_us:  94, avg_dedup_us: 0, avg_fanout_send_us:  93, avg_max_per_dest_us: 6, max_total_us: 1150, max_fanout_send_us: 1125, max_per_dest_us: 298 },
+      { time: "03:52:55Z", batches: 21155, packets: 33113, dest_sends: 423100, avg_total_us: 105, avg_dedup_us: 0, avg_fanout_send_us: 104, avg_max_per_dest_us: 7, max_total_us: 1487, max_fanout_send_us: 1455, max_per_dest_us: 135 },
+      { time: "03:53:05Z", batches: 20942, packets: 32953, dest_sends: 418840, avg_total_us: 105, avg_dedup_us: 1, avg_fanout_send_us: 103, avg_max_per_dest_us: 6, max_total_us: 1974, max_fanout_send_us: 1955, max_per_dest_us: 191 },
+      { time: "03:53:15Z", batches: 21804, packets: 32416, dest_sends: 436080, avg_total_us: 101, avg_dedup_us: 0, avg_fanout_send_us: 100, avg_max_per_dest_us: 6, max_total_us: 1255, max_fanout_send_us: 1236, max_per_dest_us: 260 },
+      { time: "03:53:25Z", batches: 20673, packets: 33073, dest_sends: 413460, avg_total_us: 109, avg_dedup_us: 1, avg_fanout_send_us: 107, avg_max_per_dest_us: 7, max_total_us: 1264, max_fanout_send_us: 1251, max_per_dest_us:  98 },
+      { time: "03:53:35Z", batches: 22965, packets: 34724, dest_sends: 459300, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us: 1014, max_fanout_send_us: 1004, max_per_dest_us: 197 },
+      { time: "03:53:45Z", batches: 20610, packets: 32252, dest_sends: 412200, avg_total_us: 106, avg_dedup_us: 0, avg_fanout_send_us: 104, avg_max_per_dest_us: 6, max_total_us: 1906, max_fanout_send_us: 1876, max_per_dest_us: 320 },
+      { time: "03:53:55Z", batches: 20202, packets: 30716, dest_sends: 404040, avg_total_us: 102, avg_dedup_us: 0, avg_fanout_send_us: 100, avg_max_per_dest_us: 6, max_total_us: 1193, max_fanout_send_us: 1167, max_per_dest_us: 241 },
+      { time: "03:54:05Z", batches: 22264, packets: 34013, dest_sends: 445280, avg_total_us: 104, avg_dedup_us: 1, avg_fanout_send_us: 102, avg_max_per_dest_us: 6, max_total_us: 1269, max_fanout_send_us: 1256, max_per_dest_us: 503 },
+      { time: "03:54:15Z", batches: 22569, packets: 34046, dest_sends: 451380, avg_total_us: 102, avg_dedup_us: 0, avg_fanout_send_us: 100, avg_max_per_dest_us: 6, max_total_us: 1373, max_fanout_send_us: 1355, max_per_dest_us: 127 },
+      { time: "03:54:25Z", batches: 21058, packets: 33809, dest_sends: 421160, avg_total_us: 109, avg_dedup_us: 1, avg_fanout_send_us: 107, avg_max_per_dest_us: 6, max_total_us: 1922, max_fanout_send_us: 1889, max_per_dest_us: 252 },
+      { time: "03:54:35Z", batches: 23624, packets: 36915, dest_sends: 472480, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 102, avg_max_per_dest_us: 6, max_total_us: 2357, max_fanout_send_us: 2318, max_per_dest_us: 178 },
+      { time: "03:54:45Z", batches: 19725, packets: 31157, dest_sends: 394500, avg_total_us: 106, avg_dedup_us: 0, avg_fanout_send_us: 104, avg_max_per_dest_us: 7, max_total_us: 1964, max_fanout_send_us: 1936, max_per_dest_us: 145 },
+      { time: "03:54:55Z", batches: 21210, packets: 34050, dest_sends: 424200, avg_total_us: 108, avg_dedup_us: 0, avg_fanout_send_us: 106, avg_max_per_dest_us: 6, max_total_us:  936, max_fanout_send_us:  921, max_per_dest_us: 144 },
+      { time: "03:55:05Z", batches: 22344, packets: 35288, dest_sends: 446880, avg_total_us: 107, avg_dedup_us: 0, avg_fanout_send_us: 105, avg_max_per_dest_us: 7, max_total_us: 3005, max_fanout_send_us: 2953, max_per_dest_us: 213 },
+      { time: "03:55:15Z", batches: 21678, packets: 33215, dest_sends: 433560, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us: 1590, max_fanout_send_us: 1561, max_per_dest_us: 149 },
+      { time: "03:55:25Z", batches: 22404, packets: 34175, dest_sends: 448080, avg_total_us: 103, avg_dedup_us: 0, avg_fanout_send_us: 101, avg_max_per_dest_us: 6, max_total_us: 1058, max_fanout_send_us: 1043, max_per_dest_us: 267 },
+      { time: "03:55:35Z", batches: 24289, packets: 35952, dest_sends: 485780, avg_total_us: 100, avg_dedup_us: 0, avg_fanout_send_us:  98, avg_max_per_dest_us: 6, max_total_us: 1864, max_fanout_send_us: 1831, max_per_dest_us: 403 },
+      { time: "03:55:45Z", batches: 19065, packets: 32064, dest_sends: 381300, avg_total_us: 112, avg_dedup_us: 0, avg_fanout_send_us: 110, avg_max_per_dest_us: 7, max_total_us: 2415, max_fanout_send_us: 2372, max_per_dest_us: 291 },
+      { time: "03:55:55Z", batches: 21583, packets: 34933, dest_sends: 431660, avg_total_us: 111, avg_dedup_us: 1, avg_fanout_send_us: 109, avg_max_per_dest_us: 7, max_total_us: 2389, max_fanout_send_us: 2343, max_per_dest_us: 175 },
+      { time: "03:56:05Z", batches: 23314, packets: 34955, dest_sends: 466280, avg_total_us: 102, avg_dedup_us: 0, avg_fanout_send_us: 100, avg_max_per_dest_us: 6, max_total_us: 1647, max_fanout_send_us: 1619, max_per_dest_us: 693 },
+      { time: "03:56:15Z", batches: 23206, packets: 35626, dest_sends: 464120, avg_total_us: 106, avg_dedup_us: 0, avg_fanout_send_us: 104, avg_max_per_dest_us: 7, max_total_us: 1508, max_fanout_send_us: 1483, max_per_dest_us: 130 },
+      { time: "03:56:25Z", batches: 23687, packets: 36400, dest_sends: 473740, avg_total_us: 106, avg_dedup_us: 0, avg_fanout_send_us: 104, avg_max_per_dest_us: 7, max_total_us: 1377, max_fanout_send_us: 1359, max_per_dest_us: 121 },
+      { time: "03:56:35Z", batches: 24494, packets: 37341, dest_sends: 489880, avg_total_us: 106, avg_dedup_us: 1, avg_fanout_send_us: 104, avg_max_per_dest_us: 7, max_total_us: 1932, max_fanout_send_us: 1893, max_per_dest_us: 286 },
+    ],
+  },
+  // Add additional runs below. Template:
+  // {
+  //   name: "Run N (YYYY-MM-DD) — <what changed>",
+  //   description: "<host, branch, dest count, window, any other context>",
+  //   samples: [
+  //     { time: "HH:MM:SSZ", batches: ..., packets: ..., dest_sends: ...,
+  //       avg_total_us: ..., avg_dedup_us: ..., avg_fanout_send_us: ..., avg_max_per_dest_us: ...,
+  //       max_total_us: ..., max_fanout_send_us: ..., max_per_dest_us: ... },
+  //     ...
+  //   ],
+  // },
+];
+
+// ============================================================
+// Chart palette + defaults (matched to latency_dashboard.html).
+// ============================================================
+const RUN_PALETTE = [
+  '#58a6ff', '#ff7b72', '#7ee787', '#ffa657', '#d2a8ff',
+  '#f0883e', '#f778ba', '#56d364', '#ffdf5d', '#a5d6ff',
+];
+const runColor = (i) => RUN_PALETTE[i % RUN_PALETTE.length];
+
+const CHART_DEFAULTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: { labels: { color: '#c9d1d9', font: { size: 10 }, boxWidth: 12 }, position: 'bottom' },
+    tooltip: { backgroundColor: '#0d1117', borderColor: '#30363d', borderWidth: 1, titleColor: '#58a6ff', bodyColor: '#c9d1d9' },
+  },
+  scales: {
+    x: { title: { display: true, text: 'Sample # (10s window within run)', color: '#8b949e', font: { size: 10 } }, ticks: { color: '#8b949e', font: { size: 10 }, maxTicksLimit: 20 }, grid: { color: '#21262d' } },
+    y: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' }, beginAtZero: true },
+  },
+};
+
+// ============================================================
+// Metrics. `group` decides which grid the chart goes into;
+// `summary` controls how the metric appears in the per-run table.
+// ============================================================
+const METRICS = [
+  // Average per-batch latencies — these are the steady-state ("typical batch") numbers.
+  {
+    id: 'avg_total_us', title: 'avg_total_us', unit: 'us', group: 'avgLatency', pick: s => s.avg_total_us,
+    what: 'Average <b>end-to-end time per batch</b> inside the window — from pulling a packet off the channel until <code>batch_send</code> returns. Covers dedup + fanout-send + bookkeeping.',
+    why:  'The headline "how fast do we forward a typical shred" number. Optimizations that reduce per-batch work should drop this directly.',
+  },
+  {
+    id: 'avg_fanout_send_us', title: 'avg_fanout_send_us', unit: 'us', group: 'avgLatency', pick: s => s.avg_fanout_send_us,
+    what: 'Average time spent <b>just in the sendmmsg fanout</b> per batch (one packet → ~20 destinations).',
+    why:  'Isolates the syscall/kernel-side cost from the rest. This is what the fanout optimization (batch_send + reused scratch) is supposed to flatten.',
+  },
+  {
+    id: 'avg_dedup_us', title: 'avg_dedup_us', unit: 'us', group: 'avgLatency', pick: s => s.avg_dedup_us,
+    what: 'Average time spent in the <b>shred-dedup bloom filter</b> per batch.',
+    why:  'Sanity check — dedup is bounded and shouldn\'t grow as fanout changes. If it moves, something is wrong elsewhere.',
+  },
+  {
+    id: 'avg_max_per_dest_us', title: 'avg_max_per_dest_us', unit: 'us', group: 'avgLatency', pick: s => s.avg_max_per_dest_us,
+    what: 'For each batch, find the <b>slowest of the ~20 destination sends</b>; then average that across all batches in the window.',
+    why:  'Tells you how staggered the destinations are in the typical batch. A fanout that ships to all dests in one syscall should compress this number.',
+  },
+
+  // Tail latencies — the worst single batch within each 10s window.
+  {
+    id: 'max_total_us', title: 'max_total_us', unit: 'us', group: 'maxLatency', pick: s => s.max_total_us,
+    what: 'The <b>worst single batch\'s total_us</b> in the 10s window.',
+    why:  'Tail latency — this is what causes intermittent send-side stalls. The point of the optimization is to keep this from spiking.',
+  },
+  {
+    id: 'max_fanout_send_us', title: 'max_fanout_send_us', unit: 'us', group: 'maxLatency', pick: s => s.max_fanout_send_us,
+    what: 'Worst <b>single-batch sendmmsg time</b> in the window.',
+    why:  'Pins tail spikes specifically to the fanout step (vs. dedup/scheduling). If <code>max_total</code> spikes track <code>max_fanout_send</code>, the kernel/socket path is the culprit.',
+  },
+  {
+    id: 'max_per_dest_us', title: 'max_per_dest_us', unit: 'us', group: 'maxLatency', pick: s => s.max_per_dest_us,
+    what: 'Worst <b>single destination send</b> in the window (one specific dest in one specific batch).',
+    why:  'A spike here without <code>max_fanout_send</code> moving means one slow remote / one bad NIC queue, not our code. Useful for distinguishing remote-side vs. proxy-side stalls.',
+  },
+
+  // Throughput — load context for the latency numbers.
+  {
+    id: 'batches', title: 'batches', unit: 'count', group: 'throughput', pick: s => s.batches,
+    what: '<b>Number of batches processed</b> in the 10s window (one batch ≈ one shred).',
+    why:  'Load level. Compare latency between runs only when batches/window are comparable.',
+  },
+  {
+    id: 'packets', title: 'packets', unit: 'count', group: 'throughput', pick: s => s.packets,
+    what: '<b>Packets in the window.</b> ≈ batches when shreds aren\'t coalesced.',
+    why:  'Cross-check on input rate. Divergence from <code>batches</code> indicates coalescing.',
+  },
+  {
+    id: 'dest_sends', title: 'dest_sends', unit: 'count', group: 'throughput', pick: s => s.dest_sends,
+    what: '<b>Total UDP sends</b> in the window = packets × destinations (~20).',
+    why:  'The real syscall pressure on the box. This is the unit the kernel cares about.',
+  },
+];
+
+// Quick stats: avg, p50, p99.
+function avg(arr)  { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0; }
+function quantile(sorted, q) {
+  if (sorted.length === 0) return 0;
+  const pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+function fmt(v, unit) {
+  if (typeof v !== 'number' || !isFinite(v)) return '–';
+  return Math.round(v).toLocaleString();
+}
+
+// Longest run sets the x-axis length; shorter runs' lines end early.
+const MAX_SAMPLES = Math.max(...RUNS.map(r => r.samples.length));
+const X_LABELS = Array.from({ length: MAX_SAMPLES }, (_, i) => String(i + 1));
+
+function buildDatasets(metric) {
+  return RUNS.map((run, i) => {
+    const data = run.samples.map(metric.pick);
+    while (data.length < MAX_SAMPLES) data.push(null);
+    return {
+      label: run.name,
+      data,
+      borderColor: runColor(i),
+      backgroundColor: runColor(i) + '22',
+      borderWidth: 1.4,
+      pointRadius: 1.5,
+      pointHoverRadius: 4,
+      tension: 0.15,
+      spanGaps: false,
+    };
+  });
+}
+
+function createChartCard(metric, gridEl) {
+  const card = document.createElement('div');
+  card.className = 'chart-card';
+  const what = metric.what ? `<div class="what"><b>What:</b> ${metric.what}</div>` : '';
+  const why  = metric.why  ? `<div class="why"><b>Why it matters:</b> ${metric.why}</div>` : '';
+  card.innerHTML = `<h3>${metric.title} <span style="color:#6e7681;font-weight:400;font-size:0.78rem;">(${metric.unit})</span></h3>${what}${why}<div class="chart-container"><canvas id="chart-${metric.id}"></canvas></div>`;
+  gridEl.appendChild(card);
+  new Chart(card.querySelector('canvas'), {
+    type: 'line',
+    data: { labels: X_LABELS, datasets: buildDatasets(metric) },
+    options: CHART_DEFAULTS,
+  });
+}
+
+const GRID_EL = {
+  avgLatency: document.getElementById('avgLatencyGrid'),
+  maxLatency: document.getElementById('maxLatencyGrid'),
+  throughput: document.getElementById('throughputGrid'),
+};
+METRICS.forEach(m => createChartCard(m, GRID_EL[m.group]));
+
+// ============================================================
+// Per-run summary table. For the headline latency metrics we also show
+// p50 / p99 across the window samples — those tails are exactly what the
+// fanout optimization is meant to flatten.
+// ============================================================
+const SUMMARY_TAIL_IDS = new Set(['avg_total_us', 'avg_fanout_send_us', 'max_total_us', 'max_fanout_send_us', 'max_per_dest_us']);
+
+function renderSummaryTable() {
+  // Two-row header: top row = metric banner (with unit); bottom row = stat (avg/p50/p99) across windows.
+  const topCols = [];
+  const subCols = [];
+  for (const m of METRICS) {
+    const span = SUMMARY_TAIL_IDS.has(m.id) ? 3 : 1;
+    topCols.push(`<th class="group-header" colspan="${span}" title="${m.what ? m.what.replace(/<[^>]+>/g, '') : ''}">${m.id}<span style="display:block;font-weight:400;color:#6e7681;font-size:0.65rem;text-transform:none;letter-spacing:0;">(${m.unit})</span></th>`);
+    if (SUMMARY_TAIL_IDS.has(m.id)) {
+      subCols.push(`<th class="stat" title="mean across the run's windows">avg</th>`);
+      subCols.push(`<th class="stat" title="median across the run's windows">p50</th>`);
+      subCols.push(`<th class="stat" title="99th percentile across the run's windows (≈ worst window)">p99</th>`);
+    } else {
+      subCols.push(`<th class="stat" title="mean across the run's windows">avg</th>`);
+    }
+  }
+  topCols.push(`<th class="group-header" rowspan="2">N<span style="display:block;font-weight:400;color:#6e7681;font-size:0.65rem;text-transform:none;letter-spacing:0;">windows</span></th>`);
+
+  const rows = RUNS.map((run, i) => {
+    const cells = [];
+    for (const m of METRICS) {
+      const vals = run.samples.map(m.pick);
+      cells.push(`<td>${fmt(avg(vals), m.unit)}</td>`);
+      if (SUMMARY_TAIL_IDS.has(m.id)) {
+        const sorted = [...vals].sort((a, b) => a - b);
+        cells.push(`<td>${fmt(quantile(sorted, 0.50), m.unit)}</td>`);
+        cells.push(`<td>${fmt(quantile(sorted, 0.99), m.unit)}</td>`);
+      }
+    }
+    cells.push(`<td>${run.samples.length}</td>`);
+    const dot = `<span class="run-dot" style="background:${runColor(i)}"></span>`;
+    return `<tr><td class="run-col" title="${run.description || ''}">${dot}${run.name}</td>${cells.join('')}</tr>`;
+  }).join('');
+
+  document.getElementById('summaryTableWrap').innerHTML = `
+    <table class="summary">
+      <thead>
+        <tr><th class="run-col" rowspan="2">Run</th>${topCols.join('')}</tr>
+        <tr>${subCols.join('')}</tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="note" style="margin-top:8px;">
+      Each cell aggregates across the run's ~10s windows. <b>avg</b> = mean across windows; <b>p50</b> = median window; <b>p99</b> ≈ the worst window of the run.
+      So <code>max_total_us &gt; p99</code> means "in the worst window of this run, the worst single batch took this long."
+    </p>`;
+}
+renderSummaryTable();
+</script>
+</body>
+</html>

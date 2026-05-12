@@ -1,8 +1,8 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, RwLock,
     },
     thread::{Builder, JoinHandle},
@@ -10,7 +10,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use crossbeam_channel::{Receiver, RecvError};
+use crossbeam_channel::{Receiver, RecvError, TrySendError};
 use dashmap::DashMap;
 use itertools::Itertools;
 use jito_protos::shredstream::{Entry as PbEntry, TraceShred};
@@ -43,6 +43,21 @@ pub const DEDUPER_FALSE_POSITIVE_RATE: f64 = 0.001;
 pub const DEDUPER_NUM_BITS: u64 = 637_534_199; // 76MB
 pub const DEDUPER_RESET_CYCLE: Duration = Duration::from_secs(5 * 60);
 
+/// Bounded capacity of each per-destination batch channel. When a worker
+/// can't keep up, additional batches are *dropped for that destination only*
+/// (counted in `worker_dropped_batches`). Fast destinations are unaffected.
+const DEST_CHANNEL_CAPACITY: usize = 1024;
+/// Initial scratch-buffer capacity for the per-destination send Vec.
+/// Sized for typical batches; the Vec will grow on demand and stay grown.
+const DEST_SCRATCH_INITIAL_CAPACITY: usize = 128;
+/// How often the dest-manager reconciles workers against the current
+/// `unioned_dest_sockets`.
+const DEST_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// One channel per active destination. Coordinator threads load a snapshot
+/// of this map and dispatch `Arc<PacketBatch>` to each sender.
+pub type DestSenderMap = HashMap<SocketAddr, crossbeam_channel::Sender<Arc<PacketBatch>>>;
+
 /// Bind to ports and start forwarding shreds
 #[allow(clippy::too_many_arguments)]
 pub fn start_forwarder_threads(
@@ -55,7 +70,7 @@ pub fn start_forwarder_threads(
     should_reconstruct_shreds: bool,
     entry_sender: Arc<Sender<PbEntry>>,
     debug_trace_shred: bool,
-    use_discovery_service: bool,
+    _use_discovery_service: bool,
     forward_stats: Arc<StreamerReceiveStats>,
     metrics: Arc<ShredMetrics>,
     shutdown_receiver: Receiver<()>,
@@ -131,6 +146,23 @@ pub fn start_forwarder_threads(
         thread_hdls.push(hdl);
     };
 
+    // Shared snapshot of (dest -> channel-sender-to-worker). Coordinator
+    // threads load this and dispatch each Arc<PacketBatch>. The dest-manager
+    // thread (below) is the only writer; coordinators are readers.
+    let dest_senders: Arc<ArcSwap<DestSenderMap>> =
+        Arc::new(ArcSwap::from_pointee(DestSenderMap::default()));
+
+    // Spawn the dest manager. It reconciles `dest_senders` against
+    // `unioned_dest_sockets` and owns the worker join handles.
+    let dest_mgr_hdl = start_dest_manager_thread(
+        unioned_dest_sockets.clone(),
+        dest_senders.clone(),
+        metrics.clone(),
+        shutdown_receiver.clone(),
+        exit.clone(),
+    );
+    thread_hdls.push(dest_mgr_hdl);
+
     sockets
         .into_iter()
         .chain(maybe_multicast_socket.into_iter().flatten())
@@ -151,26 +183,15 @@ pub fn start_forwarder_threads(
             );
 
             let deduper = deduper.clone();
-            let unioned_dest_sockets = unioned_dest_sockets.clone();
             let metrics = metrics.clone();
             let shutdown_receiver = shutdown_receiver.clone();
             let reconstruct_tx = reconstruct_tx.clone();
             let exit = exit.clone();
+            let dest_senders = dest_senders.clone();
 
             let send_thread = Builder::new()
                 .name(format!("ssPxyTx_{thread_id}"))
                 .spawn(move || {
-                    let send_socket =
-                        UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
-                            .expect("to bind to udp port for forwarding");
-                    let mut local_dest_sockets = unioned_dest_sockets.load();
-
-                    let refresh_subscribers_tick = if use_discovery_service {
-                        crossbeam_channel::tick(Duration::from_secs(30))
-                    } else {
-                        crossbeam_channel::tick(Duration::MAX)
-                    };
-
                     while !exit.load(Ordering::Relaxed) {
                         crossbeam_channel::select! {
                             // forward packets
@@ -178,8 +199,7 @@ pub fn start_forwarder_threads(
                                 let res = recv_from_channel_and_send_multiple_dest(
                                     maybe_packet_batch,
                                     &deduper,
-                                    &send_socket,
-                                    &local_dest_sockets,
+                                    &dest_senders,
                                     should_reconstruct_shreds,
                                     &reconstruct_tx,
                                     debug_trace_shred,
@@ -190,11 +210,6 @@ pub fn start_forwarder_threads(
                                 if res.is_err() {
                                     break;
                                 }
-                            }
-
-                            // refresh thread-local subscribers
-                            recv(refresh_subscribers_tick) -> _ => {
-                                local_dest_sockets = unioned_dest_sockets.load();
                             }
 
                             // handle shutdown (avoid using sleep since it can hang)
@@ -210,6 +225,239 @@ pub fn start_forwarder_threads(
             vec![listen_thread, send_thread]
         })
         .collect::<Vec<JoinHandle<()>>>()
+        .into_iter()
+        .chain(thread_hdls)
+        .collect()
+}
+
+/// Spawn a per-destination worker thread.
+///
+/// The worker owns its own `UdpSocket` (avoiding contention on a shared send
+/// buffer) and a reused scratch `Vec<(&'static [u8], &'static SocketAddr)>`
+/// so the steady-state send loop performs zero heap allocations.
+///
+/// Each received `Arc<PacketBatch>` is sent in a single `batch_send` call,
+/// which is `sendmmsg(2)` on Linux (one syscall for up to 1024 packets).
+fn spawn_dest_worker(
+    dest: SocketAddr,
+    metrics: Arc<ShredMetrics>,
+    exit: Arc<AtomicBool>,
+) -> (crossbeam_channel::Sender<Arc<PacketBatch>>, JoinHandle<()>) {
+    let (tx, rx) = crossbeam_channel::bounded::<Arc<PacketBatch>>(DEST_CHANNEL_CAPACITY);
+    // Box the destination so its address is stable for the lifetime of the
+    // thread — references into it can safely be transmuted to 'static.
+    let dest_boxed: Box<SocketAddr> = Box::new(dest);
+    let bind_addr = match dest {
+        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0),
+        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+    };
+    let name = format!("ssPxyDst_{}_{}", dest.ip(), dest.port());
+    let hdl = Builder::new()
+        .name(name)
+        .spawn(move || run_dest_worker(dest_boxed, bind_addr, rx, metrics, exit))
+        .expect("failed to spawn dest worker thread");
+    (tx, hdl)
+}
+
+/// The body of a per-destination worker thread.
+fn run_dest_worker(
+    dest_boxed: Box<SocketAddr>,
+    bind_addr: SocketAddr,
+    rx: crossbeam_channel::Receiver<Arc<PacketBatch>>,
+    metrics: Arc<ShredMetrics>,
+    exit: Arc<AtomicBool>,
+) {
+    let socket = match UdpSocket::bind(bind_addr) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("dest worker for {} failed to bind: {e}", *dest_boxed);
+            return;
+        }
+    };
+
+    // Reused scratch: (&packet_data, &dest_addr). The 'static lifetime is a
+    // *phantom* — see SAFETY notes at each push. We `clear()` before every
+    // function exit, so no reference outlives its source.
+    let mut scratch: Vec<(&'static [u8], &'static SocketAddr)> =
+        Vec::with_capacity(DEST_SCRATCH_INITIAL_CAPACITY);
+
+    // Stable pointer to the destination — Box keeps it pinned for the
+    // lifetime of this thread.
+    let dest_ref: &SocketAddr = &dest_boxed;
+    // SAFETY: dest_ref lives as long as this thread; this transmute extends
+    // its lifetime to 'static for storage purposes only. The Vec is cleared
+    // before the function returns.
+    let dest_static: &'static SocketAddr = unsafe { std::mem::transmute(dest_ref) };
+
+    let trace_on = log_enabled!(Level::Trace);
+
+    while !exit.load(Ordering::Relaxed) {
+        match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(batch) => {
+                debug_assert!(scratch.is_empty());
+                let t_send = trace_on.then(Instant::now);
+                let batch_packet_count = batch.len();
+
+                for pkt in batch.iter() {
+                    if let Some(data) = pkt.data(..) {
+                        // SAFETY: `data` borrows from `batch`, which is held
+                        // for the duration of this loop iteration. We clear
+                        // `scratch` before this iteration ends, so the
+                        // transmuted 'static reference never escapes.
+                        let data_static: &'static [u8] = unsafe { std::mem::transmute(data) };
+                        scratch.push((data_static, dest_static));
+                    }
+                }
+
+                let to_send = scratch.len() as u64;
+                match batch_send(&socket, &scratch) {
+                    Ok(()) => {
+                        metrics
+                            .success_forward
+                            .fetch_add(to_send, Ordering::Relaxed);
+                    }
+                    Err(SendPktsError::IoError(err, num_failed)) => {
+                        metrics
+                            .fail_forward
+                            .fetch_add(num_failed as u64, Ordering::Relaxed);
+                        metrics
+                            .success_forward
+                            .fetch_add(to_send.saturating_sub(num_failed as u64), Ordering::Relaxed);
+                        error!(
+                            "dest worker for {} failed batch of {to_send}: {num_failed} failed. Error: {err}",
+                            *dest_boxed
+                        );
+                    }
+                }
+                scratch.clear();
+
+                if let Some(t) = t_send {
+                    let send_us = t.elapsed().as_micros() as u64;
+                    metrics.worker_batches.fetch_add(1, Ordering::Relaxed);
+                    metrics
+                        .worker_send_us_sum
+                        .fetch_add(send_us, Ordering::Relaxed);
+                    metrics
+                        .worker_packets_sent
+                        .fetch_add(batch_packet_count as u64, Ordering::Relaxed);
+                    update_max_atomic(&metrics.worker_send_us_max, send_us);
+                }
+
+                drop(batch);
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    info!("Exiting dest worker for {}.", *dest_boxed);
+    // scratch is dropped here — it's already empty.
+}
+
+/// Reconciles per-destination worker threads against the current set of
+/// destinations published in `unioned_dest_sockets`. Spawns new workers when
+/// destinations appear, drops senders when destinations are removed (which
+/// causes the worker thread to exit on channel disconnect).
+fn start_dest_manager_thread(
+    unioned_dest_sockets: Arc<ArcSwap<Vec<SocketAddr>>>,
+    dest_senders: Arc<ArcSwap<DestSenderMap>>,
+    metrics: Arc<ShredMetrics>,
+    shutdown_receiver: Receiver<()>,
+    exit: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    Builder::new()
+        .name("ssPxyDstMgr".to_string())
+        .spawn(move || {
+            let tick = crossbeam_channel::tick(DEST_RECONCILE_INTERVAL);
+            // Owned handles & senders, kept in sync with the published map.
+            // We hold senders here so they outlive any in-flight broadcast
+            // until the worker has fully drained.
+            let mut handles: HashMap<SocketAddr, JoinHandle<()>> = HashMap::new();
+            let mut owned: DestSenderMap = DestSenderMap::default();
+
+            // Run one reconciliation immediately so workers exist before the
+            // first packet arrives.
+            reconcile_dest_workers(
+                &unioned_dest_sockets,
+                &dest_senders,
+                &mut owned,
+                &mut handles,
+                &metrics,
+                &exit,
+            );
+
+            while !exit.load(Ordering::Relaxed) {
+                crossbeam_channel::select! {
+                    recv(tick) -> _ => {
+                        reconcile_dest_workers(
+                            &unioned_dest_sockets,
+                            &dest_senders,
+                            &mut owned,
+                            &mut handles,
+                            &metrics,
+                            &exit,
+                        );
+                    }
+                    recv(shutdown_receiver) -> _ => break,
+                }
+            }
+
+            // Shutdown: drop all senders so workers see Disconnected and exit.
+            drop(owned);
+            dest_senders.store(Arc::new(DestSenderMap::default()));
+            for (dest, h) in handles.drain() {
+                if let Err(e) = h.join() {
+                    warn!("dest worker {dest} join failed: {e:?}");
+                }
+            }
+            info!("Exiting dest manager.");
+        })
+        .unwrap()
+}
+
+fn reconcile_dest_workers(
+    unioned_dest_sockets: &ArcSwap<Vec<SocketAddr>>,
+    dest_senders: &ArcSwap<DestSenderMap>,
+    owned: &mut DestSenderMap,
+    handles: &mut HashMap<SocketAddr, JoinHandle<()>>,
+    metrics: &Arc<ShredMetrics>,
+    exit: &Arc<AtomicBool>,
+) {
+    let desired = unioned_dest_sockets.load();
+    let desired_set: HashSet<SocketAddr> = desired.iter().copied().collect();
+
+    // Remove workers whose destination is gone.
+    let to_remove: Vec<SocketAddr> = owned
+        .keys()
+        .filter(|d| !desired_set.contains(d))
+        .copied()
+        .collect();
+    for dest in to_remove {
+        owned.remove(&dest);
+        // Don't join yet — the worker thread may still be draining. It will
+        // exit on Disconnected; we'll join on shutdown.
+        if let Some(h) = handles.remove(&dest) {
+            // Detach: the JoinHandle is dropped, which is fine — Rust threads
+            // continue running. The thread will see channel disconnect and exit.
+            drop(h);
+        }
+        info!("dest worker removed: {dest}");
+    }
+
+    // Spawn workers for new destinations.
+    for dest in desired_set.iter() {
+        if !owned.contains_key(dest) {
+            let (tx, hdl) = spawn_dest_worker(*dest, metrics.clone(), exit.clone());
+            owned.insert(*dest, tx);
+            handles.insert(*dest, hdl);
+            info!("dest worker spawned: {dest}");
+        }
+    }
+
+    // Publish a fresh snapshot to coordinators.
+    dest_senders.store(Arc::new(owned.clone()));
+    metrics
+        .worker_count
+        .store(owned.len(), Ordering::Relaxed);
 }
 
 /// Lock-free monotonic max update.
@@ -223,21 +471,25 @@ fn update_max_atomic(cell: &AtomicU64, val: u64) {
     }
 }
 
-/// Broadcasts the same packet to multiple recipients, parses it into a Shred if possible,
-/// and stores that shred in `all_shreds`.
+/// Receives a `PacketBatch` from a listener thread, deduplicates it, updates
+/// per-source stats, then dispatches the batch (wrapped in `Arc`) to all
+/// per-destination worker threads.
+///
+/// The actual UDP send happens in those worker threads in parallel — see
+/// `run_dest_worker`. This function performs only channel sends in its
+/// "fanout" phase, so latency is independent of the number of destinations.
 #[allow(clippy::too_many_arguments)]
 fn recv_from_channel_and_send_multiple_dest(
     maybe_packet_batch: Result<PacketBatch, RecvError>,
     deduper: &RwLock<Deduper<2, [u8]>>,
-    send_socket: &UdpSocket,
-    local_dest_sockets: &[SocketAddr],
+    dest_senders: &ArcSwap<DestSenderMap>,
     should_reconstruct_shreds: bool,
     reconstruct_tx: &crossbeam_channel::Sender<PacketBatch>,
     debug_trace_shred: bool,
     metrics: &ShredMetrics,
 ) -> Result<(), ShredstreamProxyError> {
-    // All forward-perf instrumentation is gated on trace level: when off, no
-    // Instant::now() calls, no atomic accumulator updates, and no trace! emission.
+    // All forward-perf instrumentation is gated on trace level: when off,
+    // no Instant::now() calls and no atomic accumulator updates.
     let trace_on = log_enabled!(Level::Trace);
     let mark = || -> Option<Instant> { trace_on.then(Instant::now) };
     let elapsed_us = |t: Option<Instant>| -> u64 {
@@ -266,8 +518,11 @@ fn recv_from_channel_and_send_multiple_dest(
         &mut packet_batch_vec,
     );
     let dedup_us = elapsed_us(t_before_dedup);
+    metrics
+        .duplicate
+        .fetch_add(num_deduped, Ordering::Relaxed);
 
-    // Store stats for each Packet
+    // Per-source packet stats (discarded vs. not).
     let t_before_stats = mark();
     packet_batch_vec.iter().for_each(|batch| {
         batch.iter().for_each(|packet| {
@@ -288,58 +543,37 @@ fn recv_from_channel_and_send_multiple_dest(
     });
     let stats_us = elapsed_us(t_before_stats);
 
-    // send out to RPCs
-    let num_dest = local_dest_sockets.len() as u64;
-    let t_before_fanout = mark();
-    let mut max_per_dest_us: u64 = 0;
-    local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
-        let t_dest_start = mark();
-        let packets_with_dest = packet_batch_vec[0]
-            .iter()
-            .filter_map(|pkt| {
-                let data = pkt.data(..)?;
-                let addr = outgoing_socketaddr;
-                Some((data, addr))
-            })
-            .collect::<Vec<(&[u8], &SocketAddr)>>();
+    // Dispatch to per-destination worker threads. After this point all
+    // workers share a single Arc<PacketBatch> — no clone of the underlying
+    // packet data is needed. The Vec is drained so the inner PacketBatch
+    // can be wrapped in Arc without copying.
+    let packet_batch = packet_batch_vec
+        .drain(..)
+        .next()
+        .expect("packet_batch_vec invariant: exactly one entry");
+    let arc_batch = Arc::new(packet_batch);
 
-        match batch_send(send_socket, &packets_with_dest) {
-            Ok(_) => {
-                metrics
-                    .success_forward
-                    .fetch_add(packets_with_dest.len() as u64, Ordering::Relaxed);
-                metrics.duplicate.fetch_add(num_deduped, Ordering::Relaxed);
-            }
-            Err(SendPktsError::IoError(err, num_failed)) => {
-                metrics
-                    .fail_forward
-                    .fetch_add(packets_with_dest.len() as u64, Ordering::Relaxed);
-                metrics
-                    .duplicate
-                    .fetch_add(num_failed as u64, Ordering::Relaxed);
-                error!(
-                    "Failed to send batch of size {} to {outgoing_socketaddr:?}. \
-                     {num_failed} packets failed. Error: {err}",
-                    packets_with_dest.len()
-                );
-            }
+    let t_before_fanout = mark();
+    let senders_snapshot = dest_senders.load();
+    let num_dest = senders_snapshot.len() as u64;
+    let mut dropped: u64 = 0;
+    for sender in senders_snapshot.values() {
+        match sender.try_send(arc_batch.clone()) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => dropped += 1,
+            Err(TrySendError::Disconnected(_)) => dropped += 1,
         }
-        if let Some(t) = t_dest_start {
-            let per_dest_us = t.elapsed().as_micros() as u64;
-            if per_dest_us > max_per_dest_us {
-                max_per_dest_us = per_dest_us;
-            }
-        }
-    });
+    }
+    if dropped > 0 {
+        metrics
+            .worker_dropped_batches
+            .fetch_add(dropped, Ordering::Relaxed);
+    }
 
     if trace_on {
-        let fanout_send_us = elapsed_us(t_before_fanout);
+        let fanout_dispatch_us = elapsed_us(t_before_fanout);
         let total_us = elapsed_us(t_batch_start);
 
-        // Aggregate into ShredMetrics; reported on the periodic tick as
-        // `shredstream_proxy-forwarding_perf`. No per-batch log is emitted —
-        // the aggregated datapoint covers throughput + latency over the
-        // configured reporting interval.
         metrics.forward_batches.fetch_add(1, Ordering::Relaxed);
         metrics
             .forward_packets_in_batches
@@ -353,26 +587,26 @@ fn recv_from_channel_and_send_multiple_dest(
         metrics
             .forward_dedup_us_sum
             .fetch_add(dedup_us, Ordering::Relaxed);
+        // Note: in the worker-based architecture, `forward_fanout_send_us`
+        // measures only the dispatch cost (channel try_send * D), not the
+        // actual UDP send. The UDP send latency is reported separately as
+        // `worker_send_us_*`.
         metrics
             .forward_fanout_send_us_sum
-            .fetch_add(fanout_send_us, Ordering::Relaxed);
+            .fetch_add(fanout_dispatch_us, Ordering::Relaxed);
         metrics
             .forward_stats_us_sum
             .fetch_add(stats_us, Ordering::Relaxed);
         metrics
             .forward_reconstruct_clone_us_sum
             .fetch_add(reconstruct_clone_us, Ordering::Relaxed);
-        metrics
-            .forward_max_per_dest_us_sum
-            .fetch_add(max_per_dest_us, Ordering::Relaxed);
         update_max_atomic(&metrics.forward_total_us_max, total_us);
-        update_max_atomic(&metrics.forward_fanout_send_us_max, fanout_send_us);
-        update_max_atomic(&metrics.forward_per_dest_us_max, max_per_dest_us);
+        update_max_atomic(&metrics.forward_fanout_send_us_max, fanout_dispatch_us);
     }
 
-    // Count TraceShred shreds
+    // Count TraceShred shreds. Borrow the Arc'd batch directly.
     if debug_trace_shred {
-        packet_batch_vec[0]
+        arc_batch
             .iter()
             .filter_map(|p| TraceShred::decode(p.data(..)?).ok())
             .filter(|t| t.created_at.is_some())
@@ -573,10 +807,27 @@ pub struct ShredMetrics {
     pub forward_stats_us_sum: AtomicU64,
     /// Sum of reconstruct clone + try_send time per batch (microseconds)
     pub forward_reconstruct_clone_us_sum: AtomicU64,
-    /// Sum of the slowest single-destination send per batch (microseconds)
+    /// Sum of the slowest single-destination send per batch (microseconds).
+    /// Legacy field — no longer populated in the worker-based architecture.
     pub forward_max_per_dest_us_sum: AtomicU64,
-    /// Max single-destination send time observed (microseconds)
+    /// Max single-destination send time observed (microseconds).
+    /// Legacy field — no longer populated in the worker-based architecture.
     pub forward_per_dest_us_max: AtomicU64,
+
+    // per-destination worker metrics (per reporting interval; reset on tick)
+    /// Number of currently-active worker threads (one per destination).
+    pub worker_count: AtomicUsize,
+    /// Number of batches processed by all workers combined.
+    pub worker_batches: AtomicU64,
+    /// Sum of batch_send wall-clock per worker per batch (microseconds).
+    pub worker_send_us_sum: AtomicU64,
+    /// Max batch_send wall-clock observed in any worker (microseconds).
+    pub worker_send_us_max: AtomicU64,
+    /// Sum of packet counts processed by workers (for avg-per-worker calc).
+    pub worker_packets_sent: AtomicU64,
+    /// Number of times a dispatch was dropped because the worker's bounded
+    /// channel was full or disconnected. Backpressure indicator.
+    pub worker_dropped_batches: AtomicU64,
 
     // cumulative metrics (persist after reset)
     pub agg_received_cumulative: AtomicU64,
@@ -619,6 +870,12 @@ impl ShredMetrics {
             forward_reconstruct_clone_us_sum: Default::default(),
             forward_max_per_dest_us_sum: Default::default(),
             forward_per_dest_us_max: Default::default(),
+            worker_count: AtomicUsize::new(0),
+            worker_batches: Default::default(),
+            worker_send_us_sum: Default::default(),
+            worker_send_us_max: Default::default(),
+            worker_packets_sent: Default::default(),
+            worker_dropped_batches: Default::default(),
             agg_received_cumulative: Default::default(),
             agg_success_forward_cumulative: Default::default(),
             agg_fail_forward_cumulative: Default::default(),
@@ -708,37 +965,58 @@ impl ShredMetrics {
         let reconstruct_us = self
             .forward_reconstruct_clone_us_sum
             .load(Ordering::Relaxed);
-        let max_per_dest_sum_us = self.forward_max_per_dest_us_sum.load(Ordering::Relaxed);
         let div = batches;
+        let dropped = self.worker_dropped_batches.load(Ordering::Relaxed);
         datapoint_info!(
             "shredstream_proxy-forwarding_perf",
             ("batches", batches as i64, i64),
             ("packets", packets as i64, i64),
             ("dest_sends", dest_sends as i64, i64),
+            ("worker_count", self.worker_count.load(Ordering::Relaxed) as i64, i64),
+            ("worker_dropped_batches", dropped as i64, i64),
             ("avg_packets_per_batch", (packets / div) as i64, i64),
             ("avg_dests_per_batch", (dest_sends / div) as i64, i64),
             ("avg_total_us", (total_us / div) as i64, i64),
             ("avg_dedup_us", (dedup_us / div) as i64, i64),
-            ("avg_fanout_send_us", (fanout_us / div) as i64, i64),
+            ("avg_fanout_dispatch_us", (fanout_us / div) as i64, i64),
             ("avg_stats_us", (stats_us / div) as i64, i64),
             ("avg_reconstruct_clone_us", (reconstruct_us / div) as i64, i64),
-            ("avg_max_per_dest_us", (max_per_dest_sum_us / div) as i64, i64),
             (
                 "max_total_us",
                 self.forward_total_us_max.load(Ordering::Relaxed) as i64,
                 i64
             ),
             (
-                "max_fanout_send_us",
+                "max_fanout_dispatch_us",
                 self.forward_fanout_send_us_max.load(Ordering::Relaxed) as i64,
                 i64
             ),
-            (
-                "max_per_dest_us",
-                self.forward_per_dest_us_max.load(Ordering::Relaxed) as i64,
-                i64
-            ),
         );
+
+        // Worker-side metrics (per-destination send latency). These are the
+        // numbers that should improve after optimizations #1/#2/#3.
+        let worker_batches = self.worker_batches.load(Ordering::Relaxed);
+        if worker_batches > 0 {
+            let wdiv = worker_batches;
+            let w_send_us = self.worker_send_us_sum.load(Ordering::Relaxed);
+            let w_packets = self.worker_packets_sent.load(Ordering::Relaxed);
+            datapoint_info!(
+                "shredstream_proxy-worker_perf",
+                ("worker_batches", worker_batches as i64, i64),
+                ("worker_packets_sent", w_packets as i64, i64),
+                ("avg_worker_send_us", (w_send_us / wdiv) as i64, i64),
+                (
+                    "max_worker_send_us",
+                    self.worker_send_us_max.load(Ordering::Relaxed) as i64,
+                    i64
+                ),
+                (
+                    "avg_worker_packets_per_batch",
+                    (w_packets / wdiv) as i64,
+                    i64
+                ),
+            );
+        }
     }
 
     /// resets current values, increments cumulative values
@@ -771,6 +1049,13 @@ impl ShredMetrics {
         self.forward_max_per_dest_us_sum
             .store(0, Ordering::Relaxed);
         self.forward_per_dest_us_max.store(0, Ordering::Relaxed);
+
+        // worker-side counters
+        self.worker_batches.store(0, Ordering::Relaxed);
+        self.worker_send_us_sum.store(0, Ordering::Relaxed);
+        self.worker_send_us_max.store(0, Ordering::Relaxed);
+        self.worker_packets_sent.store(0, Ordering::Relaxed);
+        self.worker_dropped_batches.store(0, Ordering::Relaxed);
     }
 }
 
@@ -779,19 +1064,25 @@ mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         str::FromStr,
-        sync::{Arc, Mutex, RwLock},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex, RwLock,
+        },
         thread,
         thread::sleep,
         time::Duration,
     };
 
+    use arc_swap::ArcSwap;
     use solana_perf::{
         deduper::Deduper,
         packet::{Meta, Packet, PacketBatch},
     };
     use solana_sdk::packet::{PacketFlags, PACKET_DATA_SIZE};
 
-    use crate::forwarder::{recv_from_channel_and_send_multiple_dest, ShredMetrics};
+    use crate::forwarder::{
+        recv_from_channel_and_send_multiple_dest, spawn_dest_worker, DestSenderMap, ShredMetrics,
+    };
 
     fn listen_and_collect(listen_socket: UdpSocket, received_packets: Arc<Mutex<Vec<Vec<u8>>>>) {
         let mut buf = [0u8; PACKET_DATA_SIZE];
@@ -844,8 +1135,6 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let udp_sender = UdpSocket::bind("0.0.0.0:10000").unwrap();
-
         // spawn listeners
         test_listeners
             .iter()
@@ -855,20 +1144,31 @@ mod tests {
                 thread::spawn(move || listen_and_collect(socket, to_receive));
             });
 
+        // Spawn one worker per destination and build the dest_senders snapshot
+        // the same way the dest manager would in production.
+        let metrics = Arc::new(ShredMetrics::default());
+        let exit = Arc::new(AtomicBool::new(false));
+        let mut map = DestSenderMap::default();
+        let mut worker_handles = Vec::new();
+        for dest in &dest_socketaddrs {
+            let (tx, hdl) = spawn_dest_worker(*dest, metrics.clone(), exit.clone());
+            map.insert(*dest, tx);
+            worker_handles.push(hdl);
+        }
+        let dest_senders = ArcSwap::from_pointee(map);
+
         let (reconstruct_tx, _reconstruct_rx) = crossbeam_channel::bounded(10_240);
-        // send packets
         recv_from_channel_and_send_multiple_dest(
             packet_receiver.recv(),
             &Arc::new(RwLock::new(Deduper::<2, [u8]>::new(
                 &mut rand::thread_rng(),
                 crate::forwarder::DEDUPER_NUM_BITS,
             ))),
-            &udp_sender,
-            &Arc::new(dest_socketaddrs),
+            &dest_senders,
             true,
             &reconstruct_tx,
             false,
-            &Arc::new(ShredMetrics::default()),
+            &metrics,
         )
         .unwrap();
 
@@ -894,8 +1194,16 @@ mod tests {
         assert_eq!(
             received
                 .iter()
-                .fold(0, |acc, elem| acc + elem.lock().unwrap().len()),
+                .fold(0, |acc, elem| elem.lock().unwrap().len() + acc),
             6
         );
+
+        // Signal workers to exit and join.
+        exit.store(true, Ordering::Relaxed);
+        // Drop senders so workers see Disconnected if they're between recv timeouts.
+        drop(dest_senders);
+        for h in worker_handles {
+            h.join().unwrap();
+        }
     }
 }
