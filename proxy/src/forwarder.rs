@@ -6,7 +6,7 @@ use std::{
         Arc, RwLock,
     },
     thread::{Builder, JoinHandle},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use arc_swap::ArcSwap;
@@ -14,7 +14,7 @@ use crossbeam_channel::{Receiver, RecvError};
 use dashmap::DashMap;
 use itertools::Itertools;
 use jito_protos::shredstream::{Entry as PbEntry, TraceShred};
-use log::{debug, error, info, warn};
+use log::{error, info, log_enabled, trace, warn, Level};
 use prost::Message;
 use solana_client::client_error::reqwest;
 use solana_ledger::shred::ReedSolomonCache;
@@ -212,6 +212,17 @@ pub fn start_forwarder_threads(
         .collect::<Vec<JoinHandle<()>>>()
 }
 
+/// Lock-free monotonic max update.
+fn update_max_atomic(cell: &AtomicU64, val: u64) {
+    let mut prev = cell.load(Ordering::Relaxed);
+    while val > prev {
+        match cell.compare_exchange_weak(prev, val, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => prev = observed,
+        }
+    }
+}
+
 /// Broadcasts the same packet to multiple recipients, parses it into a Shred if possible,
 /// and stores that shred in `all_shreds`.
 #[allow(clippy::too_many_arguments)]
@@ -225,28 +236,39 @@ fn recv_from_channel_and_send_multiple_dest(
     debug_trace_shred: bool,
     metrics: &ShredMetrics,
 ) -> Result<(), ShredstreamProxyError> {
+    // All forward-perf instrumentation is gated on trace level: when off, no
+    // Instant::now() calls, no atomic accumulator updates, and no trace! emission.
+    let trace_on = log_enabled!(Level::Trace);
+    let mark = || -> Option<Instant> { trace_on.then(Instant::now) };
+    let elapsed_us = |t: Option<Instant>| -> u64 {
+        t.map(|t| t.elapsed().as_micros() as u64).unwrap_or(0)
+    };
+
+    let t_batch_start = mark();
     let packet_batch = maybe_packet_batch.map_err(ShredstreamProxyError::RecvError)?;
     let trace_shred_received_time = SystemTime::now();
+    let batch_packet_count = packet_batch.len();
     metrics
         .received
-        .fetch_add(packet_batch.len() as u64, Ordering::Relaxed);
-    debug!(
-        "Got batch of {} packets, total size in bytes: {}",
-        packet_batch.len(),
-        packet_batch.iter().map(|x| x.meta().size).sum::<usize>()
-    );
+        .fetch_add(batch_packet_count as u64, Ordering::Relaxed);
 
+    let t_before_reconstruct = mark();
     if should_reconstruct_shreds {
         let _ = reconstruct_tx.try_send(packet_batch.clone());
     }
+    let reconstruct_clone_us = elapsed_us(t_before_reconstruct);
 
     let mut packet_batch_vec = vec![packet_batch];
 
+    let t_before_dedup = mark();
     let num_deduped = solana_perf::deduper::dedup_packets_and_count_discards(
         &deduper.read().unwrap(),
         &mut packet_batch_vec,
     );
+    let dedup_us = elapsed_us(t_before_dedup);
+
     // Store stats for each Packet
+    let t_before_stats = mark();
     packet_batch_vec.iter().for_each(|batch| {
         batch.iter().for_each(|packet| {
             metrics
@@ -264,9 +286,14 @@ fn recv_from_channel_and_send_multiple_dest(
                 });
         });
     });
+    let stats_us = elapsed_us(t_before_stats);
 
     // send out to RPCs
+    let num_dest = local_dest_sockets.len() as u64;
+    let t_before_fanout = mark();
+    let mut max_per_dest_us: u64 = 0;
     local_dest_sockets.iter().for_each(|outgoing_socketaddr| {
+        let t_dest_start = mark();
         let packets_with_dest = packet_batch_vec[0]
             .iter()
             .filter_map(|pkt| {
@@ -297,7 +324,64 @@ fn recv_from_channel_and_send_multiple_dest(
                 );
             }
         }
+        if let Some(t) = t_dest_start {
+            let per_dest_us = t.elapsed().as_micros() as u64;
+            if per_dest_us > max_per_dest_us {
+                max_per_dest_us = per_dest_us;
+            }
+        }
     });
+
+    if trace_on {
+        let fanout_send_us = elapsed_us(t_before_fanout);
+        let total_us = elapsed_us(t_batch_start);
+
+        // Per-batch trace breakdown. Format is stable & machine-parseable
+        // for offline extraction.
+        trace!(
+            "fwd_batch packets={} dests={} total_us={} dedup_us={} fanout_send_us={} \
+             max_per_dest_us={} stats_us={} reconstruct_clone_us={} deduped={}",
+            batch_packet_count,
+            num_dest,
+            total_us,
+            dedup_us,
+            fanout_send_us,
+            max_per_dest_us,
+            stats_us,
+            reconstruct_clone_us,
+            num_deduped,
+        );
+
+        // Aggregate into ShredMetrics; reported on the periodic tick.
+        metrics.forward_batches.fetch_add(1, Ordering::Relaxed);
+        metrics
+            .forward_packets_in_batches
+            .fetch_add(batch_packet_count as u64, Ordering::Relaxed);
+        metrics
+            .forward_dest_send_count
+            .fetch_add(num_dest, Ordering::Relaxed);
+        metrics
+            .forward_total_us_sum
+            .fetch_add(total_us, Ordering::Relaxed);
+        metrics
+            .forward_dedup_us_sum
+            .fetch_add(dedup_us, Ordering::Relaxed);
+        metrics
+            .forward_fanout_send_us_sum
+            .fetch_add(fanout_send_us, Ordering::Relaxed);
+        metrics
+            .forward_stats_us_sum
+            .fetch_add(stats_us, Ordering::Relaxed);
+        metrics
+            .forward_reconstruct_clone_us_sum
+            .fetch_add(reconstruct_clone_us, Ordering::Relaxed);
+        metrics
+            .forward_max_per_dest_us_sum
+            .fetch_add(max_per_dest_us, Ordering::Relaxed);
+        update_max_atomic(&metrics.forward_total_us_max, total_us);
+        update_max_atomic(&metrics.forward_fanout_send_us_max, fanout_send_us);
+        update_max_atomic(&metrics.forward_per_dest_us_max, max_per_dest_us);
+    }
 
     // Count TraceShred shreds
     if debug_trace_shred {
@@ -481,6 +565,32 @@ pub struct ShredMetrics {
     /// Number of times we couldn't find the previous DATA_COMPLETE_SHRED flag but tried to deshred+deserialize, and failed
     pub unknown_start_position_error_count: AtomicU64,
 
+    // forwarding-perf metrics (per reporting interval; reset on each tick)
+    /// Number of packet batches handled by the forwarder
+    pub forward_batches: AtomicU64,
+    /// Sum of packet counts across all batches (avg-packets-per-batch = this / forward_batches)
+    pub forward_packets_in_batches: AtomicU64,
+    /// Sum of destination-sends across all batches (fanout multiplier = this / forward_batches)
+    pub forward_dest_send_count: AtomicU64,
+    /// Sum of total per-batch handling time (microseconds)
+    pub forward_total_us_sum: AtomicU64,
+    /// Max per-batch handling time observed (microseconds)
+    pub forward_total_us_max: AtomicU64,
+    /// Sum of dedup time per batch (microseconds)
+    pub forward_dedup_us_sum: AtomicU64,
+    /// Sum of fanout-send time per batch (microseconds) — all destinations
+    pub forward_fanout_send_us_sum: AtomicU64,
+    /// Max fanout-send time observed (microseconds)
+    pub forward_fanout_send_us_max: AtomicU64,
+    /// Sum of per-packet stats-update time per batch (microseconds)
+    pub forward_stats_us_sum: AtomicU64,
+    /// Sum of reconstruct clone + try_send time per batch (microseconds)
+    pub forward_reconstruct_clone_us_sum: AtomicU64,
+    /// Sum of the slowest single-destination send per batch (microseconds)
+    pub forward_max_per_dest_us_sum: AtomicU64,
+    /// Max single-destination send time observed (microseconds)
+    pub forward_per_dest_us_max: AtomicU64,
+
     // cumulative metrics (persist after reset)
     pub agg_received_cumulative: AtomicU64,
     pub agg_success_forward_cumulative: AtomicU64,
@@ -510,6 +620,18 @@ impl ShredMetrics {
             fec_recovery_error_count: Default::default(),
             bincode_deserialize_error_count: Default::default(),
             unknown_start_position_error_count: Default::default(),
+            forward_batches: Default::default(),
+            forward_packets_in_batches: Default::default(),
+            forward_dest_send_count: Default::default(),
+            forward_total_us_sum: Default::default(),
+            forward_total_us_max: Default::default(),
+            forward_dedup_us_sum: Default::default(),
+            forward_fanout_send_us_sum: Default::default(),
+            forward_fanout_send_us_max: Default::default(),
+            forward_stats_us_sum: Default::default(),
+            forward_reconstruct_clone_us_sum: Default::default(),
+            forward_max_per_dest_us_sum: Default::default(),
+            forward_per_dest_us_max: Default::default(),
             agg_received_cumulative: Default::default(),
             agg_success_forward_cumulative: Default::default(),
             agg_fail_forward_cumulative: Default::default(),
@@ -582,6 +704,54 @@ impl ShredMetrics {
                 );
                 false
             });
+
+        // Forwarding perf: per-interval throughput + latency breakdown.
+        // Only populated when RUST_LOG=trace is active; skip emission otherwise
+        // so we don't flood Influx with zero rows.
+        let batches = self.forward_batches.load(Ordering::Relaxed);
+        if batches == 0 {
+            return;
+        }
+        let packets = self.forward_packets_in_batches.load(Ordering::Relaxed);
+        let dest_sends = self.forward_dest_send_count.load(Ordering::Relaxed);
+        let total_us = self.forward_total_us_sum.load(Ordering::Relaxed);
+        let dedup_us = self.forward_dedup_us_sum.load(Ordering::Relaxed);
+        let fanout_us = self.forward_fanout_send_us_sum.load(Ordering::Relaxed);
+        let stats_us = self.forward_stats_us_sum.load(Ordering::Relaxed);
+        let reconstruct_us = self
+            .forward_reconstruct_clone_us_sum
+            .load(Ordering::Relaxed);
+        let max_per_dest_sum_us = self.forward_max_per_dest_us_sum.load(Ordering::Relaxed);
+        let div = batches;
+        datapoint_info!(
+            "shredstream_proxy-forwarding_perf",
+            ("batches", batches as i64, i64),
+            ("packets", packets as i64, i64),
+            ("dest_sends", dest_sends as i64, i64),
+            ("avg_packets_per_batch", (packets / div) as i64, i64),
+            ("avg_dests_per_batch", (dest_sends / div) as i64, i64),
+            ("avg_total_us", (total_us / div) as i64, i64),
+            ("avg_dedup_us", (dedup_us / div) as i64, i64),
+            ("avg_fanout_send_us", (fanout_us / div) as i64, i64),
+            ("avg_stats_us", (stats_us / div) as i64, i64),
+            ("avg_reconstruct_clone_us", (reconstruct_us / div) as i64, i64),
+            ("avg_max_per_dest_us", (max_per_dest_sum_us / div) as i64, i64),
+            (
+                "max_total_us",
+                self.forward_total_us_max.load(Ordering::Relaxed) as i64,
+                i64
+            ),
+            (
+                "max_fanout_send_us",
+                self.forward_fanout_send_us_max.load(Ordering::Relaxed) as i64,
+                i64
+            ),
+            (
+                "max_per_dest_us",
+                self.forward_per_dest_us_max.load(Ordering::Relaxed) as i64,
+                i64
+            ),
+        );
     }
 
     /// resets current values, increments cumulative values
@@ -598,6 +768,22 @@ impl ShredMetrics {
         );
         self.duplicate_cumulative
             .fetch_add(self.duplicate.swap(0, Ordering::Relaxed), Ordering::Relaxed);
+
+        // reset forwarding-perf interval counters
+        self.forward_batches.store(0, Ordering::Relaxed);
+        self.forward_packets_in_batches.store(0, Ordering::Relaxed);
+        self.forward_dest_send_count.store(0, Ordering::Relaxed);
+        self.forward_total_us_sum.store(0, Ordering::Relaxed);
+        self.forward_total_us_max.store(0, Ordering::Relaxed);
+        self.forward_dedup_us_sum.store(0, Ordering::Relaxed);
+        self.forward_fanout_send_us_sum.store(0, Ordering::Relaxed);
+        self.forward_fanout_send_us_max.store(0, Ordering::Relaxed);
+        self.forward_stats_us_sum.store(0, Ordering::Relaxed);
+        self.forward_reconstruct_clone_us_sum
+            .store(0, Ordering::Relaxed);
+        self.forward_max_per_dest_us_sum
+            .store(0, Ordering::Relaxed);
+        self.forward_per_dest_us_max.store(0, Ordering::Relaxed);
     }
 }
 
