@@ -14,7 +14,7 @@ use crossbeam_channel::{Receiver, RecvError};
 use dashmap::DashMap;
 use itertools::Itertools;
 use jito_protos::shredstream::{Entry as PbEntry, TraceShred};
-use log::{error, info, log_enabled, trace, warn, Level};
+use log::{error, info, log_enabled, warn, Level};
 use prost::Message;
 use solana_client::client_error::reqwest;
 use solana_ledger::shred::ReedSolomonCache;
@@ -336,23 +336,10 @@ fn recv_from_channel_and_send_multiple_dest(
         let fanout_send_us = elapsed_us(t_before_fanout);
         let total_us = elapsed_us(t_batch_start);
 
-        // Per-batch trace breakdown. Format is stable & machine-parseable
-        // for offline extraction.
-        trace!(
-            "fwd_batch packets={} dests={} total_us={} dedup_us={} fanout_send_us={} \
-             max_per_dest_us={} stats_us={} reconstruct_clone_us={} deduped={}",
-            batch_packet_count,
-            num_dest,
-            total_us,
-            dedup_us,
-            fanout_send_us,
-            max_per_dest_us,
-            stats_us,
-            reconstruct_clone_us,
-            num_deduped,
-        );
-
-        // Aggregate into ShredMetrics; reported on the periodic tick.
+        // Aggregate into ShredMetrics; reported on the periodic tick as
+        // `shredstream_proxy-forwarding_perf`. No per-batch log is emitted —
+        // the aggregated datapoint covers throughput + latency over the
+        // configured reporting interval.
         metrics.forward_batches.fetch_add(1, Ordering::Relaxed);
         metrics
             .forward_packets_in_batches

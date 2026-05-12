@@ -40,40 +40,37 @@ RUST_LOG=info,jito_shredstream_proxy::forwarder=trace \
     --metrics-report-interval-ms 10000
 ```
 
-You get two streams of perf data:
+You get one stream of perf data: an aggregated
+`datapoint_info!("shredstream_proxy-forwarding_perf", …)` row emitted once per
+`--metrics-report-interval-ms` (default 15000). Fields:
 
-1. **Per-batch `trace!` lines** (one per `PacketBatch` handled). Stable
-   key=value format for easy `grep`/`awk` extraction:
+| Field | Meaning |
+|---|---|
+| `batches`, `packets`, `dest_sends` | Interval throughput counters |
+| `avg_packets_per_batch`, `avg_dests_per_batch` | Sizing |
+| `avg_total_us` | Avg time to forward one packet batch (entry → exit) |
+| `avg_dedup_us` | Avg dedup time per batch |
+| `avg_fanout_send_us` | Avg total fanout time (all destinations) per batch |
+| `avg_stats_us`, `avg_reconstruct_clone_us` | Other stage costs |
+| `avg_max_per_dest_us` | Avg of the slowest single-destination send per batch |
+| `max_total_us`, `max_fanout_send_us`, `max_per_dest_us` | Tail latencies |
 
-   ```
-   fwd_batch packets=128 dests=200 total_us=987 dedup_us=72 \
-             fanout_send_us=860 max_per_dest_us=12 stats_us=18 \
-             reconstruct_clone_us=11 deduped=4
-   ```
+> **Why one knob (`forwarder=trace`) controls a datapoint emitted at INFO?**
+> The trace level is used as a zero-overhead gate — when off, no
+> `Instant::now()` clock reads and no atomic accumulator updates happen on the
+> data path. The actual emission goes through `solana_metrics`, which always
+> logs at INFO. There is no per-batch `trace!` line; the per-interval datapoint
+> is the only output.
 
-2. **Aggregated `datapoint_info!("shredstream_proxy-forwarding_perf", …)`**
-   emitted once per `--metrics-report-interval-ms` (default 15000). Fields:
-
-   | Field | Meaning |
-   |---|---|
-   | `batches`, `packets`, `dest_sends` | Interval throughput counters |
-   | `avg_packets_per_batch`, `avg_dests_per_batch` | Sizing |
-   | `avg_total_us` | Avg time to forward one packet batch (entry → exit) |
-   | `avg_dedup_us` | Avg dedup time per batch |
-   | `avg_fanout_send_us` | Avg total fanout time (all destinations) per batch |
-   | `avg_stats_us`, `avg_reconstruct_clone_us` | Other stage costs |
-   | `avg_max_per_dest_us` | Avg of the slowest single-destination send per batch |
-   | `max_total_us`, `max_fanout_send_us`, `max_per_dest_us` | Tail latencies |
-
-   **Packets/sec** is intentionally not emitted — divide `packets` by
-   `metrics_report_interval_ms / 1000` downstream.
+**Packets/sec** is intentionally not emitted — divide `packets` by
+`metrics_report_interval_ms / 1000` downstream.
 
 ### Extracting for the HTML dashboard
 
-Both the per-batch `trace!` lines and the aggregated `datapoint_info!` rows go
-to **stderr** via `env_logger`. Merge stderr into stdout with `2>&1` so you can
-pipe/redirect. (If `SOLANA_METRICS_CONFIG` is set, `datapoint_info!` is *also*
-shipped to InfluxDB; the local stderr line still prints either way.)
+The aggregated `datapoint_info!` rows go to **stderr** via `env_logger`. Merge
+stderr into stdout with `2>&1` so you can pipe/redirect. (If
+`SOLANA_METRICS_CONFIG` is set, `datapoint_info!` is *also* shipped to
+InfluxDB; the local stderr line still prints either way.)
 
 **Option A — capture full log, grep afterwards.** Best when you want to re-grep
 different fields without re-running.
@@ -85,7 +82,6 @@ RUST_LOG=info,jito_shredstream_proxy::forwarder=trace \
 
 # stop with Ctrl-C, then extract:
 grep "shredstream_proxy-forwarding_perf" shredstream.log > perf_aggregated.txt
-grep "fwd_batch"                          shredstream.log > perf_per_batch.txt
 ```
 
 **Option B — live filter + keep the raw log.** Best when watching a profiling
