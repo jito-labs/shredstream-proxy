@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::{sleep, Builder, JoinHandle},
+    thread::{Builder, JoinHandle},
     time::Duration,
 };
 
@@ -21,9 +21,11 @@ use tonic::{codegen::InterceptedService, transport::Channel, Code};
 
 use crate::{
     forwarder::ShredMetrics,
+    shutdown_has_passed,
     token_authenticator::{create_grpc_channel, ClientInterceptor},
-    ShredstreamProxyError,
+    ShredstreamProxyError, SHREDSTREAM_SHUTDOWN_DATE,
 };
+
 /*
     This is a wrapper around AtomicBool that allows us to scope the lifetime of the AtomicBool to the heartbeat loop.
     This is useful because we want to ensure that the AtomicBool is set to true when the heartbeat loop exits.
@@ -82,23 +84,33 @@ pub fn heartbeat_loop_thread(
         let mut successful_heartbeat_count_cumulative = 0u64;
         let mut failed_heartbeat_count_cumulative = 0u64;
 
-        while !exit.load(Ordering::Relaxed) {
+        'heartbeat_loop: while !exit.load(Ordering::Relaxed) {
+            if shutdown_has_passed() {
+                warn!(
+                    "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; stopping heartbeat client."
+                );
+                break;
+            }
             // We want to scope the grpc shredstream client to the heartbeat loop. This way shredstream client exits when the heartbeat loop exits
             let per_con_exit = ScopedAtomicBool::default();
             info!("Starting heartbeat client");
-            let shredstream_client_res = runtime.block_on(
-                get_grpc_client(
-                    block_engine_url.clone(),
-                    auth_url.clone(),
-                    auth_keypair.clone(),
-                    service_name.clone(),
-                    per_con_exit.get_inner_clone(),
-                )
-            );
+            let shredstream_client_res = runtime.block_on(get_grpc_client(
+                block_engine_url.clone(),
+                auth_url.clone(),
+                auth_keypair.clone(),
+                service_name.clone(),
+                per_con_exit.get_inner_clone(),
+            ));
             // Shredstream client lives here -- so it has the same scope as per_con_exit
-            let (mut shredstream_client , refresh_thread_hdl) = match shredstream_client_res {
+            let (mut shredstream_client, refresh_thread_hdl) = match shredstream_client_res {
                 Ok(c) => c,
                 Err(e) => {
+                    if shutdown_has_passed() {
+                        warn!(
+                            "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; not reconnecting to the block engine."
+                        );
+                        break 'heartbeat_loop;
+                    }
                     warn!("Failed to connect to block engine, retrying. Error: {e}");
                     client_restart_count += 1;
                     datapoint_warn!(
@@ -107,7 +119,19 @@ pub fn heartbeat_loop_thread(
                         ("errors", 1, i64),
                         ("error_str", e.to_string(), String),
                     );
-                    sleep(Duration::from_secs(5));
+                    if exit.load(Ordering::Relaxed) {
+                        break 'heartbeat_loop;
+                    }
+                    match shutdown_receiver.recv_timeout(Duration::from_secs(5)) {
+                        Ok(_) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                            break 'heartbeat_loop;
+                        }
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                            if exit.load(Ordering::Relaxed) {
+                                break 'heartbeat_loop;
+                            }
+                        }
+                    }
                     continue; // avoid sending heartbeat, try acquiring grpc client again
                 }
             };
@@ -115,6 +139,13 @@ pub fn heartbeat_loop_thread(
                 crossbeam_channel::select! {
                     // send heartbeat
                     recv(heartbeat_tick) -> _ => {
+                        if shutdown_has_passed() {
+                            warn!(
+                                "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; stopping heartbeat client."
+                            );
+                            refresh_thread_hdl.abort();
+                            break 'heartbeat_loop;
+                        }
                         let heartbeat_result = runtime.block_on(shredstream_client
                             .send_heartbeat(Heartbeat {
                                 socket: Some(heartbeat_socket.clone()),
@@ -164,6 +195,13 @@ pub fn heartbeat_loop_thread(
                         // if no shreds received, then restart
                         let new_received_count = metrics.agg_received_cumulative.load(Ordering::Relaxed);
                         if new_received_count == last_cumulative_received_shred_count {
+                            if shutdown_has_passed() {
+                                warn!(
+                                    "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; not reconnecting to the block engine."
+                                );
+                                refresh_thread_hdl.abort();
+                                break 'heartbeat_loop;
+                            }
                             warn!("No shreds received recently, restarting heartbeat client.");
                             datapoint_warn!(
                                 "shredstream_proxy-heartbeat_restart_signal",
@@ -187,7 +225,7 @@ pub fn heartbeat_loop_thread(
                     // handle SIGINT shutdown
                     recv(shutdown_receiver) -> _ => {
                         // exit should be true
-                        break;
+                        break 'heartbeat_loop;
                     }
                 }
             }

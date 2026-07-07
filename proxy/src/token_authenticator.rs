@@ -23,6 +23,8 @@ use tonic::{
     Request, Status,
 };
 
+use crate::shutdown_has_passed;
+
 /// Adds the token to each requests' authorization header.
 #[derive(Debug, Error)]
 pub enum BlockEngineConnectionError {
@@ -130,6 +132,10 @@ impl ClientInterceptor {
             let mut access_token_expiration = initial_access_token_expiration;
 
             while !exit.load(Ordering::Relaxed) {
+                if shutdown_has_passed() {
+                    break;
+                }
+
                 let now = SystemTime::now();
 
                 let refresh_token_ttl =
@@ -159,6 +165,9 @@ impl ClientInterceptor {
                         ("is_error", is_error, bool),
                         ("latency_us", start.elapsed().as_micros(), i64),
                     );
+                    if is_error {
+                        sleep(Duration::from_secs(5)).await;
+                    }
                     continue;
                 }
 
@@ -192,6 +201,9 @@ impl ClientInterceptor {
                         ("is_error", is_error, bool),
                         ("latency_us", start.elapsed().as_micros(), i64),
                     );
+                    if is_error {
+                        sleep(Duration::from_secs(5)).await;
+                    }
                     continue;
                 }
 

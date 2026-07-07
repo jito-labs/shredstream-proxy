@@ -12,7 +12,7 @@ use std::{
     },
     thread,
     thread::{sleep, spawn, JoinHandle},
-    time::Duration,
+    time::{Duration, UNIX_EPOCH},
 };
 
 use arc_swap::ArcSwap;
@@ -40,6 +40,11 @@ mod heartbeat;
 mod multicast_config;
 mod server;
 mod token_authenticator;
+
+const SHREDSTREAM_SHUTDOWN_DATE: &str = "September 5, 2026";
+const SHREDSTREAM_SHUTDOWN_UNIX_SECONDS: u64 = 1_788_566_400;
+const DOUBLEZERO_MIGRATION_GUIDE_URL: &str = "https://doublezero.xyz/jito-shredstream";
+const DOUBLEZERO_DISCORD_URL: &str = "https://discord.com/invite/doublezerotech";
 
 #[derive(Clone, Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -192,6 +197,13 @@ pub fn get_public_ip() -> reqwest::Result<IpAddr> {
     Ok(public_ip)
 }
 
+fn shutdown_has_passed() -> bool {
+    UNIX_EPOCH
+        .elapsed()
+        .map(|elapsed| elapsed.as_secs() >= SHREDSTREAM_SHUTDOWN_UNIX_SECONDS)
+        .unwrap_or(false)
+}
+
 // Creates a channel that gets a message every time `SIGINT` is signalled.
 fn shutdown_notifier(exit: Arc<AtomicBool>) -> io::Result<(Sender<()>, Receiver<()>)> {
     let (s, r) = crossbeam_channel::bounded(256);
@@ -219,6 +231,14 @@ fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder().init();
 
     let all_args: Args = Args::parse();
+    eprintln!(
+        "\n\
+Jito ShredStream sunset notice:
+Jito ShredStream is being deprecated and will be shut down on {SHREDSTREAM_SHUTDOWN_DATE}.
+Migrate to DoubleZero Edge before then to avoid interrupted access to Solana shreds.
+Migration guide: {DOUBLEZERO_MIGRATION_GUIDE_URL}
+Support: {DOUBLEZERO_DISCORD_URL} (#jito-shredstream)\n"
+    );
 
     let shredstream_args = all_args.shredstream_args.clone();
     // common args
@@ -237,6 +257,12 @@ fn main() -> Result<(), ShredstreamProxyError> {
         && args.dest_ip_ports.is_empty()
     {
         return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")));
+    }
+    if matches!(shredstream_args, ProxySubcommands::Shredstream(_)) && shutdown_has_passed() {
+        warn!(
+            "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; not starting heartbeat client."
+        );
+        return Err(ShredstreamProxyError::Shutdown);
     }
 
     let exit = Arc::new(AtomicBool::new(false));
