@@ -106,9 +106,7 @@ pub fn heartbeat_loop_thread(
                 Ok(c) => c,
                 Err(e) => {
                     if shutdown_has_passed() {
-                        warn!(
-                            "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; not reconnecting to the block engine."
-                        );
+                        warn!("ShredStream has been shut down on {SHREDSTREAM_SHUTDOWN_DATE}");
                         break 'heartbeat_loop;
                     }
                     warn!("Failed to connect to block engine, retrying. Error: {e}");
@@ -140,9 +138,7 @@ pub fn heartbeat_loop_thread(
                     // send heartbeat
                     recv(heartbeat_tick) -> _ => {
                         if shutdown_has_passed() {
-                            warn!(
-                                "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; stopping heartbeat client."
-                            );
+                            warn!("ShredStream has been shut down on {SHREDSTREAM_SHUTDOWN_DATE}");
                             refresh_thread_hdl.abort();
                             break 'heartbeat_loop;
                         }
