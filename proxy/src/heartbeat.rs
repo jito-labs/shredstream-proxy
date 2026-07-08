@@ -86,9 +86,7 @@ pub fn heartbeat_loop_thread(
 
         'heartbeat_loop: while !exit.load(Ordering::Relaxed) {
             if shutdown_has_passed() {
-                warn!(
-                    "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; stopping heartbeat client."
-                );
+                warn!("ShredStream has been shut down on {SHREDSTREAM_SHUTDOWN_DATE}");
                 break;
             }
             // We want to scope the grpc shredstream client to the heartbeat loop. This way shredstream client exits when the heartbeat loop exits
@@ -192,9 +190,7 @@ pub fn heartbeat_loop_thread(
                         let new_received_count = metrics.agg_received_cumulative.load(Ordering::Relaxed);
                         if new_received_count == last_cumulative_received_shred_count {
                             if shutdown_has_passed() {
-                                warn!(
-                                    "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; not reconnecting to the block engine."
-                                );
+                                warn!("ShredStream has been shut down on {SHREDSTREAM_SHUTDOWN_DATE}");
                                 refresh_thread_hdl.abort();
                                 break 'heartbeat_loop;
                             }

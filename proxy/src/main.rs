@@ -259,9 +259,7 @@ Support: {DOUBLEZERO_DISCORD_URL} (#jito-shredstream)\n"
         return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")));
     }
     if matches!(shredstream_args, ProxySubcommands::Shredstream(_)) && shutdown_has_passed() {
-        warn!(
-            "Jito ShredStream has been shut down as of {SHREDSTREAM_SHUTDOWN_DATE}; not starting heartbeat client."
-        );
+        warn!("ShredStream has been shut down on {SHREDSTREAM_SHUTDOWN_DATE}");
         return Err(ShredstreamProxyError::Shutdown);
     }
 
