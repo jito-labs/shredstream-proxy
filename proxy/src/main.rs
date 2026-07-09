@@ -1,3 +1,10 @@
+// Use jemalloc as the global allocator, mirroring agave's binaries
+// (agave validator/src/main.rs). Under glibc malloc the proxy aborted twice
+// with heap-metadata corruption at sustained ~30k pps; jemalloc both avoids
+// glibc-specific heap-layout fragility and gives clearer diagnostics if
+// corruption recurs.
+#[cfg(not(any(target_env = "msvc", target_os = "freebsd")))]
+use jemallocator::Jemalloc;
 use std::{
     collections::HashMap,
     io,
@@ -34,6 +41,10 @@ use crate::{
     forwarder::ShredMetrics, multicast_config::create_multicast_socket_on_device,
     token_authenticator::BlockEngineConnectionError,
 };
+#[cfg(not(any(target_env = "msvc", target_os = "freebsd")))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 mod deshred;
 pub mod forwarder;
 mod heartbeat;

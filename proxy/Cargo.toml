@@ -17,6 +17,7 @@ dashmap = { workspace = true }
 env_logger = { workspace = true }
 hostname = { workspace = true }
 itertools = { workspace = true }
+jemallocator = { workspace = true }
 jito-protos = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
