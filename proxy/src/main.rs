@@ -12,7 +12,7 @@ use std::{
     },
     thread,
     thread::{sleep, spawn, JoinHandle},
-    time::{Duration, UNIX_EPOCH},
+    time::Duration,
 };
 
 use arc_swap::ArcSwap;
@@ -43,8 +43,6 @@ mod token_authenticator;
 
 const SHREDSTREAM_SHUTDOWN_DATE: &str = "September 5, 2026";
 const SHREDSTREAM_SHUTDOWN_UNIX_SECONDS: u64 = 1_788_566_400;
-const DOUBLEZERO_MIGRATION_GUIDE_URL: &str = "https://doublezero.xyz/jito-shredstream";
-const DOUBLEZERO_DISCORD_URL: &str = "https://discord.com/invite/doublezerotech";
 
 #[derive(Clone, Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -198,7 +196,7 @@ pub fn get_public_ip() -> reqwest::Result<IpAddr> {
 }
 
 fn shutdown_has_passed() -> bool {
-    UNIX_EPOCH
+    std::time::UNIX_EPOCH
         .elapsed()
         .map(|elapsed| elapsed.as_secs() >= SHREDSTREAM_SHUTDOWN_UNIX_SECONDS)
         .unwrap_or(false)
@@ -231,16 +229,21 @@ fn main() -> Result<(), ShredstreamProxyError> {
     env_logger::builder().init();
 
     let all_args: Args = Args::parse();
-    eprintln!(
-        "\n\
-Jito ShredStream sunset notice:
-Jito ShredStream is being deprecated and will be shut down on {SHREDSTREAM_SHUTDOWN_DATE}.
-Migrate to DoubleZero Edge before then to avoid interrupted access to Solana shreds.
-Migration guide: {DOUBLEZERO_MIGRATION_GUIDE_URL}
-Support: {DOUBLEZERO_DISCORD_URL} (#jito-shredstream)\n"
-    );
 
     let shredstream_args = all_args.shredstream_args.clone();
+    if matches!(&shredstream_args, ProxySubcommands::Shredstream(_)) {
+        eprintln!(
+            "\n\
+Jito ShredStream is deprecated and will shut down on {SHREDSTREAM_SHUTDOWN_DATE}.\n\
+Migrate to DoubleZero Edge: https://doublezero.xyz/jito-shredstream\n\
+Support: https://discord.com/invite/doublezerotech (#jito-shredstream)\n"
+        );
+        if shutdown_has_passed() {
+            warn!("ShredStream has been shut down on {SHREDSTREAM_SHUTDOWN_DATE}");
+            return Err(ShredstreamProxyError::Shutdown);
+        }
+    }
+
     // common args
     let args = match all_args.shredstream_args {
         ProxySubcommands::Shredstream(x) => x.common_args,
@@ -257,10 +260,6 @@ Support: {DOUBLEZERO_DISCORD_URL} (#jito-shredstream)\n"
         && args.dest_ip_ports.is_empty()
     {
         return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")));
-    }
-    if matches!(shredstream_args, ProxySubcommands::Shredstream(_)) && shutdown_has_passed() {
-        warn!("ShredStream has been shut down on {SHREDSTREAM_SHUTDOWN_DATE}");
-        return Err(ShredstreamProxyError::Shutdown);
     }
 
     let exit = Arc::new(AtomicBool::new(false));
