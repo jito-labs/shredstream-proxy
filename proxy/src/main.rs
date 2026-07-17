@@ -147,6 +147,41 @@ struct CommonArgs {
     /// Number of threads to use. Defaults to use up to 4.
     #[arg(long, env)]
     num_threads: Option<usize>,
+
+    /// Slot window lookback for reconstruction (in slots).
+    /// Only used when `--grpc-service-port` is set.
+    #[arg(long, env, default_value_t = 75)]
+    reconstruct_slot_lookback: Slot,
+
+    /// Slot window future bound for reconstruction (in slots).
+    /// Only used when `--grpc-service-port` is set.
+    #[arg(long, env, default_value_t = 75)]
+    reconstruct_slot_future: Slot,
+
+    /// Max unknown-start positions to try per DATA_COMPLETE end boundary during deshred.
+    /// Higher values can improve best-effort decode yield when boundary shreds are missing, at
+    /// the cost of extra CPU in the reconstruction thread.
+    #[arg(long, env, default_value_t = 8)]
+    reconstruct_unknown_start_max_positions: u16,
+
+    /// Enable a bounded parity scrub retry for known-start decode failures.
+    /// When enabled, reconstruction may force one data index missing in a complete FEC set and
+    /// attempt Reed-Solomon repair before retrying decode once.
+    #[arg(long, env, default_value_t = true)]
+    reconstruct_known_start_parity_scrub_enabled: bool,
+
+    /// Max overlapping FEC sets to parity-scrub per known-start decode failure.
+    #[arg(long, env, default_value_t = 1)]
+    reconstruct_known_start_parity_scrub_max_fec_sets_per_failure: u16,
+
+    /// Max forced-missing data indices to try per scrubbed FEC set.
+    /// Candidate order is start, middle, end within the failed decode overlap.
+    #[arg(long, env, default_value_t = 3)]
+    reconstruct_known_start_parity_scrub_max_indices_per_fec: u16,
+
+    /// Max parity scrub attempts per FEC identity generation.
+    #[arg(long, env, default_value_t = 1)]
+    reconstruct_known_start_parity_scrub_max_attempts_per_fec_generation: u8,
 }
 
 #[derive(Debug, Error)]
@@ -183,13 +218,19 @@ fn resolve_hostname_port(hostname_port: &str) -> io::Result<(SocketAddr, String)
 }
 
 /// Returns public-facing IPV4 address
-pub fn get_public_ip() -> reqwest::Result<IpAddr> {
+pub fn get_public_ip() -> Result<IpAddr, ShredstreamProxyError> {
     info!("Requesting public ip from ifconfig.me...");
     let client = reqwest::blocking::Client::builder()
         .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
         .build()?;
     let response = client.get("https://ifconfig.me/ip").send()?.text()?;
-    let public_ip = IpAddr::from_str(&response).unwrap();
+    let trimmed = response.trim();
+    let public_ip = IpAddr::from_str(trimmed).map_err(|e| {
+        ShredstreamProxyError::IoError(io::Error::new(
+            ErrorKind::InvalidData,
+            format!("Failed to parse public ip from ifconfig.me response {trimmed:?}: {e}"),
+        ))
+    })?;
     info!("Retrieved public ip: {public_ip:?}");
 
     Ok(public_ip)
@@ -250,16 +291,22 @@ Support: https://discord.com/invite/doublezerotech (#jito-shredstream)\n"
         ProxySubcommands::ForwardOnly(x) => x,
     };
     set_host_id(hostname::get()?.into_string().unwrap());
-    if (args.endpoint_discovery_url.is_none() && args.discovered_endpoints_port.is_some())
-        || (args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_none())
+    let discovery_config = match (args.endpoint_discovery_url.clone(), args.discovered_endpoints_port)
     {
-        return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "Invalid arguments provided, dynamic endpoints requires both --endpoint-discovery-url and --discovered-endpoints-port.")));
-    }
-    if args.endpoint_discovery_url.is_none()
-        && args.discovered_endpoints_port.is_none()
-        && args.dest_ip_ports.is_empty()
-    {
-        return Err(ShredstreamProxyError::IoError(io::Error::new(ErrorKind::InvalidInput, "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.")));
+        (Some(url), Some(port)) => Some((url, port)),
+        (None, None) => None,
+        _ => {
+            return Err(ShredstreamProxyError::IoError(io::Error::new(
+                ErrorKind::InvalidInput,
+                "Invalid arguments provided, dynamic endpoints requires both --endpoint-discovery-url and --discovered-endpoints-port.",
+            )))
+        }
+    };
+    if discovery_config.is_none() && args.dest_ip_ports.is_empty() {
+        return Err(ShredstreamProxyError::IoError(io::Error::new(
+            ErrorKind::InvalidInput,
+            "No destinations found. You must provide values for --dest-ip-ports or --endpoint-discovery-url.",
+        )));
     }
 
     let exit = Arc::new(AtomicBool::new(false));
@@ -280,19 +327,7 @@ Support: https://discord.com/invite/doublezerotech (#jito-shredstream)\n"
 
     let metrics = Arc::new(ShredMetrics::new(args.grpc_service_port.is_some()));
 
-    let runtime = Runtime::new()?;
     let mut thread_handles = vec![];
-    if let ProxySubcommands::Shredstream(args) = shredstream_args {
-        if args.desired_regions.len() > 2 {
-            warn!(
-                "Too many regions requested, only regions: {:?} will be used",
-                &args.desired_regions[..2]
-            );
-        }
-        let heartbeat_hdl =
-            start_heartbeat(args, &exit, &shutdown_receiver, runtime, metrics.clone());
-        thread_handles.push(heartbeat_hdl);
-    }
 
     // share sockets between refresh and forwarder thread
     let unioned_dest_sockets = Arc::new(ArcSwap::from_pointee(
@@ -311,15 +346,14 @@ Support: https://discord.com/invite/doublezerotech (#jito-shredstream)\n"
 
     let entry_sender = Arc::new(BroadcastSender::new(100));
     let forward_stats = Arc::new(StreamerReceiveStats::new("shredstream_proxy-listen_thread"));
-    let use_discovery_service =
-        args.endpoint_discovery_url.is_some() && args.discovered_endpoints_port.is_some();
+    let use_discovery_service = discovery_config.is_some();
     let maybe_multicast_socket = create_multicast_socket_on_device(
         &args.multicast_device,
         args.multicast_subscribe_port,
         args.multicast_bind_ip,
     )
     .inspect(|mcast_socket| info!("Multicast listeners found: {mcast_socket:?}."));
-    let forwarder_hdls = forwarder::start_forwarder_threads(
+    let (bound_port, forwarder_hdls) = forwarder::start_forwarder_threads(
         unioned_dest_sockets.clone(),
         args.src_bind_addr,
         args.src_bind_port,
@@ -327,6 +361,13 @@ Support: https://discord.com/invite/doublezerotech (#jito-shredstream)\n"
         args.num_threads,
         deduper.clone(),
         args.grpc_service_port.is_some(),
+        args.reconstruct_slot_lookback,
+        args.reconstruct_slot_future,
+        args.reconstruct_unknown_start_max_positions,
+        args.reconstruct_known_start_parity_scrub_enabled,
+        args.reconstruct_known_start_parity_scrub_max_fec_sets_per_failure,
+        args.reconstruct_known_start_parity_scrub_max_indices_per_fec,
+        args.reconstruct_known_start_parity_scrub_max_attempts_per_fec_generation,
         entry_sender.clone(),
         args.debug_trace_shred,
         use_discovery_service,
@@ -336,6 +377,25 @@ Support: https://discord.com/invite/doublezerotech (#jito-shredstream)\n"
         exit.clone(),
     );
     thread_handles.extend(forwarder_hdls);
+
+    if let ProxySubcommands::Shredstream(args) = shredstream_args {
+        if args.desired_regions.len() > 2 {
+            warn!(
+                "Too many regions requested, only regions: {:?} will be used",
+                &args.desired_regions[..2]
+            );
+        }
+        let runtime = Runtime::new()?;
+        let heartbeat_hdl = start_heartbeat(
+            args,
+            bound_port,
+            &exit,
+            &shutdown_receiver,
+            runtime,
+            metrics.clone(),
+        )?;
+        thread_handles.push(heartbeat_hdl);
+    }
 
     let report_metrics_thread = {
         let exit = exit.clone();
@@ -356,10 +416,10 @@ Support: https://discord.com/invite/doublezerotech (#jito-shredstream)\n"
         exit.clone(),
     );
     thread_handles.push(metrics_hdl);
-    if use_discovery_service {
+    if let Some((endpoint_discovery_url, discovered_endpoints_port)) = discovery_config {
         let refresh_handle = forwarder::start_destination_refresh_thread(
-            args.endpoint_discovery_url.unwrap(),
-            args.discovered_endpoints_port.unwrap(),
+            endpoint_discovery_url,
+            discovered_endpoints_port,
             args.dest_ip_ports,
             unioned_dest_sockets,
             shutdown_receiver.clone(),
@@ -380,7 +440,7 @@ Support: https://discord.com/invite/doublezerotech (#jito-shredstream)\n"
 
     info!(
         "Shredstream started, listening on {}:{}/udp.",
-        args.src_bind_addr, args.src_bind_port
+        args.src_bind_addr, bound_port
     );
 
     for thread in thread_handles {
@@ -401,11 +461,12 @@ Support: https://discord.com/invite/doublezerotech (#jito-shredstream)\n"
 
 fn start_heartbeat(
     args: ShredstreamArgs,
+    recv_port: u16,
     exit: &Arc<AtomicBool>,
     shutdown_receiver: &Receiver<()>,
     runtime: Runtime,
     metrics: Arc<ShredMetrics>,
-) -> JoinHandle<()> {
+) -> Result<JoinHandle<()>, ShredstreamProxyError> {
     let auth_keypair = Arc::new(
         read_keypair_file(Path::new(&args.auth_keypair)).unwrap_or_else(|e| {
             panic!(
@@ -415,21 +476,22 @@ fn start_heartbeat(
         }),
     );
 
-    heartbeat::heartbeat_loop_thread(
+    let public_ip = args
+        .common_args
+        .public_ip
+        .map(Ok)
+        .unwrap_or_else(get_public_ip)?;
+
+    Ok(heartbeat::heartbeat_loop_thread(
         args.block_engine_url.clone(),
         args.auth_url.unwrap_or(args.block_engine_url),
         auth_keypair,
         args.desired_regions,
-        SocketAddr::new(
-            args.common_args
-                .public_ip
-                .unwrap_or_else(|| get_public_ip().unwrap()),
-            args.common_args.src_bind_port,
-        ),
+        SocketAddr::new(public_ip, recv_port),
         runtime,
         "shredstream_proxy".to_string(),
         metrics,
         shutdown_receiver.clone(),
         exit.clone(),
-    )
+    ))
 }

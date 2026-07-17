@@ -63,14 +63,20 @@ impl ShredstreamProxy for ShredstreamProxyService {
         let mut entry_receiver: BroadcastReceiver<PbEntry> = self.entry_sender.subscribe();
 
         tokio::spawn(async move {
-            while let Ok(entry) = entry_receiver.recv().await {
-                match tx.send(Ok(entry)).await {
-                    Ok(_) => (),
-                    Err(_e) => {
-                        debug!("client disconnected");
-                        break;
+            loop {
+                match entry_receiver.recv().await {
+                    Ok(entry) => {
+                        if tx.send(Ok(entry)).await.is_err() {
+                            debug!("client disconnected");
+                            break;
+                        }
                     }
-                }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Receiver fell behind; keep streaming the latest entries.
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
             }
         });
 

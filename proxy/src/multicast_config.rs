@@ -13,14 +13,11 @@ fn run_ip_json(args: &[&str]) -> io::Result<Vec<u8>> {
     if output.status.success() {
         Ok(output.stdout)
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "`ip {}` failed with status {}",
-                args.join(" "),
-                output.status
-            ),
-        ))
+        Err(io::Error::other(format!(
+            "`ip {}` failed with status {}",
+            args.join(" "),
+            output.status
+        )))
     }
 }
 
