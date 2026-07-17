@@ -34,6 +34,11 @@ use crate::{
     forwarder::ShredMetrics, multicast_config::create_multicast_socket_on_device,
     token_authenticator::BlockEngineConnectionError,
 };
+// Match Agave's allocator for high-throughput packet processing.
+#[cfg(not(any(target_env = "msvc", target_os = "freebsd")))]
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 mod deshred;
 pub mod forwarder;
 mod heartbeat;

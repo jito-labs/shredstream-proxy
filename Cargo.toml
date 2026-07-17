@@ -20,6 +20,9 @@ dashmap = "5"
 env_logger = "0.11"
 hostname = "0.4.0"
 itertools = "0.14.0"
+jemallocator = { package = "tikv-jemallocator", version = "0.6.0", features = [
+    "unprefixed_malloc_on_supported_platforms",
+] }
 jito-protos = { path = "jito_protos" }
 log = "0.4"
 prost = "0.13"
