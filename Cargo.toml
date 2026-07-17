@@ -20,9 +20,6 @@ dashmap = "5"
 env_logger = "0.11"
 hostname = "0.4.0"
 itertools = "0.14.0"
-# Same global allocator agave's binaries use. The proxy previously ran on glibc
-# malloc and died twice from heap-metadata corruption aborts ("corrupted size
-# vs. prev_size", sysmalloc assert) under sustained ~30k pps.
 jemallocator = { package = "tikv-jemallocator", version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",
 ] }
