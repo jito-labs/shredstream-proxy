@@ -51,6 +51,7 @@ pub fn start_forwarder_threads(
     src_port: u16,
     maybe_multicast_socket: Option<Vec<UdpSocket>>,
     num_threads: Option<usize>,
+    multicast_ttl: Option<u32>,
     deduper: Arc<RwLock<Deduper<2, [u8]>>>,
     should_reconstruct_shreds: bool,
     entry_sender: Arc<Sender<PbEntry>>,
@@ -163,6 +164,11 @@ pub fn start_forwarder_threads(
                     let send_socket =
                         UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
                             .expect("to bind to udp port for forwarding");
+                    if let Some(ttl) = multicast_ttl {
+                        send_socket
+                            .set_multicast_ttl_v4(ttl)
+                            .expect("to set multicast TTL");
+                    }
                     let mut local_dest_sockets = unioned_dest_sockets.load();
 
                     let refresh_subscribers_tick = if use_discovery_service {
@@ -724,5 +730,20 @@ mod tests {
                 .fold(0, |acc, elem| acc + elem.lock().unwrap().len()),
             6
         );
+    }
+
+    #[test]
+    fn test_multicast_ttl_is_set() {
+        let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+        // Default multicast TTL should be 1
+        assert_eq!(socket.multicast_ttl_v4().unwrap(), 1);
+
+        // Set TTL to 64 and verify
+        socket.set_multicast_ttl_v4(64).unwrap();
+        assert_eq!(socket.multicast_ttl_v4().unwrap(), 64);
+
+        // Set TTL to 128 and verify
+        socket.set_multicast_ttl_v4(128).unwrap();
+        assert_eq!(socket.multicast_ttl_v4().unwrap(), 128);
     }
 }
